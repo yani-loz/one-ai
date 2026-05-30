@@ -1,0 +1,39 @@
+# ── Secrets & environment ──────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+credentials*.json
+
+# ── Data (never commit ingested company data) ──────────
+data/
+*.sqlite
+*.db
+*.dump
+
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / frontend ────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.log
+
+# ── OS ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Claude Code local-only ─────────────────────────────
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/projects/

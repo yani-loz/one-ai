@@ -1,6 +1,6 @@
 # One AI — MVP
 
-One AI is an enterprise AI product (subscription, **not** consulting) that puts AI at the center of a company as its central nervous system — holding the organization's knowledge, learning from every interaction, and giving each employee a personal AI that adapts to them. It's built in three layers: **Connect** (ingest company data through connectors into unified memory), **Ask** (cross-source agentic retrieval), and **Learn** (the compounding-intelligence loop — the core differentiator). The target is mid-market European companies (DACH focus), where security, data sovereignty, GDPR, and Human-in-the-Loop are **foundational constraints, not features**. Tagline: *One Company. One AI.* This `MVP/` folder is a clean-slate build — no feature code yet.
+One AI is an enterprise AI product (subscription, **not** consulting) that puts AI at the center of a company as its central nervous system — holding the organization's knowledge, learning from every interaction, and giving each employee a personal AI that adapts to them. It's built in three layers: **Connect** (ingest company data through connectors into unified memory), **Ask** (cross-source agentic retrieval), and **Learn** (the compounding-intelligence loop — the core differentiator). The target is mid-market European companies (DACH focus), where security, data sovereignty, GDPR, and Human-in-the-Loop are **foundational constraints, not features**. Tagline: *One Company. One AI.* The `MVP/` folder now runs a full-stack scaffold (FastAPI + React + Postgres/pgvector, fully dockerized); no product features yet — **Connect → Ask → Learn** are next.
 
 ## Your Role
 
@@ -11,6 +11,14 @@ You are a distinguished **software and AI systems architect** — specifically a
 - **`docs/Project_Bible.md`** — full project context: vision, product, architecture (4-layer memory, privacy, modules), principles, stack, and scope. Read this before any non-trivial work.
 - **`docs/experiments/`** — the lab notebook. `NOTEBOOK.md` holds settled decisions + the experiment log; record experiments here whenever something needs validating before it's decided.
 - **Rules:** coding, design, security, and testing standards live in `.claude/rules/`.
+
+## Build & run
+
+Scaffold is live — **FastAPI** (async SQLAlchemy 2.0, `uv`, Alembic) · **React 19 / Vite / Tailwind v4** · **Postgres 16 + pgvector**, all containerized. Quickstart, layout, and commands: **`README.md`**.
+
+- **Run:** `docker compose up --build` → frontend `:5173`, API `:8000` (`/docs`, `/health`).
+- **Tenant key is `org_id`** — every tenant-scoped model mixes in `TenantMixin`; `get_tenant_session` is the RLS seam. JWT/RBAC auth deferred to Phase 4.
+- **Layering** `routes → services → repositories → models`; one domain folder per feature under `backend/app/`. Only `/health` exists today — the first feature adds the service + repository layers.
 
 ## Technology references
 

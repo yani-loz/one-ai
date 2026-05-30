@@ -1,0 +1,71 @@
+# One AI — local development stack (everything containerized, hot-reload on).
+# Prod images use the `prod` build target instead; this file is the dev loop.
+# Project name is `one-ai-mvp` to stay isolated from any other `one-ai` stack.
+name: one-ai-mvp
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oneai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oneai}
+      POSTGRES_DB: ${POSTGRES_DB:-oneai}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oneai} -d ${POSTGRES_DB:-oneai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    env_file: .env
+    environment:
+      # Reach Postgres by compose service name; reload across the Windows bind mount.
+      POSTGRES_HOST: db
+      WATCHFILES_FORCE_POLLING: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Live source; the venv lives at /opt/venv (outside /app) so it is never shadowed.
+      - ./backend:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume masks node_modules so host files never shadow the image's deps.
+      - /app/node_modules
+
+volumes:
+  db-data:

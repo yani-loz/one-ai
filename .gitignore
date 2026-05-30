@@ -29,9 +29,19 @@ dist/
 .vite/
 *.log
 
+# ── Coverage / test artifacts ──────────────────────────
+.coverage
+coverage/
+coverage.xml
+htmlcov/
+
 # ── OS ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Tooling artifacts ──────────────────────────────────
+.playwright-mcp/
+oneai-scaffold-running.png
 
 # ── Claude Code local-only ─────────────────────────────
 .claude/settings.local.json

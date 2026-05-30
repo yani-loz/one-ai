@@ -1,0 +1,121 @@
+/*
+ * One AI design system — Tailwind v4, token-first.
+ * Colors are One AI's own aurora palette (teal → blue → purple); motion/surface
+ * vocabulary follows .claude/rules/frontend-design.md. Tailwind turns each @theme
+ * token into a utility automatically (--color-brand-teal → bg-brand-teal, etc.).
+ */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  /* — Colors: One AI aurora palette — */
+  --color-brand-teal: #0d9488;
+  --color-brand-blue: #3b82f6;
+  --color-brand-purple: #8b5cf6;
+  --color-brand-red: #dc2626;
+  --color-brand-bg: #f0f4f8;
+  --color-text-primary: #1f2937;
+  --color-text-secondary: #4b5563;
+  --color-text-muted: #6b7280;
+
+  /* — Type scale (size + paired line-height) — */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --text-h1: 42px;
+  --text-h1--line-height: 48px;
+  --text-h2: 32px;
+  --text-h2--line-height: 40px;
+  --text-h3: 24px;
+  --text-h3--line-height: 32px;
+
+  /* — Animation tokens — */
+  --animate-gradient-x: gradient-x 15s ease infinite;
+  --animate-fade-in: fade-in 0.8s ease-out forwards;
+  --animate-shimmer: shimmer 2.5s linear infinite;
+  --animate-aura-pulse: aura-pulse 3s ease-in-out infinite;
+  --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes gradient-x {
+  0%,
+  100% {
+    background-position: left top;
+  }
+  50% {
+    background-position: right bottom;
+  }
+}
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+@keyframes aura-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.15;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.35;
+  }
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+:root {
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  /* Page-level living gradient — the organization is "alive". */
+  background: linear-gradient(135deg, #f0f4f8 0%, #e6f0f0 50%, #eef2fb 100%);
+  background-size: 400% 400%;
+  animation: var(--animate-gradient-x);
+}
+
+/* Aurora gradient text for headlines / brand elements. */
+.text-brand-gradient {
+  background: linear-gradient(to right, #0d9488, #3b82f6, #8b5cf6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+::selection {
+  background: rgba(13, 148, 136, 0.2);
+  color: #0d9488;
+}
+
+/* Respect reduced-motion: kill ambient loops, keep instant fades. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

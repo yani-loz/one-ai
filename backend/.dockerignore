@@ -10,3 +10,6 @@ htmlcov/
 .env
 *.md
 tests/
+# Dev-only demo seed (with public credentials) — never bake into a shipped image.
+# Available in dev via the compose bind-mount, so excluding it here is safe (AUD-13).
+scripts/

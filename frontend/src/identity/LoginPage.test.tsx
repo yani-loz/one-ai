@@ -1,0 +1,246 @@
+/**
+ * Role: Integration tests for the login flow — renders LoginPage inside the App
+ *       router shell with a real AuthProvider, covering render, dev-credential fill,
+ *       successful login routing home, failed login messaging, and logout clearing.
+ * Used by: vitest (pnpm test).
+ * Depends on: a mocked global fetch (adapter boundary), real AuthProvider/router.
+ */
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { App } from "../App";
+import { AuthProvider } from ".";
+import { setTokens } from "./authClient";
+
+interface FetchCall {
+  url: string;
+  body: Record<string, unknown> | null;
+}
+
+function recordedCall(input: RequestInfo | URL, init?: RequestInit): FetchCall {
+  const body =
+    typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+  return { url: String(input), body };
+}
+
+const DEMO_USER = {
+  id: "u1",
+  email: "admin@demo.oneai",
+  full_name: "Demo Admin",
+  role: "company_admin",
+  org_id: "org-1",
+  org_name: "One AI Demo GmbH",
+};
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+/** Default router: a failing /auth/me so bootstrap resolves to unauthenticated. */
+function renderApp() {
+  return render(
+    <MemoryRouter initialEntries={["/login"]}>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  setTokens(null);
+  fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    // Default: health probe ok, everything else rejected (unauthenticated bootstrap).
+    if (String(input).includes("/health")) {
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
+      } as Response;
+    }
+    return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
+  setTokens(null);
+});
+
+describe("LoginPage", () => {
+  it("test_login_renders_form_and_dev_credentials_panel", async () => {
+    renderApp();
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByText("Dev test accounts — remove before production")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Demo admin/ })).toBeInTheDocument();
+  });
+
+  it("test_dev_credential_button_fills_the_form", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Demo member/ }));
+
+    expect(screen.getByLabelText<HTMLInputElement>("Email").value).toBe("member@demo.oneai");
+    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe("Memb3r-Dev-Only-2026!");
+  });
+
+  it("test_platform_toggle_switches_to_platform_login_endpoint", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const { url } = recordedCall(input, init);
+      if (url.includes("/platform/login")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
+        } as Response;
+      }
+      if (url.includes("/health")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
+        } as Response;
+      }
+      return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+    });
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Sign in as platform admin" }));
+    await user.type(screen.getByLabelText("Email"), "super@ethera.ai");
+    await user.type(screen.getByLabelText("Password"), "pw");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(screen.getByText(/Welcome,/)).toBeInTheDocument());
+    // During the page-transition overlap both screens can be mounted; assert the
+    // role label appears at least once rather than requiring a single match.
+    expect(screen.getAllByText("Platform admin").length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/platform/login"))).toBe(
+      true,
+    );
+  });
+
+  it("test_successful_company_login_routes_to_home_with_greeting", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/login")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              access_token: "a1",
+              refresh_token: "r1",
+              token_type: "bearer",
+              user: DEMO_USER,
+            }),
+        } as Response;
+      }
+      if (url.includes("/health")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
+        } as Response;
+      }
+      return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+    });
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: /Demo admin/ }));
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(screen.getByText("Demo Admin")).toBeInTheDocument());
+    // The health probe resolves after navigation; wait for at least one detail node
+    // (page-transition overlap can briefly mount two) to show the reachable DB.
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByTestId("health-detail")
+          .some((node) => node.textContent?.includes("DB reachable")),
+      ).toBe(true),
+    );
+  });
+
+  it("test_failed_login_shows_generic_error_and_stays_on_login", async () => {
+    const user = userEvent.setup();
+    renderApp(); // default mock rejects /auth/login with 401
+
+    await user.type(await screen.findByLabelText("Email"), "admin@demo.oneai");
+    await user.type(screen.getByLabelText("Password"), "wrong");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid email or password.");
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  });
+
+  it("test_network_error_shows_connectivity_message_not_wrong_password", async () => {
+    // A transport failure (API down / mid hot-reload) must NOT read as "wrong password".
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/login")) {
+        throw new TypeError("Failed to fetch");
+      }
+      return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+    });
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: /Demo admin/ }));
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach the server");
+    expect(screen.queryByText("Invalid email or password.")).not.toBeInTheDocument();
+  });
+
+  it("test_logout_clears_session_and_returns_to_login", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/login")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              access_token: "a1",
+              refresh_token: "r1",
+              token_type: "bearer",
+              user: DEMO_USER,
+            }),
+        } as Response;
+      }
+      if (url.includes("/auth/logout")) {
+        return { ok: true, status: 204, json: () => Promise.resolve({}) } as Response;
+      }
+      if (url.includes("/health")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
+        } as Response;
+      }
+      return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+    });
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: /Demo admin/ }));
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(screen.getByText("Demo Admin")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+
+    await waitFor(() => expect(screen.getByText("Sign in to your workspace")).toBeInTheDocument());
+    expect(localStorage.getItem("oneai.refresh_token")).toBeNull();
+  });
+});

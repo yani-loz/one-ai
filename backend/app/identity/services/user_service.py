@@ -1,0 +1,151 @@
+"""
+Role: Company-admin user management — create/list/update/deactivate users, strictly
+      scoped to the caller's org. Holds the user-management business logic (rule A5).
+Used by: routes.user_routes; constructed in identity.dependencies on a TENANT session.
+Depends on: user_repository, security.password, identity.schemas.user_schemas,
+            identity.enums, identity.exceptions, identity.models.user.
+Key invariants:
+  - EVERY method takes the caller's org_id (from the verified JWT, via the route) and
+    passes it to org-scoped repository methods. No path can read/mutate another org's
+    user — cross-org targets resolve to UserNotFoundError (-> 404), never a 200-empty
+    or existence leak.
+  - org_id on a created/updated user comes from the caller's token, never the body.
+  - Deactivate is a soft delete (is_active=False); users are never hard-deleted here.
+  - email is globally unique; creating a duplicate raises DuplicateUserError (-> 409),
+    including the concurrent race (IntegrityError -> 409, not 500).
+  - The org's last active company_admin cannot be demoted/deactivated (LastAdminError
+    -> 409) — an org can never be locked out of its own user management. The guard is
+    CONCURRENCY-SAFE: it locks the active-admin rows FOR UPDATE so two simultaneous
+    removals serialize instead of racing to zero admins (DYN-01).
+"""
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from sqlalchemy.exc import IntegrityError
+
+from app.identity.enums import UserRole
+from app.identity.exceptions import (
+    DuplicateUserError,
+    LastAdminError,
+    UserNotFoundError,
+)
+from app.identity.models.user import User
+from app.identity.repositories.user_repository import UserRepository
+from app.identity.schemas.user_schemas import (
+    UserCreateRequest,
+    UserResponse,
+    UserUpdateRequest,
+)
+from app.identity.security.password import hash_password
+
+
+class UserService:
+    """Org-scoped CRUD for company users (company_admin only)."""
+
+    def __init__(self, users: UserRepository) -> None:
+        """Bind to the user repository on the caller's TENANT-scoped session."""
+        self._users = users
+
+    async def list_users(self, org_id: UUID) -> list[UserResponse]:
+        """Return all users in the caller's org (newest first)."""
+        users = await self._users.list_by_org(org_id)
+        return [UserResponse.model_validate(user) for user in users]
+
+    async def create_user(self, org_id: UUID, payload: UserCreateRequest) -> UserResponse:
+        """Create a user in the caller's org from a validated payload.
+
+        Contract: hashes the password (bcrypt), forces org_id to the caller's org,
+        and persists. Returns the created user view.
+
+        Raises:
+            DuplicateUserError: the email already belongs to a user (-> 409).
+        """
+        if await self._users.email_exists(payload.email):
+            raise DuplicateUserError("A user with this email already exists.")
+
+        user = User(
+            org_id=org_id,
+            email=payload.email,
+            full_name=payload.full_name,
+            password_hash=hash_password(payload.password),
+            role=payload.role.value,
+        )
+        try:
+            created = await self._users.add(user)
+        except IntegrityError as exc:
+            # Lost a concurrent race against the users.email UNIQUE constraint after the
+            # pre-check passed: surface the documented 409, not an opaque 500 (AUD-05).
+            raise DuplicateUserError("A user with this email already exists.") from exc
+        return UserResponse.model_validate(created)
+
+    async def update_user(
+        self, org_id: UUID, user_id: UUID, payload: UserUpdateRequest
+    ) -> UserResponse:
+        """Apply a partial update to a user in the caller's org.
+
+        Contract: only the provided fields change; org_id is never mutated.
+
+        Raises:
+            UserNotFoundError: no such user in this org (-> 404; never leaks existence
+                of a user in another org).
+            LastAdminError: the change would strand the org's last active admin (-> 409).
+        """
+        user = await self._users.get_in_org(user_id, org_id)
+        if user is None:
+            raise UserNotFoundError("User not found.")
+
+        await self._guard_last_admin(org_id, user, payload.role, payload.is_active)
+
+        if payload.full_name is not None:
+            user.full_name = payload.full_name
+        if payload.role is not None:
+            user.role = UserRole(payload.role).value
+        if payload.is_active is not None:
+            user.is_active = payload.is_active
+
+        await self._users.add(user)
+        return UserResponse.model_validate(user)
+
+    async def deactivate_user(self, org_id: UUID, user_id: UUID) -> None:
+        """Soft-delete a user in the caller's org (is_active=False).
+
+        Raises:
+            UserNotFoundError: no such user in this org (-> 404).
+            LastAdminError: the user is the org's last active admin (-> 409).
+        """
+        user = await self._users.get_in_org(user_id, org_id)
+        if user is None:
+            raise UserNotFoundError("User not found.")
+        await self._guard_last_admin(org_id, user, new_role=None, new_is_active=False)
+        user.is_active = False
+        await self._users.add(user)
+
+    async def _guard_last_admin(
+        self,
+        org_id: UUID,
+        user: User,
+        new_role: UserRole | None,
+        new_is_active: bool | None,
+    ) -> None:
+        """Block a change that would remove the org's last active company_admin.
+
+        Computes the user's post-change state; if the change turns the org's last active
+        admin into a non-admin or an inactive account, raises LastAdminError (-> 409) so
+        an org can never be locked out of its own user management (AUD-07). The check is
+        concurrency-safe (DYN-01): it locks the active-admin rows FOR UPDATE so two
+        simultaneous removals serialize — the loser re-reads the reduced set and 409s
+        instead of both stranding the org at zero admins.
+        """
+        was_active_admin = user.role == UserRole.company_admin.value and user.is_active
+        if not was_active_admin:
+            return
+        resolved_role = new_role.value if new_role is not None else user.role
+        resolved_active = new_is_active if new_is_active is not None else user.is_active
+        if resolved_role == UserRole.company_admin.value and resolved_active:
+            return
+        # Lock the active-admin set so a concurrent removal can't pass a stale count.
+        active_admin_ids = await self._users.lock_active_admin_ids(org_id)
+        if not any(admin_id != user.id for admin_id in active_admin_ids):
+            raise LastAdminError("Cannot remove the organization's last active administrator.")

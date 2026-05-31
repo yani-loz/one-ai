@@ -1,43 +1,46 @@
-"""Unit tests for app.core.tenant — tenant resolution + context (no DB)."""
+"""
+Unit tests for app.core.tenant — tenant context propagation (no DB).
+
+The X-Org-Id header seam (resolve_org_id) was removed in the identity refactor: org_id
+now comes only from the verified JWT. These tests cover the remaining surface — the
+ContextVar set/get and the missing-context guard.
+"""
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
 import pytest
 
-from app.core import tenant
-from app.core.config import Settings
 from app.core.exceptions import TenantContextMissingError
-from app.core.tenant import get_current_org, resolve_org_id, set_current_org
+from app.core.tenant import get_current_org, set_current_org
 
 
-async def test_resolve_org_id_uses_header_when_present() -> None:
-    org_id = await resolve_org_id(x_org_id="11111111-1111-1111-1111-111111111111")
+def test_get_current_org_without_context_raises() -> None:
+    # A fresh OS thread starts with the ContextVar at its default (None), giving a
+    # context with no tenant bound — independent of what other tests have set.
+    def _read_unbound_org() -> None:
+        get_current_org()
 
-    assert org_id == UUID("11111111-1111-1111-1111-111111111111")
-
-
-async def test_resolve_org_id_falls_back_to_default_in_local() -> None:
-    org_id = await resolve_org_id(x_org_id=None)
-
-    assert str(org_id) == Settings().default_org_id
-
-
-async def test_resolve_org_id_invalid_value_raises() -> None:
-    with pytest.raises(TenantContextMissingError):
-        await resolve_org_id(x_org_id="not-a-uuid")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_read_unbound_org)
+        with pytest.raises(TenantContextMissingError):
+            future.result()
 
 
-async def test_resolve_org_id_missing_in_production_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tenant, "get_settings", lambda: Settings(app_env="production"))
-
-    with pytest.raises(TenantContextMissingError):
-        await resolve_org_id(x_org_id=None)
-
-
-def test_get_current_org_returns_bound_value() -> None:
+def test_set_current_org_then_get_returns_bound_value() -> None:
     org_id = UUID("22222222-2222-2222-2222-222222222222")
+
     set_current_org(org_id)
 
     assert get_current_org() == org_id
+
+
+def test_set_current_org_overwrites_previous_value() -> None:
+    set_current_org(UUID("11111111-1111-1111-1111-111111111111"))
+    second_org = UUID("33333333-3333-3333-3333-333333333333")
+
+    set_current_org(second_org)
+
+    assert get_current_org() == second_org

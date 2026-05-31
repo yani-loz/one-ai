@@ -1,10 +1,14 @@
 """
-Role: FastAPI application factory + composition root. Wires middleware and routers.
+Role: FastAPI application factory + composition root. Wires middleware, routers, and
+      domain exception handlers.
 Used by: uvicorn (app.main:app); tests import the ASGI app.
-Depends on: app.core.config, app.core.database, app.api.routes.*.
+Depends on: app.core.config, app.core.database, app.core.middleware,
+            app.api.routes.*, app.identity.
 Key invariants:
-  - The ONLY place routers and middleware are registered.
+  - The ONLY place routers, middleware, and exception handlers are registered.
   - CORS origins come from settings, never hardcoded.
+  - main.py may import app.identity (it is the composition root, not core) — the
+    strict rule is that app.core must never import app.identity.
 """
 
 from __future__ import annotations
@@ -12,12 +16,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DataError
 
 from app.api.routes.health import router as health_router
 from app.core.config import get_settings
 from app.core.database import engine
+from app.core.middleware import MaxBodySizeMiddleware
+from app.identity import identity_router, register_identity_exception_handlers
 
 
 @asynccontextmanager
@@ -25,6 +33,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: dispose the DB engine cleanly on shutdown."""
     yield
     await engine.dispose()
+
+
+async def _handle_data_error(_request: Request, _exc: Exception) -> JSONResponse:
+    """Map an unexpected bad-data DB error to 422 instead of leaking a 500 (DYN-03).
+
+    Defense in depth behind the request validators: if a value they missed (e.g. an odd
+    encoding) reaches the INSERT and asyncpg raises a DataError, the caller gets a clean
+    422 rather than an opaque Internal Server Error.
+    """
+    return JSONResponse(status_code=422, content={"detail": "Invalid input value."})
 
 
 def create_app() -> FastAPI:
@@ -38,7 +56,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Added last → outermost: reject oversized bodies before anything buffers them.
+    app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
     app.include_router(health_router)
+    app.include_router(identity_router)
+    register_identity_exception_handlers(app)
+    app.add_exception_handler(DataError, _handle_data_error)
     return app
 
 

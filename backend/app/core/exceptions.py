@@ -20,3 +20,12 @@ class TenantContextMissingError(OneAIError):
     Guardrail for the hardest security rule: no query may execute outside a
     tenant scope. In production a missing/unresolvable tenant is a hard failure.
     """
+
+
+class InsecureConfigurationError(OneAIError):
+    """Raised at startup when production runs with a known-insecure default secret.
+
+    Fail-closed guard: the app refuses to boot in production while a dev-default
+    secret (the JWT signing key or the database password) is still in place, rather
+    than silently signing tokens with a publicly-known, forgeable key.
+    """

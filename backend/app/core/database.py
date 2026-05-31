@@ -1,25 +1,31 @@
 """
-Role: Async database engine, session factory, and FastAPI session dependencies.
-Used by: app.api routes/services, tests; the engine is disposed by app.main lifespan.
+Role: Async database engine, session factory, and session helpers (plain + tenant-scoped).
+Used by: app.api routes/services and app.identity; the engine is disposed by
+         app.main lifespan.
 Depends on: app.core.config, app.core.tenant.
 Key invariants:
   - One async engine per process.
-  - get_tenant_session() scopes the DB session to the active org via set_config(),
-    the enforcement seam for Postgres Row-Level Security once policies exist.
+  - scoped_session(org_id) binds the `app.current_org_id` Postgres GUC on EVERY
+    transaction the session opens — the seam Row-Level Security policies bind to.
+    Policies are DEFINED (migration 0003); DB-level enforcement stays inert until the
+    app connects as a non-superuser role (today it connects as superuser `oneai`,
+    which bypasses RLS), so the active control remains the app-layer org_id filter —
+    see docs/FIX_BEFORE_PROD.md. The FastAPI tenant dependency (get_tenant_session)
+    lives in app.identity.dependencies and derives org_id from the verified JWT.
   - expire_on_commit=False so ORM objects remain usable after commit.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import Depends
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.tenant import resolve_org_id, set_current_org
+from app.core.tenant import set_current_org
 
 _settings = get_settings()
 
@@ -28,21 +34,35 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Yield a plain async session (no tenant scope) — for non-tenant operations
-    such as health checks."""
+    """Yield a plain async session (no tenant scope), committing on success.
+
+    For non-tenant operations: health checks, login (no token yet), platform-admin
+    work that spans organizations. This dependency is the unit-of-work boundary —
+    it commits when the request handler returns and rolls back on any exception, so
+    repositories only flush and services hold no transaction logic (rule A5).
+    """
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        else:
+            await session.commit()
 
 
-async def get_tenant_session(
-    org_id: UUID = Depends(resolve_org_id),
-) -> AsyncIterator[AsyncSession]:
-    """Yield a tenant-scoped async session bound to the resolved org_id.
+@asynccontextmanager
+async def scoped_session(org_id: UUID) -> AsyncIterator[AsyncSession]:
+    """Yield a tenant-scoped async session bound to `org_id`.
 
-    The `app.current_org_id` Postgres GUC is (re)applied at the start of EVERY
-    transaction the session opens (see _bind_tenant_scope), so RLS policies — added
-    with the first org_id table — filter every row to the tenant, and a mid-request
-    commit cannot silently drop the scope. Harmless before policies exist.
+    Contract:
+        - Sets the context-local tenant (set_current_org) so get_current_org() works
+          downstream, then opens a session whose every transaction re-applies the
+          `app.current_org_id` GUC via the after_begin listener below.
+        - org_id MUST come from a verified source (the JWT claim) — callers never
+          pass a header or body value here.
+
+    Used as the engine of app.identity.dependencies.get_tenant_session.
     """
     set_current_org(org_id)
     async with SessionLocal() as session:

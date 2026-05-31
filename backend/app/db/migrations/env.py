@@ -1,7 +1,8 @@
 """
 Role: Alembic migration environment — async (asyncpg) engine, online + offline modes.
 Used by: the `alembic` CLI (upgrade/downgrade/revision).
-Depends on: app.core.config (DB URL), app.common.base_model (target metadata).
+Depends on: app.core.config (DB URL), app.common.base_model (target metadata),
+            app.identity.models (registers the identity tables on Base.metadata).
 Key invariants:
   - Uses the SAME async driver as the app (asyncpg); no second sync driver needed.
   - target_metadata = Base.metadata so autogenerate sees every imported model.
@@ -18,6 +19,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.identity.models  # noqa: F401  (registers identity tables on Base.metadata)
 from app.common.base_model import Base
 from app.core.config import get_settings
 

@@ -1,81 +1,58 @@
 /**
- * Role: Root application shell — a living status panel that proves the full stack
- *       is wired (frontend -> backend /health -> Postgres) on the One AI design system.
- * Used by: src/main.tsx.
- * Depends on: motion (entrance animation), the Tailwind aurora theme (index.css),
- *             import.meta.env.VITE_API_URL.
+ * Role: Root route shell — wires the public /login and protected / routes with the
+ *       iOS-style directional page transitions, wrapped in AnimatePresence.
+ * Used by: src/main.tsx (inside BrowserRouter + AuthProvider).
+ * Depends on: react-router-dom (Routes/Route), motion (AnimatePresence),
+ *             ./identity (LoginPage, ProtectedRoute), ./HomePage, ./pageTransition.
+ * Key invariants: screen-level motion.divs are `absolute inset-0` so the incoming and
+ *   outgoing pages overlap during the slide; routing must run inside <BrowserRouter>.
  */
-import { useEffect, useState } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { Route, Routes, useLocation } from "react-router-dom";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+import { HomePage } from "./HomePage";
+import { LoginPage, ProtectedRoute } from "./identity";
+import { useDirectionalTransition } from "./pageTransition";
 
-type HealthState = "checking" | "online" | "offline";
-
-interface HealthResponse {
-  service: string;
-  version: string;
-  database: string;
-}
-
-export function App() {
-  const [state, setState] = useState<HealthState>("checking");
-  const [detail, setDetail] = useState<string>("contacting backend…");
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${API_URL}/health`)
-      .then((response) =>
-        response.ok ? (response.json() as Promise<HealthResponse>) : Promise.reject(response.status),
-      )
-      .then((body) => {
-        if (cancelled) return;
-        setState("online");
-        setDetail(`${body.service} v${body.version} · DB ${body.database}`);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setState("offline");
-        setDetail("backend unreachable");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+/** Wrap a screen in the directional page transition (absolute-positioned overlay). */
+function AnimatedScreen({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <main className="min-h-screen flex items-center justify-center p-10">
-      <motion.section
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
-        className="relative w-full max-w-md rounded-xl border border-white/50 bg-white/65 p-8 shadow-sm backdrop-blur-xl"
-      >
-        <div className="relative mx-auto mb-6 h-16 w-16">
-          <div className="absolute inset-0 animate-aura-pulse rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple blur-md" />
-          <div className="absolute inset-2 rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple" />
-        </div>
-
-        <h1 className="text-center text-h2 font-bold text-brand-gradient">One AI</h1>
-        <p className="mt-1 text-center text-sm text-text-secondary">One Company. One AI.</p>
-
-        <div className="mt-6 flex items-center justify-center gap-2 text-sm">
-          <StatusDot state={state} />
-          <span className="text-text-secondary" data-testid="health-detail">
-            {detail}
-          </span>
-        </div>
-      </motion.section>
-    </main>
+    <motion.div
+      {...useDirectionalTransition()}
+      className="absolute inset-0 flex flex-col overflow-y-auto"
+    >
+      {children}
+    </motion.div>
   );
 }
 
-function StatusDot({ state }: { state: HealthState }) {
-  const tone =
-    state === "online"
-      ? "bg-brand-teal animate-pulse-dot"
-      : state === "offline"
-        ? "bg-brand-red"
-        : "bg-brand-purple animate-pulse-dot";
-  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone}`} aria-label={state} />;
+export function App(): React.JSX.Element {
+  const location = useLocation();
+
+  return (
+    <div className="relative min-h-screen overflow-hidden">
+      <AnimatePresence initial={false}>
+        <Routes location={location} key={location.pathname}>
+          <Route
+            path="/login"
+            element={
+              <AnimatedScreen>
+                <LoginPage />
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/"
+            element={
+              <AnimatedScreen>
+                <ProtectedRoute>
+                  <HomePage />
+                </ProtectedRoute>
+              </AnimatedScreen>
+            }
+          />
+        </Routes>
+      </AnimatePresence>
+    </div>
+  );
 }

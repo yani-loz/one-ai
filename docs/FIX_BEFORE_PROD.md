@@ -1,0 +1,99 @@
+# FIX BEFORE PROD — One AI MVP
+
+> **A running, append-only checklist of things that MUST change before this code touches a production tenant.**
+> Every item is a hard gate, not a nice-to-have. Each carries a one-line *why* and *where* it lives so it can be actioned without re-discovery.
+>
+> **Scope of this file:** the Identity & Access module (auth, tenancy, platform admin) plus the surrounding scaffold posture. It is the deliberate, written record of the security trade-offs we took to ship a demo fast — so none of them silently survive into production.
+>
+> **Companion record:** `docs/audits/2026-05-30_scaffold-setup-and-security-audit.md` documents the scaffold's stubbed-but-not-enforced tenant isolation and the Phase-4 deferrals. This checklist is the *forward* list (what must change), that audit is the *baseline* (what state we shipped). Keep the two consistent — do not contradict them; this file supersedes their deferral notes once an item here is done.
+>
+> **Convention:** `[ ]` = open, `[x]` = done (link the PR). Nothing here is closed until verified in a real environment, not just a passing unit test.
+
+---
+
+## ⛔ Demo credentials — DELETE before production
+
+These accounts exist **only** to make the demo clickable. They are seeded into the database and surfaced on the login page. They are publicly listed in this repo. **Treat them as compromised the moment the repo is shared.** All three, plus the fixed demo org, MUST be removed before any real deployment.
+
+**Demo orgs** (DEV ONLY — seeded by `backend/scripts/seed_identity.py`):
+
+| Name | Slug | Org id (fixed) |
+|---|---|---|
+| `One AI Demo GmbH` | `demo` | `00000000-0000-0000-0000-000000000001` |
+| `Globex Industries GmbH` | `globex` | `00000000-0000-0000-0000-000000000002` |
+
+**Demo accounts** (DEV ONLY):
+
+| Scope | Email | Password |
+|---|---|---|
+| Platform admin | `super@ethera.ai` | `Sup3r-Dev-Only-2026!` |
+| Company admin (demo) | `admin@demo.oneai` | `Adm1n-Dev-Only-2026!` |
+| Member (demo) | `member@demo.oneai` | `Memb3r-Dev-Only-2026!` |
+| Company admin (globex) | `admin@globex.oneai` | `Adm1n-Dev-Only-2026!` |
+| Member (globex) | `member@globex.oneai` | `Memb3r-Dev-Only-2026!` |
+
+**Deletion steps (do ALL of these — do not ship with any one of them remaining):**
+
+- [ ] **Remove the demo seed script and its invocation.** *Why:* the seed inserts the org + all three accounts above with known passwords; if it runs in prod, the platform-admin account is a public backdoor. *Where:* the demo seed lives under the identity module's setup (e.g. `backend/app/identity/` seed/bootstrap helper) and is invoked at container start. Today the only startup hook is the `backend` service `command:` in `docker-compose.yml` (`alembic upgrade head && uvicorn …`) — ensure the seed is **never** wired into the production start path (prod compose target / entrypoint must not call it).
+- [ ] **Delete `frontend/src/identity/DevCredentialsPanel.tsx`.** *Why:* it renders the three demo accounts as click-to-fill buttons on the login page — a literal credentials list shipped to the browser. *Where:* `frontend/src/identity/DevCredentialsPanel.tsx` (isolated in its own file by design so deletion is one step). Header reads `Dev test accounts — remove before production`.
+- [ ] **Remove its usage in `LoginPage.tsx`.** *Why:* deleting the file but leaving the import/render breaks the build *and* a stale copy could be re-added; remove the seam entirely. *Where:* `frontend/src/identity/LoginPage.tsx` (the `<DevCredentialsPanel />` render + its import). Verify `pnpm build` is clean after removal.
+- [ ] **Rotate anything that ever shared these passwords.** *Why:* the strings above are now in git history; treat them as burned even after deletion. *Where:* N/A in code — operational hygiene.
+
+---
+
+## Auth hardening (Identity module)
+
+- [ ] **Rotate `JWT_SECRET` — the dev default must never reach prod.** *Why:* the dev default `'dev-only-insecure-secret-change-me-in-prod'` lets anyone forge a valid access token for any org/role; it is the single most dangerous default in the system. *Where:* `backend/app/core/config.py` (`jwt_secret`, SPEC §6) — supply a strong random secret via env / secret manager in every non-local environment, and fail boot if it is still the default when `app_env == 'production'`.
+- [ ] **Move the refresh token to an `httpOnly` + `Secure` + `SameSite` cookie.** *Why:* the lean SPA currently returns the refresh token in JSON and stores it in `localStorage` (deliberate SPEC §8 trade-off) — readable by any injected script, so one XSS = full account takeover via token exfiltration. Reversing this intentional decision is the hardening. *Where:* `backend/app/identity/routes/auth_routes.py` (set/clear cookie instead of returning `refresh_token` in `TokenPairResponse`) + `frontend/src/identity/authClient.ts` / `AuthProvider.tsx` (stop persisting it; rely on the cookie). Keep the access token in memory only.
+- [ ] **Add login rate-limiting + account lockout / backoff.** *Why:* `POST /auth/login` and `POST /platform/login` are currently unthrottled — open to credential stuffing and brute force. *Where:* `backend/app/identity/services/auth_service.py` + `platform_auth_service.py` (and/or middleware); per-IP and per-account counters with exponential backoff and temporary lockout.
+- [ ] **Add MFA (TOTP / WebAuthn).** *Why:* password-only auth is below the bar for an enterprise system holding a whole company's knowledge; platform admin in particular must be MFA-gated. *Where:* identity services + new `schemas`/`routes`; enforce for `platform_admin` first, then `company_admin`.
+- [ ] **Add enterprise SSO (SAML / OIDC).** *Why:* mid-market DACH buyers require IdP-backed login (Entra ID / Okta / Keycloak) — it is a sales blocker, not a feature. *Where:* new identity sub-package (e.g. `backend/app/identity/sso/`) issuing the same internal token pair after IdP assertion; per-org IdP config.
+- [ ] **Add an access-token denylist for immediate revocation.** *Why:* access tokens are stateless JWTs valid for their full 15-min TTL — today logout/deactivation cannot kill an already-issued access token. *Where:* identity `security/tokens.py` + a fast store (Redis) keyed by `jti`; check it in `dependencies.get_current_principal` / `get_current_platform_admin`. Wire `DELETE /users/{id}` (deactivate) and logout to add the `jti`.
+- [ ] **Replace admin-set passwords with an email-verification + invite flow.** *Why:* `POST /users` and `POST /platform/orgs` currently take a plaintext `password` the admin chooses for the user — the admin learns the user's credential, and there is no proof the email is real. *Where:* `backend/app/identity/services/user_service.py` + `platform_auth_service.py` (issue a single-use invite/verify token; user sets their own password on first login).
+- [ ] **Add a password policy + breach check.** *Why:* nothing enforces length/complexity or rejects known-breached passwords today. *Where:* `backend/app/identity/security/password.py` (or a validator in `schemas`) — minimum length, complexity, and a Have-I-Been-Pwned k-anonymity range check on set/change.
+- [ ] **Revoke the refresh-token reuse family on detected reuse (audit AUD-06).** *Why:* single-use rotation is enforced (a revoked token re-presented → 401), but a detected reuse does not revoke the currently-active descendant chain, so a stolen-then-rotated token's chain survives the victim's later reuse. *Where:* `backend/app/identity/services/token_rotator.py` — on a reuse hit, revoke all unrevoked tokens for `subject_id + subject_type`. **Note:** doing this correctly needs the revoke to **commit** even though the request then returns 401 (the refresh route's session rolls back on the raised error), i.e. an independent transaction — so it pairs naturally with the `audit_log` work (emit a security event). Deferred for that reason; the atomic single-use guarantee itself (AUD-01) is already fixed.
+
+---
+
+## Tenant isolation & data (the hardest rule — `security.md`)
+
+- [ ] **Enforce the (already-defined) Postgres Row-Level Security policy.** *Why:* the `org_isolation` policy on `users` IS now defined (`backend/app/db/migrations/versions/0003_define_rls_policies.py` — `ENABLE ROW LEVEL SECURITY` + `USING/WITH CHECK (org_id = current_setting('app.current_org_id', true)::uuid)`), but it is **currently inert by design**: the app connects as the bootstrap role `oneai`, which is a **SUPERUSER and the table OWNER** (`pg_roles.rolsuper = rolbypassrls = true`) — both bypass RLS unconditionally. So application-level filtering is still the only *active* control, and one missed `WHERE org_id` would leak another company's data with no DB backstop. *Where / how to enforce:* (1) create a dedicated **non-superuser, non-owner** DB role and have the app connect as it; (2) grant it DML on the app tables; (3) give the legitimately-global flows a **bypass path** — `UserRepository.get_by_email` / `get_by_subject_id` (login, refresh, `/auth/me`) and the cross-org onboarding INSERT all run on a GUC-unset session, so they need a separate `BYPASSRLS`/owner connection or a permissive `app.bypass_rls` policy scoped to just those flows; (4) add `FORCE ROW LEVEL SECURITY` only if the app ever connects as the table owner; (5) **verify live** (a passing unit test is not closure): as the enforced role, `SET app.current_org_id = '<orgA>'; SELECT * FROM users;` returns zero org-B rows, and re-prove login / refresh / `/auth/me` / `POST /platform/orgs` still work. Repeat the `ENABLE` + policy for every future tenant-scoped table.
+- [ ] **Remove the `default_org_id` dev convenience.** *Why:* it lets a request resolve a tenant with no authenticated identity — a fail-open path that must not exist once auth is real; org_id must come **only** from the verified JWT claim. *Where:* `backend/app/core/config.py:48` (`default_org_id`), `.env.example` (`DEFAULT_ORG_ID`), and `backend/app/core/tenant.py` (`resolve_org_id`, the `X-Org-Id` header seam — SPEC §6 deletes `resolve_org_id` outright; org now flows from the JWT via `identity/dependencies.get_tenant_session`). Keep the fixed UUID only for the demo seed, which is itself deleted (see top section).
+- [ ] **Confirm every future tenant-scoped table carries `org_id` NOT NULL + an RLS policy.** *Why:* tenant isolation is only as strong as its weakest table; a new feature table without `org_id` + RLS is an invisible leak. *Where:* enforce via `TenantMixin` (`backend/app/common/base_model.py`) on every tenant model **and** a per-table RLS policy in its migration; add the cross-tenant negative test (`testing.md` non-negotiable) the moment each tenant-scoped route/service/repo lands. Platform routes intentionally use a plain (non-tenant) session — that asymmetry is correct, keep it.
+- [ ] **Resolve the cross-tenant email-existence oracle (audit AUD-04).** *Why:* `email` is globally unique, so `POST /users` returns 409-vs-201 depending on whether the address already belongs to a user in **another** tenant — a company-admin can enumerate cross-tenant membership, contradicting the "never reveal existence in another org" invariant. *Where:* `backend/app/identity/repositories/user_repository.py` (`email_exists`, unscoped by design) + `services/user_service.create_user`. **Decision (deferred — global uniqueness kept for now):** mitigate by rate-limiting create attempts + documenting the oracle, **or** switch to per-org uniqueness (`UNIQUE(org_id, email)` + `email_exists_in_org`), which removes it but requires login to resolve the org. Tracked, not yet actioned.
+
+---
+
+## Platform admin domain (separate auth — never sees tenant content)
+
+- [ ] **Keep platform-admin auth physically separate from company auth.** *Why:* platform admin is Ethera staff with global reach; if its token were accepted on company routes (or vice-versa), one compromised staff login would read every tenant. *Where:* enforced by the JWT `aud` claim — `'platform'` vs `'company'` — checked in `backend/app/identity/dependencies.py` (`get_current_platform_admin` rejects `aud='company'` and `get_current_principal` rejects `aud='platform'`). Verify both directions are 401/403, not silently accepted.
+- [ ] **Never let platform admin read tenant content — metadata only.** *Why:* the product promise is data sovereignty; Ethera staff seeing customer conversations/memory is a contract and GDPR breach. *Where:* `backend/app/identity/routes/platform_routes.py` + `services/platform_auth_service.py` — `GET /platform/orgs` returns `OrganizationResponse` (id, name, slug, status, user_count, created_at) and **nothing else**: no content, no costs, no tokens. Audit every future platform endpoint against this rule.
+- [ ] **Add a break-glass + audit mechanism if support access is ever needed.** *Why:* the day support genuinely needs into a tenant, it must be explicit, time-boxed, consented, and fully logged — never an ambient capability. *Where:* future — a dedicated, customer-approved, expiring support-grant flow writing to `audit_log` (see below); do **not** bolt tenant-read onto the platform-admin role.
+- [ ] **Add a platform `GET /platform/me` (rehydrate) endpoint.** *Why:* platform admins are synthesised in-memory on the frontend (there is no `aud='platform'` "me" endpoint), so a hard browser refresh drops them to the login screen and forces re-login. It resolves to a *correct* (unauthenticated) state — no security gap — but it's rough internal-user UX. *Where:* `backend/app/identity/routes/platform_routes.py` (add `GET /platform/me` behind `get_current_platform_admin`) + `frontend/src/identity/AuthProvider.tsx` (rehydrate the platform session on mount instead of synthesising it). **Also (audit AUD-14):** the synthesised platform identity — including `role` — is built client-side from the typed email and is **display-only**; once `/platform/me` exists it must be the role source, and no UI may gate authorization on the client-synthesised role (the docstrings now say so).
+
+---
+
+## Audit & compliance (GDPR / EU AI Act)
+
+- [ ] **Add the append-only `audit_log` table.** *Why:* `security.md` mandates an immutable who/what/when/where trail; without it we cannot prove (or investigate) access — a compliance and incident-response gap. *Where:* new migration + model (likely `backend/app/core/` or a dedicated `audit` module): columns who (subject_id/type), what (action), when (timestamptz), where (entity + IP), details (JSONB); **no UPDATE/DELETE** (DB trigger or revoked grants).
+- [ ] **Log all auth and permission-change events.** *Why:* logins, refreshes, logouts, failed attempts, role changes, user create/deactivate, and org onboarding are exactly the events an auditor and an incident responder need. *Where:* `backend/app/identity/services/*` write to `audit_log` on every state-changing/auth event. Never log passwords, hashes, or raw tokens (`security.md`).
+- [ ] **Implement GDPR data export + delete (right to access / erasure).** *Why:* DACH customers will contractually require per-subject export and deletion; it must be designed in, not retrofitted across the memory layers. *Where:* future cross-module capability spanning identity + the memory/data layers; per-`org_id` and per-user scoped, with the operation itself audited.
+- [ ] **Implement EU AI Act human-oversight (Human-in-the-Loop) controls.** *Why:* HITL is a *foundational constraint* for One AI, not a feature; consequential AI actions need a human-approval seam and a record of who approved what. *Where:* future — a HITL/approval module feeding `audit_log`; the frontend already has the `animate-clari-pulse` "AI needs your approval" affordance reserved for it.
+
+---
+
+## Ops & deployment posture
+
+- [ ] **Enforce TLS 1.3 in transit.** *Why:* tokens and tenant data cross the wire in plaintext today — the dev stack is HTTP-only. *Where:* `docker-compose.yml` exposes plain HTTP (`8000`/`5173`); production must terminate TLS 1.3 at the ingress/reverse proxy (and set `Secure` on the refresh cookie above). `security.md`: TLS 1.3 in transit, AES-256 at rest.
+- [ ] **Lock CORS — fix the wildcard-with-credentials posture.** *Why:* `allow_origins` is already env-restricted, **but** `allow_methods=["*"]` + `allow_headers=["*"]` with `allow_credentials=True` is far broader than needed; tighten methods/headers to the real surface and pin origins to the actual production frontend domains. *Where:* `backend/app/main.py:34-40` (the `CORSMiddleware` block) + `cors_origins` in `config.py` / env.
+- [ ] **Pin the CSP `connect-src` to the real API origin (audit AUD-03 follow-up).** *Why:* `frontend/nginx.conf` now ships security headers including a CSP with `connect-src 'self' https:` — deliberately broad so the SPA can reach an https API at any origin without knowing it at build time. Tighten it to the exact API origin per environment, but **do NOT reduce it to `'self'` alone**: that silently blocks every cross-origin API call, and no test exercises CSP+fetch (the login page makes no request on load), so the breakage would ship undetected. *Where:* `frontend/nginx.conf` (server block + the `/assets/` block, which re-declares the headers).
+- [ ] **Introduce API versioning (`/api/v1`).** *Why:* routes are flat top-level today (`/auth/*`, `/users/*`, `/platform/*`, `/health`); shipping without a version prefix makes the first breaking change painful and uncoordinated with clients. *Where:* `backend/app/main.py` router includes + `backend/app/identity/router.py` (mount the aggregated `identity_router` under `/api/v1`); update `frontend/src/identity/authClient.ts` base path. Decide whether `/health` stays unversioned.
+- [ ] **Move all secrets to Docker secrets / a secret manager.** *Why:* the stack loads secrets from a flat `.env` (`env_file: .env`) — fine for local, not for prod, where `JWT_SECRET`, DB creds, and IdP secrets need managed, rotatable storage. *Where:* `docker-compose.yml` (`backend` service `env_file: .env`) → swap for Docker secrets / Vault / cloud secret manager in the production compose/orchestration; `config.py` stays the single reader.
+
+---
+
+## How to use this file
+
+- Add a row whenever a new dev shortcut, default, or deferred control lands — this is the place those decisions get written down, not lost.
+- Close an item only with a linked PR **and** evidence it holds in a real environment (a green unit test alone is not closure for a security control).
+- Before any production deploy, this file must have **zero open boxes**, or each remaining box must have an explicit, signed-off risk acceptance.

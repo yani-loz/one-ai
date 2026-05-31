@@ -64,6 +64,24 @@ docker compose down
 docker compose down -v
 ```
 
+## Demo data (dev)
+
+A DEV-ONLY seed script populates a fixed demo organization (`One AI Demo GmbH`,
+slug `demo`) with a platform admin, a company admin, and a member. It is
+**idempotent** — safe to re-run; existing rows are skipped — and refuses to run
+when `APP_ENV=production`.
+
+```bash
+# With the stack up (DB reachable), run the seed inside the backend container:
+docker compose exec backend uv run python -m scripts.seed_identity
+```
+
+> ⛔ **The seeded accounts are public backdoors and MUST be removed before
+> production.** The three demo credentials (and the fixed demo org) are listed in
+> [`docs/FIX_BEFORE_PROD.md`](docs/FIX_BEFORE_PROD.md), which tracks every place
+> they live and the steps to delete them — including this seed script. Never run
+> this seed against a real environment.
+
 ## Tenant isolation
 
 `org_id` is the canonical tenant key. Every tenant-scoped model mixes in

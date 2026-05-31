@@ -1,50 +1,56 @@
+/**
+ * Role: Route-shell tests — verifies that an unauthenticated visit to "/" redirects
+ *       to /login, and that the login screen renders inside the App router shell.
+ * Used by: vitest (pnpm test).
+ * Depends on: a live AuthProvider (no router context comes from App itself; tests
+ *   supply MemoryRouter) and a mocked fetch boundary so bootstrap resolves offline.
+ */
 import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { AuthProvider } from "./identity";
 
 function mockFetch(impl: () => Promise<unknown>): void {
-  // `unknown` + double-cast is the canonical way to stand a vi.fn() in for the
-  // structural `fetch` global without re-declaring its full overloaded signature.
   vi.stubGlobal("fetch", vi.fn(impl) as unknown as typeof fetch);
 }
 
-describe("App", () => {
+function renderAppAt(initialPath: string) {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("App route shell", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
-  it("renders the One AI brand while the health probe is pending", () => {
-    mockFetch(() => new Promise(() => {}));
+  it("renders the login screen on the public /login route", async () => {
+    mockFetch(() => Promise.reject(new Error("offline")));
 
-    render(<App />);
+    renderAppAt("/login");
 
-    expect(screen.getByText("One AI")).toBeInTheDocument();
-    expect(screen.getByText("One Company. One AI.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "One AI" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
   });
 
-  it("shows online status when the backend health probe succeeds", async () => {
-    mockFetch(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
-      }),
-    );
+  it("redirects an unauthenticated visit to / onto the login screen", async () => {
+    mockFetch(() => Promise.reject(new Error("offline")));
 
-    render(<App />);
+    renderAppAt("/");
 
-    await waitFor(() =>
-      expect(screen.getByTestId("health-detail")).toHaveTextContent("DB reachable"),
-    );
-  });
-
-  it("shows offline status when the backend is unreachable", async () => {
-    mockFetch(() => Promise.reject(new Error("network down")));
-
-    render(<App />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("health-detail")).toHaveTextContent("unreachable"),
-    );
+    await waitFor(() => expect(screen.getByLabelText("Password")).toBeInTheDocument());
+    expect(screen.getByText("Sign in to your workspace")).toBeInTheDocument();
   });
 });

@@ -17,6 +17,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.identity.enums import OrganizationStatus
 from app.identity.schemas.user_schemas import (
     BcryptPassword,
     LoginPassword,
@@ -65,6 +66,37 @@ class OrganizationOnboardedResponse(BaseModel):
 
     organization: OrganizationResponse
     admin: UserResponse
+
+
+class OrganizationDetailResponse(BaseModel):
+    """One organization's lifecycle detail — metadata + legal hold (governance posture
+    arrives in PC-03b). METADATA ONLY: never tenant content/costs/tokens (SPEC §4)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    slug: str
+    status: str
+    user_count: int
+    legal_hold: bool
+    created_at: datetime
+
+
+class OrganizationStatusUpdateRequest(BaseModel):
+    """Set an organization's lifecycle status (suspend/reactivate/onboarding/offboarded)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: OrganizationStatus
+
+
+class LegalHoldUpdateRequest(BaseModel):
+    """Set or clear an organization's legal hold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    legal_hold: bool
 
 
 class PlatformAdminResponse(BaseModel):

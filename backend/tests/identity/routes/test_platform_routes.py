@@ -12,6 +12,8 @@ logout revokes). Requires Postgres (identity_schema fixture).
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,13 +88,13 @@ async def test_orgs_with_company_token_is_rejected(
 
     response = await client.get("/platform/orgs", headers=headers)
 
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
 
 
 async def test_orgs_without_token_is_rejected(client: AsyncClient) -> None:
     response = await client.get("/platform/orgs")
 
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
 
 
 async def test_onboard_creates_org_and_first_admin(
@@ -287,13 +289,13 @@ async def test_platform_me_with_company_token_is_rejected(
 
     response = await client.get("/platform/me", headers=headers)
 
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
 
 
 async def test_platform_me_without_token_is_rejected(client: AsyncClient) -> None:
     response = await client.get("/platform/me")
 
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
 
 
 async def test_platform_me_unknown_admin_returns_401(client: AsyncClient) -> None:
@@ -301,3 +303,166 @@ async def test_platform_me_unknown_admin_returns_401(client: AsyncClient) -> Non
     response = await client.get("/platform/me", headers=bearer(platform_token()))
 
     assert response.status_code == 401
+
+
+# — PC-03a: org lifecycle detail + status + legal hold —
+
+
+async def test_get_org_detail_returns_metadata_and_legal_hold(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await seed_user(
+        db_session, org_id=org.id, email="m@acme.example", full_name="M", role=UserRole.member
+    )
+    await db_session.commit()
+
+    response = await client.get(f"/platform/orgs/{org.id}", headers=bearer(platform_token()))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["slug"] == "acme"
+    assert body["user_count"] == 1
+    assert body["legal_hold"] is False
+    # Metadata only — no tenant content/cost/token fields.
+    assert set(body.keys()) == {
+        "id", "name", "slug", "status", "user_count", "legal_hold", "created_at",
+    }
+
+
+async def test_get_org_detail_unknown_returns_404(client: AsyncClient) -> None:
+    response = await client.get(f"/platform/orgs/{uuid4()}", headers=bearer(platform_token()))
+
+    assert response.status_code == 404
+
+
+async def test_get_org_detail_with_company_token_is_rejected(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Discriminating: the company token carries a REAL platform admin's id, so only the
+    # aud='platform' guard prevents a 200.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    admin = await seed_platform_admin(db_session, email="super@ethera.ai", full_name="Super")
+    await db_session.commit()
+    headers = bearer(company_token(admin.id, org.id, UserRole.company_admin))
+
+    response = await client.get(f"/platform/orgs/{org.id}", headers=headers)
+
+    assert response.status_code == 401
+
+
+async def test_patch_org_status_suspend_then_reactivate(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await db_session.commit()
+    headers = bearer(platform_token())
+
+    suspend = await client.patch(
+        f"/platform/orgs/{org.id}/status", headers=headers, json={"status": "suspended"}
+    )
+    reactivate = await client.patch(
+        f"/platform/orgs/{org.id}/status", headers=headers, json={"status": "active"}
+    )
+
+    assert suspend.status_code == 200 and suspend.json()["status"] == "suspended"
+    assert reactivate.status_code == 200 and reactivate.json()["status"] == "active"
+
+
+async def test_patch_org_status_invalid_value_returns_422(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await db_session.commit()
+
+    response = await client.patch(
+        f"/platform/orgs/{org.id}/status",
+        headers=bearer(platform_token()),
+        json={"status": "deleted"},  # not an OrganizationStatus value
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_org_legal_hold_sets_flag(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await db_session.commit()
+
+    response = await client.patch(
+        f"/platform/orgs/{org.id}/legal-hold",
+        headers=bearer(platform_token()),
+        json={"legal_hold": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["legal_hold"] is True
+    # Read back through a fresh request to prove the write PERSISTED (not just reflected
+    # off the mutated in-memory object).
+    readback = await client.get(f"/platform/orgs/{org.id}", headers=bearer(platform_token()))
+    assert readback.json()["legal_hold"] is True
+
+
+async def test_patch_org_status_with_company_token_is_rejected(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    admin = await seed_platform_admin(db_session, email="super@ethera.ai", full_name="Super")
+    await db_session.commit()
+    headers = bearer(company_token(admin.id, org.id, UserRole.company_admin))
+
+    response = await client.patch(
+        f"/platform/orgs/{org.id}/status", headers=headers, json={"status": "suspended"}
+    )
+
+    assert response.status_code == 401
+
+
+async def test_patch_org_legal_hold_with_company_token_is_rejected(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # sec-2: legal_hold is the most safety-critical flag (it blocks future erasure), so it
+    # gets the same discriminating audience-rejection guard as the sibling endpoints.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    admin = await seed_platform_admin(db_session, email="super@ethera.ai", full_name="Super")
+    await db_session.commit()
+    headers = bearer(company_token(admin.id, org.id, UserRole.company_admin))
+
+    response = await client.patch(
+        f"/platform/orgs/{org.id}/legal-hold", headers=headers, json={"legal_hold": True}
+    )
+
+    assert response.status_code == 401
+
+
+async def test_patch_status_endpoint_drives_the_login_gate_end_to_end(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # test-1: prove the PATCH write reaches the auth gate end-to-end (not just the response
+    # body). Suspend via the platform endpoint -> company login blocked (403); reactivate ->
+    # login restored (200). A non-committing rewire or a detached-object bug would fail here.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin, password="Adm1n-Dev-Only-2026!",
+    )
+    await db_session.commit()
+    creds = {"email": "admin@acme.example", "password": "Adm1n-Dev-Only-2026!"}
+
+    suspend = await client.patch(
+        f"/platform/orgs/{org.id}/status",
+        headers=bearer(platform_token()),
+        json={"status": "suspended"},
+    )
+    blocked = await client.post("/auth/login", json=creds)
+    await client.patch(
+        f"/platform/orgs/{org.id}/status",
+        headers=bearer(platform_token()),
+        json={"status": "active"},
+    )
+    restored = await client.post("/auth/login", json=creds)
+
+    assert suspend.status_code == 200
+    assert blocked.status_code == 403  # the suspend PATCH persisted to the auth gate
+    assert restored.status_code == 200  # reactivation restores login

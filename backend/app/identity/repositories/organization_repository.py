@@ -1,6 +1,7 @@
 """
 Role: Data access for the Organization table (no business decisions — rule A5).
-Used by: PlatformAuthService (onboard + list orgs). Platform domain only.
+Used by: PlatformAuthService (onboard + list orgs), PlatformOrgService (org detail +
+         status/legal-hold lifecycle). Platform domain only.
 Depends on: app.identity.models.organization. Operates on a plain (non-tenant)
             session passed in by the caller.
 Key invariants:
@@ -61,3 +62,18 @@ class OrganizationRepository:
             .order_by(Organization.created_at)
         )
         return [(org, count) for org, count in result.all()]
+
+    async def get_with_user_count(self, org_id: UUID) -> tuple[Organization, int] | None:
+        """Return (Organization, user_count) for `org_id`, or None if absent.
+
+        The Organization is a live ORM object (mutable) so callers can update its
+        status/legal_hold in place; the user_count is metadata only (no tenant content).
+        """
+        result = await self._session.execute(
+            select(Organization, func.count(User.id))
+            .outerjoin(User, User.org_id == Organization.id)
+            .where(Organization.id == org_id)
+            .group_by(Organization.id)
+        )
+        row = result.one_or_none()
+        return (row[0], row[1]) if row is not None else None

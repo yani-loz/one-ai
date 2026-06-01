@@ -42,6 +42,7 @@ from app.identity.security.tokens import (
 )
 from app.identity.services.auth_service import AuthService
 from app.identity.services.platform_auth_service import PlatformAuthService
+from app.identity.services.platform_org_service import PlatformOrgService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
 from app.identity.services.user_service import UserService
@@ -172,3 +173,10 @@ def get_platform_auth_service(
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
     )
+
+
+def get_platform_org_service(
+    session: AsyncSession = Depends(get_session),
+) -> PlatformOrgService:
+    """Provide PlatformOrgService on a PLAIN session (org lifecycle spans all orgs)."""
+    return PlatformOrgService(organizations=OrganizationRepository(session))

@@ -26,3 +26,16 @@ class SubjectType(StrEnum):
 
     user = "user"
     platform_admin = "platform_admin"
+
+
+class OrganizationStatus(StrEnum):
+    """Lifecycle status of a customer organization (platform-managed).
+
+    Values match the DB CHECK on organizations.status (ck_organizations_status).
+    `suspended` blocks the org's company logins (and refresh) without deleting data.
+    """
+
+    active = "active"
+    suspended = "suspended"
+    onboarding = "onboarding"
+    offboarded = "offboarded"

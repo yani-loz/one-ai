@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from app.identity.exceptions import InvalidCredentialsError, OrganizationNotFoundError
+from app.identity.enums import OrganizationStatus
+from app.identity.exceptions import (
+    InvalidCredentialsError,
+    OrganizationNotFoundError,
+    OrganizationSuspendedError,
+)
+from app.identity.models.organization import Organization
 from app.identity.models.user import User
 from app.identity.principal import Principal
 from app.identity.repositories.organization_repository import OrganizationRepository
@@ -67,11 +73,15 @@ class AuthService:
         if user is None or not user.is_active or not password_ok:
             raise InvalidCredentialsError("Invalid email or password.")
 
+        # Credentials are valid; now gate on the org's lifecycle. A suspended org blocks
+        # login (403) — raised only AFTER the password check, so it is not an enumeration
+        # oracle (an attacker without valid creds can't distinguish a suspended org).
+        organization = await self._load_loginable_org(user.org_id)
         principal = self._principal_for(user)
         access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, COMPANY_AUDIENCE, _USER_SUBJECT_TYPE
         )
-        user_view = await self._build_user_view(user)
+        user_view = self._build_user_view(user, organization)
         return TokenPairResponse(
             access_token=access_token, refresh_token=refresh_token, user=user_view
         )
@@ -88,6 +98,9 @@ class AuthService:
         if user is None or not user.is_active:
             raise InvalidCredentialsError("Invalid email or password.")
 
+        # A suspended org cannot extend its session either — block refresh (403), so a
+        # long-lived refresh token can't outlive a suspension.
+        await self._load_loginable_org(user.org_id)
         principal = self._principal_for(user)
         access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, COMPANY_AUDIENCE, _USER_SUBJECT_TYPE
@@ -113,7 +126,10 @@ class AuthService:
         user = await self._users.get_by_subject_id(user_id)
         if user is None or not user.is_active:
             raise InvalidCredentialsError("Invalid email or password.")
-        return await self._build_user_view(user)
+        organization = await self._organizations.get_by_id(user.org_id)
+        if organization is None:
+            raise OrganizationNotFoundError("Organization for user not found.")
+        return self._build_user_view(user, organization)
 
     @staticmethod
     def _principal_for(user: User) -> Principal:
@@ -125,11 +141,31 @@ class AuthService:
             subject_type=_USER_SUBJECT_TYPE,
         )
 
-    async def _build_user_view(self, user: User) -> AuthenticatedUserResponse:
-        """Assemble AuthenticatedUserResponse, resolving the org name for display."""
-        organization = await self._organizations.get_by_id(user.org_id)
+    async def _load_loginable_org(self, org_id: UUID) -> Organization:
+        """Resolve a user's org for login/refresh, rejecting a SUSPENDED one.
+
+        ONLY `suspended` blocks here — `onboarding` and `offboarded` orgs are allowed to
+        authenticate (offboarded access-cutoff belongs to PC-06's erasure scope, not this
+        gate). The method is named for what it guarantees: the org can log in, not that it
+        is strictly 'active'.
+
+        Raises:
+            OrganizationNotFoundError: the org row is missing (-> 404).
+            OrganizationSuspendedError: the org is suspended (-> 403). Raised only after
+                credentials verify, so it is never a user-enumeration oracle.
+        """
+        organization = await self._organizations.get_by_id(org_id)
         if organization is None:
             raise OrganizationNotFoundError("Organization for user not found.")
+        if organization.status == OrganizationStatus.suspended.value:
+            raise OrganizationSuspendedError("Your organization's access is suspended.")
+        return organization
+
+    @staticmethod
+    def _build_user_view(
+        user: User, organization: Organization
+    ) -> AuthenticatedUserResponse:
+        """Assemble AuthenticatedUserResponse from the user + its (already-loaded) org."""
         return AuthenticatedUserResponse(
             id=user.id,
             email=user.email,

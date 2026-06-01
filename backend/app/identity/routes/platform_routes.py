@@ -2,9 +2,10 @@
 Role: Platform-admin endpoints (/platform/*) — SEPARATE auth domain. Routes parse +
       delegate + return (A5).
 Used by: app.identity.router (aggregated into identity_router).
-Depends on: identity.dependencies (PlatformAuthService provider, platform-admin gate),
-            identity.schemas.platform_schemas, identity.schemas.auth_schemas,
-            identity.services.platform_auth_service.
+Depends on: identity.dependencies (PlatformAuthService + PlatformOrgService providers,
+            platform-admin gate), identity.schemas.platform_schemas,
+            identity.schemas.auth_schemas, identity.services.platform_auth_service,
+            identity.services.platform_org_service.
 Key invariants:
   - /platform/login, /platform/refresh and /platform/logout are public (they present or
     issue tokens directly). /platform/me and /platform/orgs require a verified platform
@@ -12,18 +13,22 @@ Key invariants:
     with 401, and vice versa on company endpoints.
   - Refresh is single-use rotation scoped to subject_type='platform_admin': a company
     refresh token presented to /platform/refresh is rejected (401, domain mismatch).
-  - GET /platform/orgs returns METADATA ONLY (no tenant content); GET /platform/me returns
-    the admin's own identity only.
+  - GET /platform/orgs[/{id}] returns METADATA ONLY (no tenant content); the status +
+    legal-hold PATCHes are metadata lifecycle, not content. GET /platform/me returns the
+    admin's own identity only.
   - No business logic here.
 """
 
 from __future__ import annotations
+
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
 from app.identity.dependencies import (
     get_current_platform_admin,
     get_platform_auth_service,
+    get_platform_org_service,
 )
 from app.identity.principal import Principal
 from app.identity.schemas.auth_schemas import (
@@ -32,13 +37,17 @@ from app.identity.schemas.auth_schemas import (
     TokenPairResponse,
 )
 from app.identity.schemas.platform_schemas import (
+    LegalHoldUpdateRequest,
     OrganizationCreateRequest,
+    OrganizationDetailResponse,
     OrganizationOnboardedResponse,
     OrganizationResponse,
+    OrganizationStatusUpdateRequest,
     PlatformAdminResponse,
     PlatformLoginRequest,
 )
 from app.identity.services.platform_auth_service import PlatformAuthService
+from app.identity.services.platform_org_service import PlatformOrgService
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -119,3 +128,35 @@ async def list_organizations(
 ) -> list[OrganizationResponse]:
     """List all organizations as metadata (no tenant content)."""
     return await service.list_organizations()
+
+
+@router.get("/orgs/{org_id}", response_model=OrganizationDetailResponse)
+async def get_organization_detail(
+    org_id: UUID,
+    _admin: Principal = Depends(get_current_platform_admin),
+    service: PlatformOrgService = Depends(get_platform_org_service),
+) -> OrganizationDetailResponse:
+    """Return one organization's lifecycle detail (metadata + legal hold)."""
+    return await service.get_detail(org_id)
+
+
+@router.patch("/orgs/{org_id}/status", response_model=OrganizationDetailResponse)
+async def update_organization_status(
+    org_id: UUID,
+    payload: OrganizationStatusUpdateRequest,
+    _admin: Principal = Depends(get_current_platform_admin),
+    service: PlatformOrgService = Depends(get_platform_org_service),
+) -> OrganizationDetailResponse:
+    """Set an organization's lifecycle status (suspend/reactivate/onboarding/offboarded)."""
+    return await service.set_status(org_id, payload.status)
+
+
+@router.patch("/orgs/{org_id}/legal-hold", response_model=OrganizationDetailResponse)
+async def update_organization_legal_hold(
+    org_id: UUID,
+    payload: LegalHoldUpdateRequest,
+    _admin: Principal = Depends(get_current_platform_admin),
+    service: PlatformOrgService = Depends(get_platform_org_service),
+) -> OrganizationDetailResponse:
+    """Set or clear an organization's legal hold."""
+    return await service.set_legal_hold(org_id, payload.legal_hold)

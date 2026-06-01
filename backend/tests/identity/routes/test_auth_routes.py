@@ -60,6 +60,86 @@ async def test_login_overlong_password_returns_422(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+async def test_login_suspended_org_returns_403(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # PC-03a: valid credentials but a suspended org -> 403 (login blocked), not a token pair.
+    org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
+    await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin, password=_PASSWORD,
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+
+    assert response.status_code == 403
+
+
+async def test_login_suspended_org_wrong_password_stays_401_no_oracle(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Suspension is revealed ONLY to someone with valid credentials: a WRONG password on a
+    # suspended org must still be a GENERIC 401, never a 403 (no enumeration oracle).
+    org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
+    await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin, password=_PASSWORD,
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": "wrong"}
+    )
+
+    assert response.status_code == 401
+
+
+async def test_refresh_blocked_after_org_suspended(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # A suspension can't be outlived by a long-lived refresh token: once suspended, refresh
+    # is blocked (403) so the session can't be extended.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin, password=_PASSWORD,
+    )
+    await db_session.commit()
+    login = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+    refresh_token = login.json()["refresh_token"]
+    org.status = "suspended"
+    await db_session.commit()
+
+    response = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+
+    assert response.status_code == 403
+
+
+async def test_me_with_valid_token_succeeds_even_when_org_suspended(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The deliberate asymmetry: login + refresh BLOCK a suspended org, but a still-valid
+    # access token keeps working at /auth/me until it lapses (short TTL). Pin it so a future
+    # "consistency" change can't silently break valid mid-session tokens.
+    org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
+    user = await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin,
+    )
+    await db_session.commit()
+    headers = bearer(company_token(user.id, org.id, UserRole.company_admin))
+
+    response = await client.get("/auth/me", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "admin@acme.example"
+
+
 async def test_login_wrong_password_returns_401_generic(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

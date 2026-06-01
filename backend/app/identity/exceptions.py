@@ -43,6 +43,15 @@ class PermissionDeniedError(IdentityError):
     """Authenticated subject lacks the role required for this operation."""
 
 
+class OrganizationSuspendedError(IdentityError):
+    """The user's organization is suspended — login and refresh are blocked (-> 403).
+
+    Raised only AFTER the password verifies, so it is never a user-enumeration oracle:
+    an attacker without valid credentials can't distinguish a suspended org from any
+    other failed login.
+    """
+
+
 # — 404 Not Found —
 class UserNotFoundError(IdentityError):
     """No user with the given id exists within the caller's org scope."""

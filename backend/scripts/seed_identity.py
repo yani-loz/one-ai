@@ -5,9 +5,9 @@ Role: DEV-ONLY idempotent seed for the Identity module — inserts the demo
 Used by: developers/CI demo setup. Run as a module from `backend/`:
          `docker compose exec backend uv run python -m scripts.seed_identity`
          (or `uv run python -m scripts.seed_identity` inside the backend container).
-Depends on: app.core.config (settings + fixed default_org_id), app.core.database
-            (SessionLocal, scoped_session, engine), app.identity models, repositories,
-            and security.password.hash_password.
+Depends on: app.core.config (settings), app.core.database (SessionLocal,
+            scoped_session, engine), app.identity models, repositories, and
+            security.password.hash_password.
 Key invariants:
   - DEV ONLY. These accounts are public backdoors (listed in docs/FIX_BEFORE_PROD.md)
     and MUST be removed before any production deploy — see that checklist. The script
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from uuid import UUID
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal, engine, scoped_session
@@ -43,11 +42,6 @@ from app.identity.security.password import hash_password
 _ADMIN_PASSWORD = "Adm1n-Dev-Only-2026!"
 _MEMBER_PASSWORD = "Memb3r-Dev-Only-2026!"
 
-# Second demo org id — fixed for predictability (the first comes from
-# settings.default_org_id). Both are clearly reserved low UUIDs.
-_SECOND_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
-
-
 @dataclass(frozen=True)
 class _DemoUser:
     """A demo company user to seed into a demo org (DEV ONLY)."""
@@ -62,7 +56,6 @@ class _DemoUser:
 class _DemoCompany:
     """A demo organization plus the company users to seed into it (DEV ONLY)."""
 
-    org_id: UUID
     name: str
     slug: str
     users: tuple[_DemoUser, ...]
@@ -103,20 +96,13 @@ def _company_users(slug: str) -> tuple[_DemoUser, ...]:
 
 
 def _demo_companies() -> tuple[_DemoCompany, ...]:
-    """Return the demo companies to seed (the first org id comes from settings)."""
-    first_org_id = UUID(get_settings().default_org_id)
+    """Return the demo companies to seed. Their ids are server-generated random UUIDs
+    (gen_random_uuid()) — exactly like a real onboarded company — so the dev environment
+    has no guessable/enumerable org ids, mirroring production."""
     return (
+        _DemoCompany(name="One AI Demo GmbH", slug="demo", users=_company_users("demo")),
         _DemoCompany(
-            org_id=first_org_id,
-            name="One AI Demo GmbH",
-            slug="demo",
-            users=_company_users("demo"),
-        ),
-        _DemoCompany(
-            org_id=_SECOND_ORG_ID,
-            name="Globex Industries GmbH",
-            slug="globex",
-            users=_company_users("globex"),
+            name="Globex Industries GmbH", slug="globex", users=_company_users("globex")
         ),
     )
 
@@ -164,10 +150,10 @@ async def _seed_company(company: _DemoCompany) -> None:
         organizations = OrganizationRepository(session)
         existing = await organizations.get_by_slug(company.slug)
         if existing is None:
-            await organizations.add(
-                Organization(id=company.org_id, name=company.name, slug=company.slug)
+            created = await organizations.add(
+                Organization(name=company.name, slug=company.slug)
             )
-            resolved_org_id = company.org_id
+            resolved_org_id = created.id  # server-generated random UUID
             print(f"  [created] organization  {company.name!r} (slug={company.slug})")
         else:
             resolved_org_id = existing.id

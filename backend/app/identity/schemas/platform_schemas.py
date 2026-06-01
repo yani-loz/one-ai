@@ -15,10 +15,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.identity.schemas.user_schemas import (
     BcryptPassword,
+    LoginPassword,
     NormalizedEmail,
     SafeName,
     UserResponse,
@@ -31,7 +32,7 @@ class PlatformLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: NormalizedEmail
-    password: str = Field(min_length=1, max_length=256)
+    password: LoginPassword
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -64,3 +65,18 @@ class OrganizationOnboardedResponse(BaseModel):
 
     organization: OrganizationResponse
     admin: UserResponse
+
+
+class PlatformAdminResponse(BaseModel):
+    """A platform admin's own identity, returned by GET /platform/me.
+
+    The real server-verified identity (replacing the frontend's email-synthesised stand-in);
+    no org fields — a platform admin has global scope, not an org row. Never includes the
+    password hash.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    email: EmailStr
+    full_name: str

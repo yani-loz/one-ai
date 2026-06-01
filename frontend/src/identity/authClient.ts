@@ -10,19 +10,29 @@
  * Key invariants:
  *   - The access token NEVER touches localStorage (XSS-exposure reduction). Only the
  *     COMPANY refresh token is persisted; the high-privilege PLATFORM refresh token is
- *     NEVER persisted (platformLogin calls setTokens(tokens, false)) — so an injected
- *     script can never read a 7-day Ethera-staff credential from storage.
+ *     kept IN MEMORY ONLY (never localStorage) — used for /platform/refresh and
+ *     /platform/logout, but gone on reload, so an injected script can never read a
+ *     7-day Ethera-staff credential from storage.
+ *   - `performRefresh` / `logout` are domain-aware: a platform session rotates/revokes
+ *     via /platform/*; a company session via /auth/* (its refresh token in localStorage).
  *   - `authorizedFetch` retries a 401 at most ONCE, and never tries to refresh the
  *     /auth/refresh or /auth/login calls themselves (no infinite loop).
  *   - A failed refresh clears the whole session so callers fall back to /login.
  */
-import type { AuthUser, CompanyLoginResponse, TokenPair } from "./types";
+import type { AuthUser, CompanyLoginResponse, PlatformAdminView, TokenPair } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const REFRESH_STORAGE_KEY = "oneai.refresh_token";
 
 /** Access token lives only in module memory — gone on hard refresh by design. */
 let accessTokenInMemory: string | null = null;
+
+/**
+ * Platform refresh token — kept in MEMORY ONLY (never localStorage) so the
+ * high-privilege platform session can refresh/log out within a tab without exposing the
+ * credential to XSS. Null for a company session (whose refresh lives in localStorage).
+ */
+let platformRefreshInMemory: string | null = null;
 
 /** Raised when an auth HTTP call fails; carries the status for caller mapping. */
 export class AuthRequestError extends Error {
@@ -44,25 +54,27 @@ export function getStoredRefreshToken(): string | null {
  * Replace the in-memory access token and (optionally) the persisted refresh token.
  *
  * Contract: pass `null` to clear the session (logout / refresh failure). With a token
- * pair, the access token always goes to memory; `persistRefresh` decides whether the
- * refresh token is written to localStorage. Company logins persist it (so the session
+ * pair, the access token always goes to memory; `persistRefresh` decides where the
+ * refresh token lives. Company logins persist it to localStorage (so the session
  * rehydrates on reload). The platform login passes `false`: the platform refresh token
- * is NOT persisted — it is discarded client-side, so a platform session lasts one
- * access-token lifetime until /platform/refresh lands (PR-2, AUD-14). This keeps the
- * high-privilege platform credential out of XSS-readable storage.
+ * is held in MEMORY only (never localStorage) so it survives in-tab refresh/logout but
+ * is gone on reload — keeping the high-privilege credential out of XSS-readable storage.
  */
 export function setTokens(tokens: TokenPair | null, persistRefresh = true): void {
   if (tokens === null) {
     accessTokenInMemory = null;
+    platformRefreshInMemory = null;
     localStorage.removeItem(REFRESH_STORAGE_KEY);
     return;
   }
   accessTokenInMemory = tokens.access_token;
   if (persistRefresh) {
+    platformRefreshInMemory = null;
     localStorage.setItem(REFRESH_STORAGE_KEY, tokens.refresh_token);
   } else {
-    // Platform session: do not persist the platform refresh token, and clear any stale
-    // company token so the two domains never share localStorage state.
+    // Platform session: hold the refresh token in MEMORY only (for /platform/refresh +
+    // /platform/logout) and clear any stale company token from localStorage.
+    platformRefreshInMemory = tokens.refresh_token;
     localStorage.removeItem(REFRESH_STORAGE_KEY);
   }
 }
@@ -92,13 +104,12 @@ export async function login(email: string, password: string): Promise<AuthUser> 
 }
 
 /**
- * Log a platform admin in via POST /platform/login and store the token pair.
+ * Log a platform admin in via POST /platform/login and store the token pair in memory.
  *
- * Contract: /platform/login returns tokens only (no user object, no /platform/me),
- * so the caller synthesises the in-memory admin identity from the entered email. The
- * platform refresh token is NOT persisted (setTokens(tokens, false)) — kept out of
- * localStorage so it can never be exfiltrated by injected script. Throws
- * AuthRequestError (401) on invalid credentials.
+ * Contract: /platform/login returns tokens only (no user object); the caller resolves the
+ * real admin identity separately via GET /platform/me (fetchCurrentPlatformAdmin). The
+ * platform refresh token is held in MEMORY only (setTokens(tokens, false)), never
+ * localStorage. Throws AuthRequestError (401) on invalid credentials.
  */
 export async function platformLogin(email: string, password: string): Promise<void> {
   const response = await fetch(`${API_URL}/platform/login`, {
@@ -107,7 +118,7 @@ export async function platformLogin(email: string, password: string): Promise<vo
     body: JSON.stringify({ email, password }),
   });
   const tokens = await parseJsonOrThrow<TokenPair>(response);
-  setTokens(tokens, false); // in-memory access only — never persist the platform refresh token
+  setTokens(tokens, false); // store in memory only — the platform refresh token is never persisted
 }
 
 /**
@@ -118,11 +129,13 @@ export async function platformLogin(email: string, password: string): Promise<vo
 let refreshInFlight: Promise<string> | null = null;
 
 /**
- * Rotate the stored refresh token via POST /auth/refresh.
+ * Rotate the active session's refresh token. Domain-aware: a PLATFORM session rotates via
+ * POST /platform/refresh (in-memory token); a COMPANY session via POST /auth/refresh
+ * (localStorage token).
  *
- * Contract: returns the fresh access token on success and persists the rotated pair.
- * Concurrent callers share ONE in-flight rotation (no double-rotation). Throws
- * AuthRequestError when there is no stored token or the server rejects it
+ * Contract: returns the fresh access token on success and stores the rotated pair in the
+ * same place. Concurrent callers share ONE in-flight rotation (no double-rotation).
+ * Throws AuthRequestError when there is no token or the server rejects it
  * (revoked/expired/unknown -> 401); the session is cleared on failure.
  */
 export function refreshTokens(): Promise<string> {
@@ -135,6 +148,23 @@ export function refreshTokens(): Promise<string> {
 }
 
 async function performRefresh(): Promise<string> {
+  // Platform session: rotate via /platform/refresh using the in-memory platform token.
+  if (platformRefreshInMemory !== null) {
+    const response = await fetch(`${API_URL}/platform/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: platformRefreshInMemory }),
+    });
+    if (!response.ok) {
+      setTokens(null);
+      throw new AuthRequestError(response.status, "Platform refresh rejected");
+    }
+    const tokens = (await response.json()) as TokenPair;
+    setTokens(tokens, false); // rotate the in-memory platform pair (still not persisted)
+    return tokens.access_token;
+  }
+
+  // Company session: rotate via /auth/refresh using the localStorage token.
   const stored = getStoredRefreshToken();
   if (stored === null) {
     throw new AuthRequestError(401, "No refresh token");
@@ -154,23 +184,32 @@ async function performRefresh(): Promise<string> {
 }
 
 /**
- * Revoke the stored refresh token server-side (POST /auth/logout) and clear state.
+ * Revoke the active session's refresh token server-side and clear local state.
+ * Domain-aware: a platform session hits POST /platform/logout (in-memory token), a
+ * company session POST /auth/logout (localStorage token).
  *
- * Contract: best-effort — local session is cleared even if the network call fails,
+ * Contract: best-effort — the local session is cleared even if the network call fails,
  * so the user is always logged out locally.
  */
 export async function logout(): Promise<void> {
-  const stored = getStoredRefreshToken();
-  if (stored !== null) {
-    try {
+  const platformRefresh = platformRefreshInMemory;
+  const companyRefresh = getStoredRefreshToken();
+  try {
+    if (platformRefresh !== null) {
+      await fetch(`${API_URL}/platform/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: platformRefresh }),
+      });
+    } else if (companyRefresh !== null) {
       await fetch(`${API_URL}/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: stored }),
+        body: JSON.stringify({ refresh_token: companyRefresh }),
       });
-    } catch {
-      // Network failure on logout must not strand the user in a logged-in UI.
     }
+  } catch {
+    // Network failure on logout must not strand the user in a logged-in UI.
   }
   setTokens(null);
 }
@@ -185,6 +224,19 @@ export async function logout(): Promise<void> {
 export async function fetchCurrentUser(): Promise<AuthUser> {
   const response = await authorizedFetch(`${API_URL}/auth/me`);
   return parseJsonOrThrow<AuthUser>(response);
+}
+
+/**
+ * Fetch the current platform admin via GET /platform/me, attaching the Bearer token and
+ * refreshing once on 401. Returns the server-verified identity (replacing the prior
+ * email-synthesised stand-in).
+ *
+ * Contract: returns the PlatformAdminView on success. Throws AuthRequestError (401) when
+ * no valid platform session can be established.
+ */
+export async function fetchCurrentPlatformAdmin(): Promise<PlatformAdminView> {
+  const response = await authorizedFetch(`${API_URL}/platform/me`);
+  return parseJsonOrThrow<PlatformAdminView>(response);
 }
 
 /**

@@ -19,6 +19,8 @@ Key invariants:
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy.exc import IntegrityError
 
 from app.identity.enums import UserRole
@@ -37,6 +39,7 @@ from app.identity.schemas.platform_schemas import (
     OrganizationCreateRequest,
     OrganizationOnboardedResponse,
     OrganizationResponse,
+    PlatformAdminResponse,
 )
 from app.identity.schemas.user_schemas import UserResponse
 from app.identity.security.password import (
@@ -119,6 +122,21 @@ class PlatformAuthService:
     async def logout(self, raw_refresh_token: str) -> None:
         """Revoke the presented platform refresh token (idempotent)."""
         await self._token_rotator.revoke(raw_refresh_token)
+
+    async def build_admin_view_by_id(self, admin_id: UUID) -> PlatformAdminResponse:
+        """Build the /platform/me view for the verified admin id from the access token.
+
+        Contract: `admin_id` comes from a signature+audience('platform')+expiry-verified
+        JWT, so resolving by id (no org filter — platform admins are global) is safe.
+
+        Raises:
+            InvalidCredentialsError: the admin no longer exists or was deactivated (the
+                token outlived the account) — mapped to 401.
+        """
+        admin = await self._platform_admins.get_by_id(admin_id)
+        if admin is None or not admin.is_active:
+            raise InvalidCredentialsError("Invalid email or password.")
+        return PlatformAdminResponse.model_validate(admin)
 
     async def onboard_organization(
         self, payload: OrganizationCreateRequest

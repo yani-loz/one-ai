@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.identity.enums import UserRole
-from app.identity.schemas.user_schemas import NormalizedEmail
+from app.identity.schemas.user_schemas import LoginPassword, NormalizedEmail
 
 
 class LoginRequest(BaseModel):
@@ -25,7 +25,7 @@ class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: NormalizedEmail
-    password: str = Field(min_length=1, max_length=256)
+    password: LoginPassword
 
 
 class RefreshRequest(BaseModel):

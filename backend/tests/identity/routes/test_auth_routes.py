@@ -50,6 +50,16 @@ async def test_login_valid_returns_pair_and_user(
     assert body["user"]["org_name"] == "Acme"
 
 
+async def test_login_overlong_password_returns_422(client: AsyncClient) -> None:
+    # N-04 (TC-PC-013): an over-72-byte login password is rejected at the schema boundary
+    # (422), not run through bcrypt and swallowed into a 401 — parity with user-create.
+    response = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": "x" * 73}
+    )
+
+    assert response.status_code == 422
+
+
 async def test_login_wrong_password_returns_401_generic(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

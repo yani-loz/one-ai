@@ -101,6 +101,15 @@ describe("LoginPage", () => {
             Promise.resolve({ access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
         } as Response;
       }
+      // After login, AuthProvider resolves the real identity via GET /platform/me.
+      if (url.includes("/platform/me")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ id: "pa-1", email: "super@ethera.ai", full_name: "Super" }),
+        } as Response;
+      }
       // The console loads the company list on mount — return an empty fleet.
       if (url.includes("/platform/orgs")) {
         return { ok: true, status: 200, json: () => Promise.resolve([]) } as Response;
@@ -119,6 +128,45 @@ describe("LoginPage", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/platform/login"))).toBe(
       true,
     );
+  });
+
+  it("test_platform_login_succeeds_but_me_fails_clears_session_and_stays_on_login", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const { url } = recordedCall(input, init);
+      if (url.includes("/platform/login")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
+        } as Response;
+      }
+      if (url.includes("/platform/me")) {
+        return { ok: false, status: 500, json: () => Promise.resolve({}) } as Response;
+      }
+      if (url.includes("/platform/logout")) {
+        return { ok: true, status: 204, json: () => Promise.resolve({}) } as Response;
+      }
+      return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
+    });
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Sign in as platform admin" }));
+    await user.type(screen.getByLabelText("Email"), "super@ethera.ai");
+    await user.type(screen.getByLabelText("Password"), "pw");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    // /platform/me failed after login -> stay on login with a connectivity message (not a
+    // misleading bad-password), tear down the half-open session (logout called + storage
+    // cleared), and never navigate to the console.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn't reach the server/);
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Companies" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("oneai.refresh_token")).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/platform/logout")),
+    ).toBe(true);
   });
 
   it("test_successful_company_login_routes_to_home_with_greeting", async () => {

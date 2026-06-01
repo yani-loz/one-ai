@@ -36,3 +36,10 @@ export interface TokenPair {
 export interface CompanyLoginResponse extends TokenPair {
   user: AuthUser;
 }
+
+/** The platform admin's own identity, returned by GET /platform/me. */
+export interface PlatformAdminView {
+  id: string;
+  email: string;
+  full_name: string;
+}

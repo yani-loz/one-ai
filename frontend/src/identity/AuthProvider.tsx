@@ -8,14 +8,16 @@
  *   - `status` is `loading` until the mount-time bootstrap resolves; ProtectedRoute
  *     must wait on `loading` and NOT redirect, or a hard refresh flickers to /login.
  *   - The access token is never stored here (authClient owns it, in memory).
- *   - Platform admins are synthesised in memory (no /platform/me) and do not survive
- *     a hard refresh — they re-login (acceptable per spec: no rehydrate endpoint). The
- *     synthesised identity (incl. role) is DISPLAY-ONLY; never gate authorization on it
- *     (the server enforces access via the JWT aud='platform' claim).
+ *   - Platform admins resolve their REAL identity from GET /platform/me on login (no
+ *     more email synthesis). Their tokens live in memory only, so the session does NOT
+ *     survive a hard refresh — they re-login (a deliberate security choice: no
+ *     high-privilege credential is persisted). The role is still server-authoritative
+ *     via the JWT aud='platform' claim; client-side role gates UX only.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
+  fetchCurrentPlatformAdmin,
   fetchCurrentUser,
   getStoredRefreshToken,
   login as loginRequest,
@@ -24,26 +26,6 @@ import {
 } from "./authClient";
 import { AuthContext, type AuthContextValue, type AuthStatus } from "./authContext";
 import type { AuthUser } from "./types";
-
-/**
- * Build the minimal in-memory identity for a platform admin (no /platform/me).
- *
- * SECURITY: this identity — including `role` — is DISPLAY-ONLY, derived from the typed
- * email, not a verified server response. It must never back an authorization decision;
- * access control is enforced server-side by the JWT aud='platform' claim. A real
- * GET /platform/me (docs/FIX_BEFORE_PROD.md) should replace this synthesis (AUD-14).
- */
-function synthesizePlatformAdmin(email: string): AuthUser {
-  const namePart = email.split("@")[0] ?? email;
-  return {
-    id: "platform-admin",
-    email,
-    full_name: namePart,
-    role: "platform_admin",
-    org_id: null,
-    org_name: null,
-  };
-}
 
 /**
  * Provide the auth context to the tree and run the mount-time session bootstrap.
@@ -96,7 +78,22 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const platformLogin = useCallback(async (email: string, password: string): Promise<void> => {
     bootstrapSuperseded.current = true;
     await platformLoginRequest(email, password);
-    setUser(synthesizePlatformAdmin(email));
+    // Resolve the REAL identity from the server (no more email synthesis) — AUD-14 closed.
+    // If /platform/me fails after login already stored an in-memory platform token, tear
+    // down that half-open session (best-effort server revoke) before surfacing the error,
+    // so no orphaned high-privilege token lingers.
+    const admin = await fetchCurrentPlatformAdmin().catch(async (error: unknown) => {
+      await logoutRequest();
+      throw error;
+    });
+    setUser({
+      id: admin.id,
+      email: admin.email,
+      full_name: admin.full_name,
+      role: "platform_admin",
+      org_id: null,
+      org_name: null,
+    });
     setStatus("authenticated");
   }, []);
 

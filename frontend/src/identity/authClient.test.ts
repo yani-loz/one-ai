@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AuthRequestError,
+  authorizedFetch,
   fetchCurrentUser,
   getStoredRefreshToken,
   login,
@@ -87,6 +88,44 @@ describe("platformLogin", () => {
     expect(String(calledUrl)).toContain("/platform/login");
     // sec-1: the high-privilege platform refresh token must NEVER reach localStorage
     // (XSS-exfil exposure); the platform session is in-memory only.
+    expect(getStoredRefreshToken()).toBeNull();
+  });
+});
+
+describe("platform session (domain-aware refresh + logout)", () => {
+  it("test_platform_session_refreshes_via_platform_endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
+    );
+    await platformLogin("super@ethera.ai", "pw");
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(401, {})) // protected call -> stale access token
+      .mockResolvedValueOnce(
+        jsonResponse(200, { access_token: "pa2", refresh_token: "pr2", token_type: "bearer" }),
+      ) // /platform/refresh rotation
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true })); // replayed protected call
+
+    const response = await authorizedFetch("http://test/platform/orgs");
+
+    expect(response.status).toBe(200);
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/platform/refresh"))).toBe(true);
+    // It must NOT fall back to the company refresh endpoint for a platform session.
+    expect(urls.some((url) => url.includes("/auth/refresh"))).toBe(false);
+  });
+
+  it("test_platform_logout_revokes_via_platform_endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
+    );
+    await platformLogin("super@ethera.ai", "pw");
+    fetchMock.mockResolvedValueOnce(jsonResponse(204, {}));
+
+    await logout();
+
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/platform/logout"))).toBe(true);
     expect(getStoredRefreshToken()).toBeNull();
   });
 });

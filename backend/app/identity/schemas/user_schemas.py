@@ -44,6 +44,15 @@ BcryptPassword = Annotated[
     str, Field(min_length=8, max_length=128), AfterValidator(_within_bcrypt_byte_limit)
 ]
 
+# Login password: non-empty, <=128 chars AND <=72 UTF-8 bytes (bcrypt's hard input limit).
+# Unlike BcryptPassword it imposes NO 8-char minimum — login must accept any attempt and let
+# the password check fail generically; the byte cap is defense-in-depth parity so an
+# over-72-byte login is a clean 422 at the boundary instead of relying on verify_password
+# swallowing bcrypt's ValueError into a 401 (testing finding N-04 / TC-PC-013).
+LoginPassword = Annotated[
+    str, Field(min_length=1, max_length=128), AfterValidator(_within_bcrypt_byte_limit)
+]
+
 _DEL = 0x7F
 
 

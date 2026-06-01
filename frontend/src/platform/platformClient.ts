@@ -10,9 +10,10 @@
  *     and a 401 triggers one refresh attempt (token logic stays owned by authClient).
  *   - GET /platform/orgs returns METADATA ONLY — this client never requests tenant
  *     content, mirroring the backend's content-blind platform domain.
- *   - Known gap (AUD-14, closed in PR-2): the refresh-on-401 path currently rotates via
- *     the COMPANY /auth/refresh, which rejects a platform token — so a platform session
- *     effectively lasts one access-token lifetime. Callers surface that as a re-login.
+ *   - Refresh-on-401 is domain-aware (authClient.performRefresh): a platform session
+ *     rotates via POST /platform/refresh using the in-memory platform token, so the
+ *     session survives in-tab — but NOT a hard refresh (platform tokens are in-memory
+ *     only by design). A genuinely lapsed session surfaces as a re-login.
  */
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type { OnboardCompanyRequest, OnboardedCompany, OrganizationSummary } from "./types";

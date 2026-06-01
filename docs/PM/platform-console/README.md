@@ -20,6 +20,7 @@ content**. It is the operator side of the trust architecture: data-minimised by 
 | [PC-03a](EPIC-PC-03a-org-lifecycle.md) | Org lifecycle — status, legal hold, suspend/reactivate + detail screen | ✅ Done | `feat/platform-lifecycle` · `ee16df8` | [audit](../../audits/2026-06-01_platform-lifecycle-pr3a-review.md) |
 | [PC-04](EPIC-PC-04-audit-log.md) | Append-only `audit_log` + auth/org/user emission + trail viewer | ✅ Done | `main` · `c2fa88f` | [audit](../../audits/2026-06-01_platform-audit-pr4-review.md) |
 | [PC-05](EPIC-PC-05-break-glass.md) | Break-glass support access — grant lifecycle + request panel + HITL inbox | ✅ Done | `feat/platform-break-glass` | [audit](../../audits/2026-06-01_platform-break-glass-pr5-review.md) |
+| [PC-06](EPIC-PC-06-erasure.md) | GDPR erasure (legal-hold-beats-erasure) + compliance export (backend) | 🟢 Backend done | `feat/platform-erasure` | [audit](../../audits/2026-06-01_platform-erasure-pr6-review.md) |
 
 ## Roadmap (the "full control plane")
 
@@ -34,7 +35,7 @@ are planned (each becomes its own epic when started).
 | 3b | PC-03b | Governance posture — `organization_governance` table + posture editor | ⏳ Planned |
 | 4 | PC-04 | Append-only `audit_log` + admin/AI action trail | ✅ Done |
 | 5 | PC-05 | Break-glass support access (request → customer approval → time-boxed → logged → expire) | ✅ Done |
-| 6 | PC-06 | Erasure (legal-hold-beats-erasure) + exportable compliance artifacts | ⏳ Planned |
+| 6 | PC-06 | Erasure (legal-hold-beats-erasure) + exportable compliance artifacts | 🟢 Backend done (FE → PC-06b) |
 
 ## Cross-cutting invariants (every PC epic inherits these)
 

@@ -1,0 +1,222 @@
+"""
+HTTP tests for GDPR erasure + compliance export (PC-06), end-to-end against the real ASGI
+app + DB + JWTs.
+
+The compliance substance leads: LEGAL-HOLD-BEATS-ERASURE (409, nothing deleted), then a full
+erasure deletes users + tokens, scrubs the support-grant decider email, RETAINS the append-only
+audit_log (honest certificate), offboards the org. Plus the slug-confirmation guard, audience
+confinement, and the export shape. Orgs here are freshly seeded + truncated per test, so the
+demo/globex orgs are never erased. Requires Postgres (identity_schema fixture).
+"""
+
+from __future__ import annotations
+
+from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.identity.enums import UserRole
+from app.identity.models.support_grant import SupportGrant
+from tests.identity.conftest import (
+    bearer,
+    company_token,
+    platform_token,
+    seed_organization,
+    seed_platform_admin,
+    seed_user,
+)
+
+_PASSWORD = "Adm1n-Dev-Only-2026!"
+_REASON = "Customer offboarding per contract termination."
+
+
+async def _seed(session: AsyncSession, *, slug: str = "acme", legal_hold: bool = False):
+    """Seed an org (optionally under legal hold) + its company_admin + a platform admin."""
+    org = await seed_organization(session, name=slug.title(), slug=slug)
+    if legal_hold:
+        org.legal_hold = True
+    user = await seed_user(
+        session,
+        org_id=org.id,
+        email=f"admin@{slug}.example",
+        full_name="Company Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
+    )
+    platform_admin = await seed_platform_admin(
+        session, email=f"staff-{slug}@ethera.example", full_name="Staff"
+    )
+    await session.commit()
+    return org, user, platform_admin
+
+
+def _platform_headers(admin_id) -> dict[str, str]:
+    return bearer(platform_token(admin_id))
+
+
+def _erase_body(slug: str) -> dict[str, str]:
+    return {"reason": _REASON, "confirm_slug": slug}
+
+
+async def _count(session: AsyncSession, sql: str, org_id) -> int:
+    result = await session.execute(text(sql), {"o": str(org_id)})
+    return result.scalar_one()
+
+
+async def test_legal_hold_blocks_erasure_and_deletes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # THE HEADLINE: legal hold beats erasure — 409 and the users are untouched.
+    org, _user, platform_admin = await _seed(db_session, legal_hold=True)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json=_erase_body("acme"),
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 409
+    assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1
+
+
+async def test_erase_deletes_users_revokes_tokens_offboards_and_certifies(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _user, platform_admin = await _seed(db_session)
+    # A login creates a refresh token to erase.
+    await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json=_erase_body("acme"),
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 200
+    cert = response.json()
+    assert cert["status"] == "offboarded"
+    assert cert["users_erased"] == 1
+    assert cert["tokens_deleted"] >= 1
+    assert cert["audit_log_retained"] is True
+    assert "17(3)" in cert["retained_legal_basis"]
+    assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 0
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM organizations WHERE id=:o"), {"o": str(org.id)}
+        )
+    ).scalar_one()
+    assert status == "offboarded"
+
+
+async def test_erase_scrubs_support_grant_decider_email(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The approving company_admin's email (a tenant subject) is scrubbed from support_grant.
+    org, user, platform_admin = await _seed(db_session)
+    grant = SupportGrant(
+        org_id=org.id,
+        requested_by_admin_id=platform_admin.id,
+        requested_by_email="staff-acme@ethera.example",  # Ethera staff — must be KEPT
+        reason="prior support visit",
+        status="approved",
+        decided_by_user_id=user.id,
+        decided_by_email="admin@acme.example",  # tenant subject — must be SCRUBBED
+    )
+    db_session.add(grant)
+    await db_session.commit()
+
+    await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json=_erase_body("acme"),
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    row = await db_session.execute(
+        text("SELECT decided_by_email, requested_by_email FROM support_grant WHERE id=:i"),
+        {"i": str(grant.id)},
+    )
+    decided, requested = row.one()
+    assert decided is None  # tenant subject PII scrubbed
+    assert requested == "staff-acme@ethera.example"  # Ethera staff retained
+
+
+async def test_erase_retains_audit_log_and_records_the_erasure(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _user, platform_admin = await _seed(db_session)
+    # Generate an auth event so there is a prior audit row to retain.
+    await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+    headers = _platform_headers(platform_admin.id)
+    await client.post(f"/platform/orgs/{org.id}/erase", json=_erase_body("acme"), headers=headers)
+
+    audit = await client.get(f"/platform/orgs/{org.id}/audit", headers=headers)
+
+    actions = [entry["action"] for entry in audit.json()]
+    assert "org.erased" in actions  # the erasure itself is logged
+    assert "auth.login.success" in actions  # the prior trail is RETAINED, not deleted
+
+
+async def test_slug_confirmation_mismatch_returns_400_and_deletes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _user, platform_admin = await _seed(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json={"reason": _REASON, "confirm_slug": "wrong-slug"},
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 400
+    assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1
+
+
+async def test_erase_rejects_company_token(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, user, _platform_admin = await _seed(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json=_erase_body("acme"),
+        headers=bearer(company_token(user.id, org.id, UserRole.company_admin)),
+    )
+
+    assert response.status_code == 401  # erasure is platform-only
+
+
+async def test_compliance_export_returns_metadata_and_trail(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _user, platform_admin = await _seed(db_session)
+    await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+
+    export = await client.get(
+        f"/platform/orgs/{org.id}/compliance-export",
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert export.status_code == 200
+    body = export.json()
+    assert body["organization"]["slug"] == "acme"
+    assert any(entry["action"] == "auth.login.success" for entry in body["audit"])
+    assert "generated_at" in body
+
+
+async def test_compliance_export_rejects_company_token(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, user, _platform_admin = await _seed(db_session)
+
+    export = await client.get(
+        f"/platform/orgs/{org.id}/compliance-export",
+        headers=bearer(company_token(user.id, org.id, UserRole.company_admin)),
+    )
+
+    assert export.status_code == 401

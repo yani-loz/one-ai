@@ -93,3 +93,20 @@ class InvalidGrantTransitionError(IdentityError):
     `denied`/`revoked`. Every transition is guarded on the grant's CURRENT status so a
     revoked grant can't be re-approved and an expired one can't be resurrected.
     """
+
+
+class LegalHoldError(IdentityError):
+    """Erasure was refused because the organization is under legal hold (-> 409).
+
+    Legal-hold-beats-erasure: a hold (e.g. litigation / regulatory preservation) overrides
+    the right to erasure, so nothing is deleted until the hold is cleared.
+    """
+
+
+# — 400 Bad Request —
+class ErasureConfirmationError(IdentityError):
+    """The erasure confirmation did not match the organization (-> 400).
+
+    A guard against accidental destruction: the request must echo the org's slug exactly
+    (GitHub-style "type the name to delete"). A mismatch deletes nothing.
+    """

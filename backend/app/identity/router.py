@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.identity.routes.auth_routes import router as auth_router
+from app.identity.routes.erasure_routes import router as erasure_router
 from app.identity.routes.platform_routes import router as platform_router
 from app.identity.routes.support_routes import (
     company_support_router,
@@ -28,3 +29,4 @@ identity_router.include_router(user_router)
 identity_router.include_router(platform_router)
 identity_router.include_router(platform_support_router)
 identity_router.include_router(company_support_router)
+identity_router.include_router(erasure_router)

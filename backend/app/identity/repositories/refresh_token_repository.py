@@ -14,11 +14,15 @@ Key invariants:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.models.refresh_token import RefreshToken
+from app.identity.models.user import User
+
+_USER_SUBJECT_TYPE = "user"
 
 
 class RefreshTokenRepository:
@@ -51,5 +55,21 @@ class RefreshTokenRepository:
             update(RefreshToken)
             .where(RefreshToken.token_hash == token_hash, RefreshToken.revoked_at.is_(None))
             .values(revoked_at=datetime.now(UTC))
+        )
+        return result.rowcount or 0
+
+    async def delete_for_org_users(self, org_id: UUID) -> int:
+        """Hard-delete every refresh token owned by `org_id`'s users (erasure); return count.
+
+        Keyed on subject_id IN (the org's user ids), so it MUST run BEFORE those users are
+        deleted (afterwards the subquery is empty). Platform-admin tokens
+        (subject_type='platform_admin') are Ethera staff and are never touched.
+        """
+        org_user_ids = select(User.id).where(User.org_id == org_id).scalar_subquery()
+        result = await self._session.execute(
+            delete(RefreshToken).where(
+                RefreshToken.subject_type == _USER_SUBJECT_TYPE,
+                RefreshToken.subject_id.in_(org_user_ids),
+            )
         )
         return result.rowcount or 0

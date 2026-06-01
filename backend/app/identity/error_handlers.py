@@ -21,10 +21,12 @@ from fastapi.responses import JSONResponse
 from app.identity.exceptions import (
     DuplicateOrganizationError,
     DuplicateUserError,
+    ErasureConfirmationError,
     IdentityError,
     InvalidCredentialsError,
     InvalidGrantTransitionError,
     LastAdminError,
+    LegalHoldError,
     OrganizationNotFoundError,
     OrganizationSuspendedError,
     PermissionDeniedError,
@@ -37,6 +39,7 @@ from app.identity.exceptions import (
 
 # Each identity error type -> the HTTP status it maps to.
 _STATUS_BY_EXCEPTION: dict[type[IdentityError], int] = {
+    ErasureConfirmationError: status.HTTP_400_BAD_REQUEST,
     InvalidCredentialsError: status.HTTP_401_UNAUTHORIZED,
     TokenInvalidError: status.HTTP_401_UNAUTHORIZED,
     TokenExpiredError: status.HTTP_401_UNAUTHORIZED,
@@ -50,6 +53,7 @@ _STATUS_BY_EXCEPTION: dict[type[IdentityError], int] = {
     DuplicateOrganizationError: status.HTTP_409_CONFLICT,
     LastAdminError: status.HTTP_409_CONFLICT,
     InvalidGrantTransitionError: status.HTTP_409_CONFLICT,
+    LegalHoldError: status.HTTP_409_CONFLICT,
 }
 
 

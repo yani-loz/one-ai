@@ -45,6 +45,7 @@ from app.identity.security.tokens import (
 from app.identity.services.audit_service import AuditService
 from app.identity.services.auth_service import AuthService
 from app.identity.services.company_support_service import CompanySupportService
+from app.identity.services.erasure_service import ErasureService
 from app.identity.services.platform_auth_service import PlatformAuthService
 from app.identity.services.platform_org_service import PlatformOrgService
 from app.identity.services.platform_support_service import PlatformSupportService
@@ -240,5 +241,20 @@ def get_company_support_service(
     return CompanySupportService(
         support_grants=SupportGrantRepository(session),
         users=UserRepository(session),
+        audit=AuditService(AuditRepository(session)),
+    )
+
+
+def get_erasure_service(session: AsyncSession = Depends(get_session)) -> ErasureService:
+    """Provide ErasureService on a PLAIN session (erasure/offboarding spans all orgs).
+
+    The AuditService shares this session so the org.erased event commits atomically with the
+    deletes — a partial erasure can't be left behind.
+    """
+    return ErasureService(
+        organizations=OrganizationRepository(session),
+        users=UserRepository(session),
+        refresh_tokens=RefreshTokenRepository(session),
+        support_grants=SupportGrantRepository(session),
         audit=AuditService(AuditRepository(session)),
     )

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.enums import UserRole
@@ -105,3 +105,13 @@ class UserRepository:
         self._session.add(user)
         await self._session.flush()
         return user
+
+    async def delete_all_in_org(self, org_id: UUID) -> int:
+        """Hard-delete every user in `org_id` (GDPR erasure); return the rows deleted.
+
+        Destructive + org-scoped. Run AFTER the org's refresh tokens are deleted (those key
+        on these users' ids). The data subjects' email/full_name/password_hash are removed
+        with the row.
+        """
+        result = await self._session.execute(delete(User).where(User.org_id == org_id))
+        return result.rowcount or 0

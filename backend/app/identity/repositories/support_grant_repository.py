@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.models.support_grant import SupportGrant
@@ -88,3 +88,17 @@ class SupportGrantRepository:
             .order_by(SupportGrant.created_at.desc(), SupportGrant.id.desc())
         )
         return list(result.scalars().all())
+
+    async def scrub_decider_emails(self, org_id: UUID) -> int:
+        """Null `decided_by_email` on all of `org_id`'s grants (erasure); return rows scrubbed.
+
+        decided_by_email is a tenant data subject (the approving company_admin), so erasure
+        removes it. requested_by_email (the PLATFORM admin = Ethera staff) is NOT tenant data
+        and is kept. The grant rows are retained as the pseudonymized access record.
+        """
+        result = await self._session.execute(
+            update(SupportGrant)
+            .where(SupportGrant.org_id == org_id, SupportGrant.decided_by_email.is_not(None))
+            .values(decided_by_email=None)
+        )
+        return result.rowcount or 0

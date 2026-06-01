@@ -58,6 +58,7 @@ class AuditAction:
     SUPPORT_APPROVED = "support.approved"
     SUPPORT_DENIED = "support.denied"
     SUPPORT_REVOKED = "support.revoked"
+    ORG_ERASED = "org.erased"
 
 
 @dataclass(frozen=True, slots=True)

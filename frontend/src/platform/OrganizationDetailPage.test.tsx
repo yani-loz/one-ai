@@ -77,6 +77,9 @@ function mockApi(getStatus = 200): void {
       if (url.includes("/platform/orgs/org-1/audit") && method === "GET") {
         return json(200, auditRows);
       }
+      if (url.includes("/platform/support-requests") && method === "GET") {
+        return json(200, []); // the SupportAccessPanel's requester-scoped list
+      }
       if (url.includes("/platform/orgs/org-1/status") && method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as { status: string };
         auditRows = [
@@ -199,6 +202,18 @@ describe("OrganizationDetailPage", () => {
     // AC8: the detail screen shows the org's audit trail (humanized, metadata only).
     expect(await screen.findByText("Audit trail")).toBeInTheDocument();
     expect(await screen.findByText("Signed in")).toBeInTheDocument();
+  });
+
+  it("test_renders_the_support_access_panel", async () => {
+    mockApi();
+
+    renderDetail();
+
+    // PC-05b: the platform admin can request break-glass access from the detail screen.
+    expect(await screen.findByText("Support access")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Request access" }),
+    ).toBeInTheDocument();
   });
 
   it("test_audit_trail_shows_a_lifecycle_action_on_reload", async () => {

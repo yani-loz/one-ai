@@ -14,6 +14,7 @@ import { AgentInsignia } from "./components/AgentInsignia";
 import { BrandMark } from "./components/BrandMark";
 import { seedFromString, type AgentRank } from "./components/insignia/generateInsignia";
 import { useAuth } from "./identity";
+import { SupportInbox } from "./support";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -76,7 +77,8 @@ export function HomePage(): React.JSX.Element {
       transition={{ duration: 0.6, ease: [0.32, 0.72, 0, 1] }}
       className="flex min-h-screen items-center justify-center p-6"
     >
-      <section className="w-full max-w-md rounded-xl border border-white/50 bg-white/65 p-8 shadow-sm backdrop-blur-xl">
+      <div className="w-full max-w-md">
+      <section className="w-full rounded-xl border border-white/50 bg-white/65 p-8 shadow-sm backdrop-blur-xl">
         <BrandMark size={88} className="mx-auto mb-6" />
 
         <h1 className="text-center text-h3 font-bold text-text-primary">
@@ -122,6 +124,9 @@ export function HomePage(): React.JSX.Element {
           Log out
         </button>
       </section>
+
+      {user?.role === "company_admin" && <SupportInbox />}
+      </div>
     </motion.main>
   );
 }

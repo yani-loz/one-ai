@@ -4,7 +4,7 @@
 |---|---|
 | **Epic ID** | PC-05 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | 🟢 Backend done (PC-05a) — **the two UIs remain (PC-05b)** |
+| **Status** | ✅ **Done** — grant lifecycle (PC-05a) + the platform request panel & company HITL approval inbox (PC-05b) |
 | **Branch** | `feat/platform-break-glass` (off `main`, which now has PC-01…PC-04) |
 | **PR** | PR-5 (backend: grant lifecycle, both auth domains, audit emission) |
 | **Depends on** | PC-04 (`audit_log` — every transition writes here); the Identity auth domains |
@@ -72,7 +72,7 @@ content-access gate (a forward hook — no content exists yet).
 | ✅ ⭐ PC-05-AC6 | **Audience confinement:** a company token is rejected on the platform request endpoint and a platform token on the company approve endpoint (both 401). | `::test_company_token_rejected_on_platform_request`, `::test_platform_token_rejected_on_company_approve` |
 | ✅ PC-05-AC7 | **Live expiry:** an approved grant past `expires_at` reads `is_active=false` though `status` stays `approved` (the clock decides). | `::test_expiry_is_computed_live_from_expires_at` |
 | ✅ PC-05-AC8 | Every transition is **logged**; `support.approved` carries `expires_at` in `details` ("logged → expire"). | `::test_approve_emits_audit_event_with_expires_at` |
-| ⏳ PC-05-AC9 | Frontend: platform request control + company approval inbox (HITL). | **PC-05b — not yet built.** |
+| ✅ PC-05-AC9 | Frontend: platform request control (on the org detail screen) + company approval inbox (HITL, `animate-clari-pulse`). | FE `support/SupportInbox.test.tsx::test_shows_pending_request_with_requester_and_reason`, `::test_approve_flips_to_active_with_revoke`; `platform/OrganizationDetailPage.test.tsx::test_renders_the_support_access_panel` |
 
 ## 5. Implementation map
 
@@ -108,11 +108,15 @@ content-access gate (a forward hook — no content exists yet).
 - **Tenant-tagged, platform plain-session access** is the documented cross-org exception
   (same as login/onboard); `support_grant` has no FKs so it survives erasure (PC-06).
 
-## 7. Remaining (PC-05b) + notes
+## 7. Remaining + notes
 
-- **UIs (AC9):** a platform "Request access" control on the org detail screen + the company
-  **approval inbox** (HITL — the `animate-clari-pulse` "needs your approval" affordance).
-- **Pull-only inbox:** no notification to the company_admin yet — track for PC-05b.
+- ✅ **UIs (AC9) — DONE (PC-05b):** the `frontend/src/support/` module — a "Request access"
+  control on the org detail screen (`SupportAccessPanel`) + the company **approval inbox**
+  (`SupportInbox`, HITL `animate-clari-pulse` glow on pending requests, on the home for a
+  company_admin). The inbox is **self-effacing**: any fetch error just hides the widget, never
+  tears down the session (it's a secondary panel on an already-authenticated home).
+- **Pull-only inbox:** no notification to the company_admin yet — a real-time/badge signal is
+  the next refinement.
 - **Content gate (forward hook):** `grant_is_active` is the seam a future content read must
   call; today it gates nothing because no content endpoint exists.
 - **Dynamic QA (Target 07):** an adversarial live pass over the grant lifecycle to follow.

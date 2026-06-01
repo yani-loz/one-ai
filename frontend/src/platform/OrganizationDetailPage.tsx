@@ -22,6 +22,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { BrandMark } from "../components/BrandMark";
 import { seedFromString } from "../components/insignia/generateInsignia";
 import { AuthRequestError, useAuth } from "../identity";
+import { SupportAccessPanel } from "../support";
 import { AuditTrail } from "./AuditTrail";
 import { formatShortDate } from "./format";
 import {
@@ -209,6 +210,10 @@ export function OrganizationDetailPage(): React.JSX.Element {
                   </div>
                 ))}
               </div>
+            </Section>
+
+            <Section title="Support access">
+              <SupportAccessPanel orgId={org.id} onAuthExpired={handleAuthExpired} />
             </Section>
 
             <Section title="Audit trail">

@@ -2,7 +2,7 @@
  * Role: Shared TypeScript contracts for the Platform console module — mirrors the
  *       backend /platform/* API shapes (organization metadata + onboarding).
  * Used by: platformClient.ts, PlatformConsolePage.tsx, OnboardCompanyDrawer.tsx,
- *          OnboardSuccess.tsx, CompanyCard.tsx, StatusBadge.tsx.
+ *          OnboardSuccess.tsx, CompanyCard.tsx, StatusBadge.tsx, OrganizationDetailPage.tsx.
  * Depends on: nothing (leaf module — pure types).
  * Key invariants:
  *   - OrganizationSummary is METADATA ONLY (id/name/slug/status/user_count/created_at) —
@@ -28,6 +28,21 @@ export interface OrganizationSummary {
   /** Active + inactive user count for the org (no tenant content). */
   user_count: number;
   /** ISO-8601 creation timestamp. */
+  created_at: string;
+}
+
+/**
+ * One company's lifecycle detail from GET /platform/orgs/{id} — metadata + legal hold.
+ * Governance posture (region/residency/DPA/works-council/AI-Act/retention) arrives in
+ * PC-03b. Still METADATA ONLY — never tenant content.
+ */
+export interface OrganizationDetail {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  user_count: number;
+  legal_hold: boolean;
   created_at: string;
 }
 

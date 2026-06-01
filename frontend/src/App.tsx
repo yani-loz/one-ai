@@ -5,7 +5,8 @@
  * Used by: src/main.tsx (inside BrowserRouter + AuthProvider).
  * Depends on: react-router-dom (Routes/Route/Navigate), motion (AnimatePresence),
  *             ./identity (LoginPage, ProtectedRoute, useAuth), ./platform
- *             (PlatformConsolePage, PlatformRoute), ./HomePage, ./pageTransition.
+ *             (PlatformConsolePage, OrganizationDetailPage, PlatformRoute), ./HomePage,
+ *             ./pageTransition.
  * Key invariants: screen-level motion.divs are `absolute inset-0` so the incoming and
  *   outgoing pages overlap during the slide; routing must run inside <BrowserRouter>.
  *   "/" routes a platform admin onward to /platform so each role lands on its own home.
@@ -15,7 +16,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { HomePage } from "./HomePage";
 import { LoginPage, ProtectedRoute, useAuth } from "./identity";
-import { PlatformConsolePage, PlatformRoute } from "./platform";
+import { OrganizationDetailPage, PlatformConsolePage, PlatformRoute } from "./platform";
 import { useDirectionalTransition } from "./pageTransition";
 
 /** Wrap a screen in the directional page transition (absolute-positioned overlay). */
@@ -75,6 +76,16 @@ export function App(): React.JSX.Element {
               <AnimatedScreen>
                 <PlatformRoute>
                   <PlatformConsolePage />
+                </PlatformRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/platform/orgs/:orgId"
+            element={
+              <AnimatedScreen>
+                <PlatformRoute>
+                  <OrganizationDetailPage />
                 </PlatformRoute>
               </AnimatedScreen>
             }

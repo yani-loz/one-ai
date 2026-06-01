@@ -6,7 +6,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthRequestError } from "../identity";
-import { listOrganizations, onboardCompany } from "./platformClient";
+import {
+  getOrganization,
+  listOrganizations,
+  onboardCompany,
+  updateOrganizationLegalHold,
+  updateOrganizationStatus,
+} from "./platformClient";
 import type { OnboardCompanyRequest } from "./types";
 
 interface Recorded {
@@ -122,5 +128,54 @@ describe("onboardCompany", () => {
     mockFetch(() => jsonResponse(409, { detail: "slug taken" }));
 
     await expect(onboardCompany(payload)).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("organization detail + lifecycle", () => {
+  const DETAIL = {
+    id: "org-1",
+    name: "Acme",
+    slug: "acme",
+    status: "active",
+    user_count: 3,
+    legal_hold: false,
+    created_at: "2026-06-01T10:00:00Z",
+  };
+
+  it("test_get_organization_returns_detail", async () => {
+    mockFetch(() => jsonResponse(200, DETAIL));
+
+    const org = await getOrganization("org-1");
+
+    expect(calls[0]?.url).toContain("/platform/orgs/org-1");
+    expect(org.legal_hold).toBe(false);
+  });
+
+  it("test_get_organization_unknown_throws_404", async () => {
+    mockFetch(() => jsonResponse(404, {}));
+
+    await expect(getOrganization("nope")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("test_update_status_patches_the_status_body", async () => {
+    mockFetch(() => jsonResponse(200, { ...DETAIL, status: "suspended" }));
+
+    const org = await updateOrganizationStatus("org-1", "suspended");
+
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url).toContain("/platform/orgs/org-1/status");
+    expect(calls[0]?.body).toEqual({ status: "suspended" });
+    expect(org.status).toBe("suspended");
+  });
+
+  it("test_update_legal_hold_patches_the_flag", async () => {
+    mockFetch(() => jsonResponse(200, { ...DETAIL, legal_hold: true }));
+
+    const org = await updateOrganizationLegalHold("org-1", true);
+
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url).toContain("/platform/orgs/org-1/legal-hold");
+    expect(calls[0]?.body).toEqual({ legal_hold: true });
+    expect(org.legal_hold).toBe(true);
   });
 });

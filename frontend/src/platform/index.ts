@@ -7,5 +7,6 @@
  *   boundary swappable.
  */
 export { PlatformConsolePage } from "./PlatformConsolePage";
+export { OrganizationDetailPage } from "./OrganizationDetailPage";
 export { PlatformRoute } from "./PlatformRoute";
 export type { OrganizationStatus, OrganizationSummary } from "./types";

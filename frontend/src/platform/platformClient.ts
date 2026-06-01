@@ -1,8 +1,9 @@
 /**
- * Role: Thin HTTP client for the Platform backend (/platform/*) — lists companies and
- *       onboards new ones, attaching the platform admin's Bearer token via the shared
- *       authorizedFetch.
- * Used by: PlatformConsolePage.tsx (list) and OnboardCompanyDrawer.tsx (onboard).
+ * Role: Thin HTTP client for the Platform backend (/platform/*) — lists/onboards
+ *       companies and reads/updates one company's lifecycle (status + legal hold),
+ *       attaching the platform admin's Bearer token via the shared authorizedFetch.
+ * Used by: PlatformConsolePage.tsx (list), OnboardCompanyDrawer.tsx (onboard),
+ *          OrganizationDetailPage.tsx (detail + status/legal-hold).
  * Depends on: ../identity (authorizedFetch, AuthRequestError), ./types,
  *             import.meta.env.VITE_API_URL.
  * Key invariants:
@@ -16,7 +17,13 @@
  *     only by design). A genuinely lapsed session surfaces as a re-login.
  */
 import { authorizedFetch, AuthRequestError } from "../identity";
-import type { OnboardCompanyRequest, OnboardedCompany, OrganizationSummary } from "./types";
+import type {
+  OnboardCompanyRequest,
+  OnboardedCompany,
+  OrganizationDetail,
+  OrganizationStatus,
+  OrganizationSummary,
+} from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -54,4 +61,51 @@ export async function onboardCompany(payload: OnboardCompanyRequest): Promise<On
     body: JSON.stringify(payload),
   });
   return parseJsonOrThrow<OnboardedCompany>(response);
+}
+
+/**
+ * Fetch one company's lifecycle detail via GET /platform/orgs/{id}.
+ *
+ * Contract: returns the org's metadata + legal hold. Throws AuthRequestError — 404 when
+ * no org has that id, 401 when the session has lapsed.
+ */
+export async function getOrganization(orgId: string): Promise<OrganizationDetail> {
+  const response = await authorizedFetch(`${API_URL}/platform/orgs/${orgId}`);
+  return parseJsonOrThrow<OrganizationDetail>(response);
+}
+
+/**
+ * Set a company's lifecycle status via PATCH /platform/orgs/{id}/status.
+ *
+ * Contract: returns the updated detail. `suspended` blocks that org's company logins
+ * server-side. Throws AuthRequestError (404 unknown org, 401 lapsed session).
+ */
+export async function updateOrganizationStatus(
+  orgId: string,
+  status: OrganizationStatus,
+): Promise<OrganizationDetail> {
+  const response = await authorizedFetch(`${API_URL}/platform/orgs/${orgId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  return parseJsonOrThrow<OrganizationDetail>(response);
+}
+
+/**
+ * Set or clear a company's legal hold via PATCH /platform/orgs/{id}/legal-hold.
+ *
+ * Contract: returns the updated detail. Throws AuthRequestError (404 unknown org, 401
+ * lapsed session).
+ */
+export async function updateOrganizationLegalHold(
+  orgId: string,
+  legalHold: boolean,
+): Promise<OrganizationDetail> {
+  const response = await authorizedFetch(`${API_URL}/platform/orgs/${orgId}/legal-hold`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ legal_hold: legalHold }),
+  });
+  return parseJsonOrThrow<OrganizationDetail>(response);
 }

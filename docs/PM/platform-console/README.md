@@ -16,18 +16,20 @@ content**. It is the operator side of the trust architecture: data-minimised by 
 | Epic | Title | Status | Branch / commit | Review |
 |---|---|---|---|---|
 | [PC-01](EPIC-PC-01-super-admin-console.md) | Super-admin console — company fleet view + onboarding | ✅ Done | `feat/platform-console` · `7cc24bc` | [audit](../../audits/2026-06-01_platform-console-pr1-review.md) |
-| [PC-02](EPIC-PC-02-platform-session-hardening.md) | Platform session hardening (`/me` + refresh + logout) | ✅ Done (pending commit) | `feat/platform-session` | [audit](../../audits/2026-06-01_platform-session-pr2-review.md) |
+| [PC-02](EPIC-PC-02-platform-session-hardening.md) | Platform session hardening (`/me` + refresh + logout) | ✅ Done | `feat/platform-session` · `673964a` | [audit](../../audits/2026-06-01_platform-session-pr2-review.md) |
+| [PC-03a](EPIC-PC-03a-org-lifecycle.md) | Org lifecycle — status, legal hold, suspend/reactivate + detail screen | ✅ Done | `feat/platform-lifecycle` · `ee16df8` | [audit](../../audits/2026-06-01_platform-lifecycle-pr3a-review.md) |
 
 ## Roadmap (the "full control plane")
 
-The console is being built as a sequence of shippable PRs. PC-01/02 are done; the rest are
-planned (each becomes its own epic when started).
+The console is being built as a sequence of shippable PRs. PC-01/02/03a are done; the rest
+are planned (each becomes its own epic when started).
 
 | PR | Epic | Scope | Status |
 |---|---|---|---|
 | 1 | PC-01 | Fleet view (crest gallery) + onboard drawer + sealed framing + routing | ✅ Done |
-| 2 | PC-02 | Session hardening — `/platform/me` + refresh + logout (closes AUD-14) | ✅ Done (pending commit) |
-| 3 | PC-03 | Governance model + lifecycle — status enum, `organization_governance`, legal hold, **detail screen** + suspend/reactivate | ⏳ Planned |
+| 2 | PC-02 | Session hardening — `/platform/me` + refresh + logout (closes AUD-14) | ✅ Done |
+| 3a | PC-03a | Lifecycle — status enum, legal hold, suspend/reactivate + **detail screen** | ✅ Done |
+| 3b | PC-03b | Governance posture — `organization_governance` table + posture editor | ⏳ Planned |
 | 4 | PC-04 | Append-only `audit_log` + admin/AI action trail | ⏳ Planned |
 | 5 | PC-05 | Break-glass support access (request → customer approval → time-boxed → logged → expire) | ⏳ Planned |
 | 6 | PC-06 | Erasure (legal-hold-beats-erasure) + exportable compliance artifacts | ⏳ Planned |

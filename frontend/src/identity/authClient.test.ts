@@ -76,7 +76,7 @@ describe("login", () => {
 });
 
 describe("platformLogin", () => {
-  it("test_platform_login_valid_stores_token_pair", async () => {
+  it("test_platform_login_does_not_persist_refresh_token", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(200, { access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
     );
@@ -85,7 +85,9 @@ describe("platformLogin", () => {
 
     const [calledUrl] = fetchMock.mock.calls[0];
     expect(String(calledUrl)).toContain("/platform/login");
-    expect(getStoredRefreshToken()).toBe("pr");
+    // sec-1: the high-privilege platform refresh token must NEVER reach localStorage
+    // (XSS-exfil exposure); the platform session is in-memory only.
+    expect(getStoredRefreshToken()).toBeNull();
   });
 });
 

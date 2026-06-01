@@ -1,12 +1,17 @@
 /**
  * Role: Thin HTTP client for the Identity backend — owns token storage (access in
- *       memory, refresh in localStorage), login/refresh/logout/me, and a fetch
- *       wrapper that attaches the Bearer token and transparently refreshes once on 401.
- * Used by: AuthProvider.tsx (the only intended caller).
+ *       memory; the COMPANY refresh token in localStorage), login/refresh/logout/me, and
+ *       a fetch wrapper that attaches the Bearer token and transparently refreshes once
+ *       on 401.
+ * Used by: AuthProvider.tsx (login/refresh/logout/me). `authorizedFetch` +
+ *   `AuthRequestError` are also re-exported via ./index for sibling modules (platform/)
+ *   to make authenticated calls without re-implementing token attachment.
  * Depends on: ./types, import.meta.env.VITE_API_URL.
  * Key invariants:
- *   - The access token NEVER touches localStorage (XSS-exposure reduction); only the
- *     opaque refresh token is persisted.
+ *   - The access token NEVER touches localStorage (XSS-exposure reduction). Only the
+ *     COMPANY refresh token is persisted; the high-privilege PLATFORM refresh token is
+ *     NEVER persisted (platformLogin calls setTokens(tokens, false)) — so an injected
+ *     script can never read a 7-day Ethera-staff credential from storage.
  *   - `authorizedFetch` retries a 401 at most ONCE, and never tries to refresh the
  *     /auth/refresh or /auth/login calls themselves (no infinite loop).
  *   - A failed refresh clears the whole session so callers fall back to /login.
@@ -36,19 +41,30 @@ export function getStoredRefreshToken(): string | null {
 }
 
 /**
- * Replace the in-memory access token and persisted refresh token in one step.
+ * Replace the in-memory access token and (optionally) the persisted refresh token.
  *
- * Contract: pass `null` to clear the session (logout / refresh failure). Both
- * values move together so the two stores never drift out of sync.
+ * Contract: pass `null` to clear the session (logout / refresh failure). With a token
+ * pair, the access token always goes to memory; `persistRefresh` decides whether the
+ * refresh token is written to localStorage. Company logins persist it (so the session
+ * rehydrates on reload). The platform login passes `false`: the platform refresh token
+ * is NOT persisted — it is discarded client-side, so a platform session lasts one
+ * access-token lifetime until /platform/refresh lands (PR-2, AUD-14). This keeps the
+ * high-privilege platform credential out of XSS-readable storage.
  */
-export function setTokens(tokens: TokenPair | null): void {
+export function setTokens(tokens: TokenPair | null, persistRefresh = true): void {
   if (tokens === null) {
     accessTokenInMemory = null;
     localStorage.removeItem(REFRESH_STORAGE_KEY);
     return;
   }
   accessTokenInMemory = tokens.access_token;
-  localStorage.setItem(REFRESH_STORAGE_KEY, tokens.refresh_token);
+  if (persistRefresh) {
+    localStorage.setItem(REFRESH_STORAGE_KEY, tokens.refresh_token);
+  } else {
+    // Platform session: do not persist the platform refresh token, and clear any stale
+    // company token so the two domains never share localStorage state.
+    localStorage.removeItem(REFRESH_STORAGE_KEY);
+  }
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
@@ -79,8 +95,10 @@ export async function login(email: string, password: string): Promise<AuthUser> 
  * Log a platform admin in via POST /platform/login and store the token pair.
  *
  * Contract: /platform/login returns tokens only (no user object, no /platform/me),
- * so the caller synthesises the in-memory admin identity from the entered email.
- * Throws AuthRequestError (401) on invalid credentials.
+ * so the caller synthesises the in-memory admin identity from the entered email. The
+ * platform refresh token is NOT persisted (setTokens(tokens, false)) — kept out of
+ * localStorage so it can never be exfiltrated by injected script. Throws
+ * AuthRequestError (401) on invalid credentials.
  */
 export async function platformLogin(email: string, password: string): Promise<void> {
   const response = await fetch(`${API_URL}/platform/login`, {
@@ -89,7 +107,7 @@ export async function platformLogin(email: string, password: string): Promise<vo
     body: JSON.stringify({ email, password }),
   });
   const tokens = await parseJsonOrThrow<TokenPair>(response);
-  setTokens(tokens);
+  setTokens(tokens, false); // in-memory access only — never persist the platform refresh token
 }
 
 /**

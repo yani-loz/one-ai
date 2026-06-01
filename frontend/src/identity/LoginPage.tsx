@@ -23,7 +23,7 @@ import { useAuth } from "./useAuth";
 import type { AuthScope } from "./types";
 
 export function LoginPage(): React.JSX.Element {
-  const { status, login, platformLogin } = useAuth();
+  const { status, user, login, platformLogin } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
@@ -32,12 +32,13 @@ export function LoginPage(): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Already-authenticated users (e.g. after a bootstrap) skip the login form.
+  // Already-authenticated users (e.g. after a bootstrap) skip the login form, landing on
+  // their role's home: platform admins on the console, company users on "/".
   useEffect(() => {
     if (status === "authenticated") {
-      navigate("/", { replace: true });
+      navigate(user?.role === "platform_admin" ? "/platform" : "/", { replace: true });
     }
-  }, [status, navigate]);
+  }, [status, user, navigate]);
 
   function fillFromDevAccount(devEmail: string, devPassword: string, devScope: AuthScope): void {
     setEmail(devEmail);
@@ -53,10 +54,11 @@ export function LoginPage(): React.JSX.Element {
     try {
       if (scope === "platform") {
         await platformLogin(email, password);
+        navigate("/platform", { replace: true });
       } else {
         await login(email, password);
+        navigate("/", { replace: true });
       }
-      navigate("/", { replace: true });
     } catch (error) {
       // 401 = bad credentials → generic message (never reveal which field was wrong).
       // Anything else (network down, API reloading, 5xx) is NOT a credential error, so

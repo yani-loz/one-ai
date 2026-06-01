@@ -89,7 +89,7 @@ describe("LoginPage", () => {
     expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe("Memb3r-Dev-Only-2026!");
   });
 
-  it("test_platform_toggle_switches_to_platform_login_endpoint", async () => {
+  it("test_platform_toggle_switches_to_platform_login_endpoint_and_lands_on_console", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const { url } = recordedCall(input, init);
@@ -101,13 +101,9 @@ describe("LoginPage", () => {
             Promise.resolve({ access_token: "pa", refresh_token: "pr", token_type: "bearer" }),
         } as Response;
       }
-      if (url.includes("/health")) {
-        return {
-          ok: true,
-          status: 200,
-          json: () =>
-            Promise.resolve({ service: "One AI", version: "0.1.0", database: "reachable" }),
-        } as Response;
+      // The console loads the company list on mount — return an empty fleet.
+      if (url.includes("/platform/orgs")) {
+        return { ok: true, status: 200, json: () => Promise.resolve([]) } as Response;
       }
       return { ok: false, status: 401, json: () => Promise.resolve({}) } as Response;
     });
@@ -118,10 +114,8 @@ describe("LoginPage", () => {
     await user.type(screen.getByLabelText("Password"), "pw");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    await waitFor(() => expect(screen.getByText(/Welcome,/)).toBeInTheDocument());
-    // During the page-transition overlap both screens can be mounted; assert the
-    // role label appears at least once rather than requiring a single match.
-    expect(screen.getAllByText("Platform admin").length).toBeGreaterThan(0);
+    // A platform admin lands on the console, not the company home.
+    expect(await screen.findByRole("heading", { name: "Companies" })).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/platform/login"))).toBe(
       true,
     );

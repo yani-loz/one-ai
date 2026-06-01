@@ -1,0 +1,63 @@
+/**
+ * Role: Shared TypeScript contracts for the Platform console module — mirrors the
+ *       backend /platform/* API shapes (organization metadata + onboarding).
+ * Used by: platformClient.ts, PlatformConsolePage.tsx, OnboardCompanyDrawer.tsx,
+ *          OnboardSuccess.tsx, CompanyCard.tsx, StatusBadge.tsx.
+ * Depends on: nothing (leaf module — pure types).
+ * Key invariants:
+ *   - OrganizationSummary is METADATA ONLY (id/name/slug/status/user_count/created_at) —
+ *     it mirrors the backend OrganizationResponse and never carries tenant content.
+ *   - OnboardCompanyRequest field bounds mirror the backend Pydantic validators
+ *     (SafeName, slug pattern, BcryptPassword) so client-side checks match the server.
+ */
+
+/**
+ * Lifecycle states a company (tenant) can be in. The backend `status` column is still a
+ * free string defaulting to "active" (PR-3 promotes it to a CHECK-constrained enum); the
+ * UI treats any unknown value as a neutral fallback, so this stays forward-compatible.
+ */
+export type OrganizationStatus = "active" | "suspended" | "onboarding" | "offboarded";
+
+/** A customer company as the platform console sees it — operational metadata only. */
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  slug: string;
+  /** Lifecycle status; a string (not the enum) since the backend column is not yet constrained. */
+  status: string;
+  /** Active + inactive user count for the org (no tenant content). */
+  user_count: number;
+  /** ISO-8601 creation timestamp. */
+  created_at: string;
+}
+
+/**
+ * Payload to onboard a new company plus its first company_admin. Field bounds mirror the
+ * backend OrganizationCreateRequest validators:
+ *   - org_name / admin_full_name: 1..200 chars, no control characters (SafeName).
+ *   - org_slug: 1..100 chars matching ^[a-z0-9][a-z0-9-]*$.
+ *   - admin_password: 8..128 chars (and <= 72 UTF-8 bytes server-side, bcrypt's limit).
+ */
+export interface OnboardCompanyRequest {
+  org_name: string;
+  org_slug: string;
+  admin_email: string;
+  admin_full_name: string;
+  admin_password: string;
+}
+
+/** The newly-created company_admin as returned by onboarding (never includes a hash). */
+export interface OnboardedAdmin {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  org_id: string;
+  created_at: string;
+}
+
+/** Result of a successful onboard: the new org metadata + its seed admin. */
+export interface OnboardedCompany {
+  organization: OrganizationSummary;
+  admin: OnboardedAdmin;
+}

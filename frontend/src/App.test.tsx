@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { AuthProvider } from "./identity";
+import type { AuthUser } from "./identity";
+import { AuthContext, type AuthContextValue } from "./identity/authContext";
 
 function mockFetch(impl: () => Promise<unknown>): void {
   vi.stubGlobal("fetch", vi.fn(impl) as unknown as typeof fetch);
@@ -52,5 +54,45 @@ describe("App route shell", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Password")).toBeInTheDocument());
     expect(screen.getByText("Sign in to your workspace")).toBeInTheDocument();
+  });
+
+  it("routes an authenticated platform admin from / onward to the console", async () => {
+    // Bypass AuthProvider with a controlled context so the platform admin is already
+    // authenticated; RoleHome at "/" must forward to the platform console.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) =>
+        Promise.resolve(
+          String(input).includes("/platform/orgs")
+            ? ({ ok: true, status: 200, json: () => Promise.resolve([]) } as Response)
+            : ({ ok: false, status: 401, json: () => Promise.resolve({}) } as Response),
+        ),
+      ) as unknown as typeof fetch,
+    );
+    const platformAdmin: AuthUser = {
+      id: "platform-admin",
+      email: "super@ethera.ai",
+      full_name: "super",
+      role: "platform_admin",
+      org_id: null,
+      org_name: null,
+    };
+    const value: AuthContextValue = {
+      user: platformAdmin,
+      status: "authenticated",
+      login: vi.fn(),
+      platformLogin: vi.fn(),
+      logout: vi.fn(),
+    };
+
+    render(
+      <AuthContext.Provider value={value}>
+        <MemoryRouter initialEntries={["/"]}>
+          <App />
+        </MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Companies" })).toBeInTheDocument();
   });
 });

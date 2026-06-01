@@ -11,4 +11,8 @@ export type { AuthContextValue, AuthStatus } from "./authContext";
 export { useAuth } from "./useAuth";
 export { ProtectedRoute } from "./ProtectedRoute";
 export { LoginPage } from "./LoginPage";
+// Token-aware fetch + its error, re-exported so sibling modules (e.g. platform/) can
+// call authenticated backend endpoints without re-implementing token attachment — the
+// access token lives only in authClient's module memory and must be reached through it.
+export { authorizedFetch, AuthRequestError } from "./authClient";
 export type { AuthScope, AuthUser, Role, TokenPair } from "./types";

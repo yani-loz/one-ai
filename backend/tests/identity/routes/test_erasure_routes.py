@@ -29,6 +29,8 @@ from tests.identity.conftest import (
 )
 
 _PASSWORD = "Adm1n-Dev-Only-2026!"
+# The seeded platform admin's own password (seed_platform_admin default) — re-entered to erase.
+_ADMIN_PASSWORD = "Test-Pass-123"
 _REASON = "Customer offboarding per contract termination."
 
 
@@ -57,7 +59,7 @@ def _platform_headers(admin_id) -> dict[str, str]:
 
 
 def _erase_body(slug: str) -> dict[str, str]:
-    return {"reason": _REASON, "confirm_slug": slug}
+    return {"reason": _REASON, "confirm_slug": slug, "password": _ADMIN_PASSWORD}
 
 
 async def _count(session: AsyncSession, sql: str, org_id) -> int:
@@ -204,11 +206,28 @@ async def test_slug_confirmation_mismatch_returns_400_and_deletes_nothing(
 
     response = await client.post(
         f"/platform/orgs/{org.id}/erase",
-        json={"reason": _REASON, "confirm_slug": "wrong-slug"},
+        json={"reason": _REASON, "confirm_slug": "wrong-slug", "password": _ADMIN_PASSWORD},
         headers=_platform_headers(platform_admin.id),
     )
 
     assert response.status_code == 400
+    assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1
+
+
+async def test_erase_wrong_password_returns_403_and_deletes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Sudo-style re-auth: a correct slug but the WRONG admin password -> 403, nothing deleted
+    # (and 403, not 401, so it never tears down the admin's valid session).
+    org, _user, platform_admin = await _seed(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json={"reason": _REASON, "confirm_slug": "acme", "password": "wrong-password"},
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 403
     assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1
 
 

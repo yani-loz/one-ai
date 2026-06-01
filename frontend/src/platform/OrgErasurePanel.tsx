@@ -7,8 +7,10 @@
  *             ./types, the aurora theme.
  * Key invariants:
  *   - Erase is gated client-side too: "Erase permanently" stays disabled until the operator
- *     types the EXACT slug + a reason (the backend re-validates both). A legal hold (409) or
- *     a slug mismatch (400) surfaces as a message; a 401 bubbles to onAuthExpired.
+ *     types the EXACT slug + a reason + their own password (sudo-style re-auth). The backend
+ *     re-validates all three. A legal hold (409), a wrong password (403), or a slug mismatch
+ *     (400) surfaces as a message; a 401 bubbles to onAuthExpired (the password check is 403,
+ *     not 401, so a wrong password never logs the admin out).
  *   - On success the parent reloads (onErased) — the org re-renders as `offboarded`, and an
  *     already-erased org offers export only.
  *   - Metadata only: the export bundle is actions/metadata, never tenant content.
@@ -52,6 +54,7 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [slugInput, setSlugInput] = useState("");
   const [reason, setReason] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [exported, setExported] = useState(false);
@@ -61,12 +64,14 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
     setDialogOpen(false);
     setSlugInput("");
     setReason("");
+    setPassword("");
     setErrorMessage(null);
   }
 
   const dialogRef = useDialogA11y<HTMLDivElement>(dialogOpen, closeDialog);
   const alreadyErased = org.status === "offboarded";
-  const canErase = slugInput === org.slug && reason.trim().length > 0 && !busy;
+  const canErase =
+    slugInput === org.slug && reason.trim().length > 0 && password.length > 0 && !busy;
 
   async function handleExport(): Promise<void> {
     setBusy(true);
@@ -90,7 +95,7 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
     setBusy(true);
     setErrorMessage(null);
     try {
-      await eraseOrganization(org.id, reason.trim(), slugInput);
+      await eraseOrganization(org.id, reason.trim(), slugInput, password);
       closeDialog();
       onErased();
     } catch (error) {
@@ -98,11 +103,13 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
         onAuthExpired();
         return;
       }
-      const heldByLaw = error instanceof AuthRequestError && error.status === 409;
+      const status = error instanceof AuthRequestError ? error.status : 0;
       setErrorMessage(
-        heldByLaw
+        status === 409
           ? "This company is under legal hold — clear the hold before erasing."
-          : "Couldn't erase the company. Check the slug and that the API is running.",
+          : status === 403
+            ? "Incorrect password. Please re-enter your password."
+            : "Couldn't erase the company. Check the details and that the API is running.",
       );
     } finally {
       setBusy(false);
@@ -203,6 +210,20 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
                   onChange={(event) => setReason(event.target.value)}
                   maxLength={500}
                   placeholder="e.g. Customer offboarding per contract termination"
+                  className="mt-1 w-full rounded-lg border-[1.5px] border-slate-200/70 bg-white/70 px-3 py-2 text-text-primary outline-none focus:border-brand-red focus:shadow-[0_0_0_3px_rgba(220,38,38,0.1)]"
+                />
+                <label
+                  htmlFor="erase-password"
+                  className="mt-3 block text-sm font-medium text-text-secondary"
+                >
+                  Your password
+                </label>
+                <input
+                  id="erase-password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
                   className="mt-1 w-full rounded-lg border-[1.5px] border-slate-200/70 bg-white/70 px-3 py-2 text-text-primary outline-none focus:border-brand-red focus:shadow-[0_0_0_3px_rgba(220,38,38,0.1)]"
                 />
                 {errorMessage !== null && (

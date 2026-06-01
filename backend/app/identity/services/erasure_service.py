@@ -9,7 +9,8 @@ Depends on: organization/user/refresh-token/support-grant repositories, AuditSer
             identity.principal/enums/exceptions/schemas.
 Key invariants:
   - LEGAL-HOLD-BEATS-ERASURE: if the org is under legal hold, erase raises LegalHoldError
-    (409) and touches NOTHING. The slug confirmation is checked first (400 on mismatch).
+    (409) and touches NOTHING. Guards run before any delete: slug confirmation (400) → a
+    sudo-style password re-auth of the acting admin (403) → legal hold (409).
   - ATOMIC: all deletes/scrubs + the org.erased audit row commit in ONE request transaction
     (get_session) — a partial erasure can't be left behind.
   - COMPLETE across tenant PII: deletes users + refresh tokens (tokens FIRST — they key on
@@ -31,9 +32,11 @@ from app.identity.exceptions import (
     ErasureConfirmationError,
     LegalHoldError,
     OrganizationNotFoundError,
+    PasswordConfirmationError,
 )
 from app.identity.principal import Principal
 from app.identity.repositories.organization_repository import OrganizationRepository
+from app.identity.repositories.platform_admin_repository import PlatformAdminRepository
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
 from app.identity.repositories.support_grant_repository import SupportGrantRepository
 from app.identity.repositories.user_repository import UserRepository
@@ -43,6 +46,7 @@ from app.identity.schemas.erasure_schemas import (
     ErasureRequest,
 )
 from app.identity.schemas.platform_schemas import OrganizationDetailResponse
+from app.identity.security.password import verify_password
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 _ENTITY_ORGANIZATION = "organization"
@@ -63,6 +67,7 @@ class ErasureService:
         users: UserRepository,
         refresh_tokens: RefreshTokenRepository,
         support_grants: SupportGrantRepository,
+        platform_admins: PlatformAdminRepository,
         audit: AuditService,
     ) -> None:
         """Wire the repositories + audit writer (all bound to one plain platform session)."""
@@ -70,6 +75,7 @@ class ErasureService:
         self._users = users
         self._refresh_tokens = refresh_tokens
         self._support_grants = support_grants
+        self._platform_admins = platform_admins
         self._audit = audit
 
     async def erase_organization(
@@ -77,15 +83,18 @@ class ErasureService:
     ) -> ErasureCertificateResponse:
         """Erase a tenant's personal data and return the deletion certificate.
 
-        Order: LOCK the org (FOR UPDATE) → confirm slug (400) → legal-hold guard (409, touch
-        nothing) → delete tokens → scrub support emails → delete users → offboard → audit. All
-        atomic. The row lock closes a TOCTOU: a concurrent set_legal_hold can't slip a hold in
-        between the legal_hold read and the deletes — it blocks until this transaction commits,
-        so a hold placed as a purge looms is never overwritten by an in-flight erase.
+        Order: LOCK the org (FOR UPDATE) → confirm slug (400) → re-auth password (403) →
+        legal-hold guard (409, touch nothing) → delete tokens → scrub support emails → delete
+        users → offboard → audit. All atomic. The row lock closes a TOCTOU: a concurrent
+        set_legal_hold can't slip a hold in between the legal_hold read and the deletes — it
+        blocks until this transaction commits, so a hold placed as a purge looms is never
+        overwritten by an in-flight erase.
 
         Raises:
             OrganizationNotFoundError: no such org (-> 404).
             ErasureConfirmationError: confirm_slug != the org's slug (-> 400, nothing deleted).
+            PasswordConfirmationError: the admin's password re-check failed (-> 403, nothing
+                deleted) — a sudo-style guard, even though the admin is already authenticated.
             LegalHoldError: the org is under legal hold (-> 409, nothing deleted).
         """
         organization = await self._organizations.get_for_update(org_id)
@@ -95,6 +104,9 @@ class ErasureService:
             raise ErasureConfirmationError(
                 "Confirmation does not match the organization's slug."
             )
+        admin = await self._platform_admins.get_by_id(actor.subject_id)
+        if admin is None or not verify_password(payload.password, admin.password_hash):
+            raise PasswordConfirmationError("Password confirmation failed.")
         if organization.legal_hold:
             raise LegalHoldError(
                 "Cannot erase an organization under legal hold. Clear the hold first."

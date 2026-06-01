@@ -52,6 +52,15 @@ class OrganizationSuspendedError(IdentityError):
     """
 
 
+class PasswordConfirmationError(IdentityError):
+    """Re-authentication for a sensitive action failed — wrong password (-> 403).
+
+    Used to gate destructive operations (e.g. erasure) behind a fresh password check, even
+    for an already-authenticated admin (sudo-style). Mapped to 403 (NOT 401) so a wrong
+    password never tears down the valid session — the admin just retries.
+    """
+
+
 # — 404 Not Found —
 class UserNotFoundError(IdentityError):
     """No user with the given id exists within the caller's org scope."""

@@ -259,12 +259,13 @@ describe("OrganizationDetailPage", () => {
 
     renderDetail();
     await user.click(await screen.findByRole("button", { name: "Erase company" }));
-    // The destructive button is gated until the exact slug + a reason are typed.
+    // The destructive button is gated until the exact slug + a reason + the password are typed.
     const erasePermanently = await screen.findByRole("button", { name: "Erase permanently" });
     expect(erasePermanently).toBeDisabled();
 
     await user.type(screen.getByLabelText(/to confirm/), "acme");
     await user.type(screen.getByLabelText("Reason"), "Customer offboarding");
+    await user.type(screen.getByLabelText("Your password"), "Sup3r-Dev-Only-2026!");
     await user.click(screen.getByRole("button", { name: "Erase permanently" }));
 
     // The org reloads as offboarded; the panel reflects the erasure.

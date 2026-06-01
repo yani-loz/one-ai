@@ -256,5 +256,6 @@ def get_erasure_service(session: AsyncSession = Depends(get_session)) -> Erasure
         users=UserRepository(session),
         refresh_tokens=RefreshTokenRepository(session),
         support_grants=SupportGrantRepository(session),
+        platform_admins=PlatformAdminRepository(session),
         audit=AuditService(AuditRepository(session)),
     )

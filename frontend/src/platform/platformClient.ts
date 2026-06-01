@@ -133,19 +133,21 @@ export async function getOrganizationAudit(
 /**
  * Erase a company's personal data via POST /platform/orgs/{id}/erase.
  *
- * Contract: `confirmSlug` must equal the org's slug (the backend re-checks). Returns the
- * deletion certificate. Throws AuthRequestError — 409 when the org is under legal hold,
- * 400 on a slug mismatch, 401 when the session has lapsed.
+ * Contract: `confirmSlug` must equal the org's slug and `password` must be the acting
+ * admin's own password (sudo-style re-auth) — the backend re-checks both. Returns the
+ * deletion certificate. Throws AuthRequestError — 409 legal hold, 403 wrong password,
+ * 400 slug mismatch, 401 session lapsed.
  */
 export async function eraseOrganization(
   orgId: string,
   reason: string,
   confirmSlug: string,
+  password: string,
 ): Promise<ErasureCertificate> {
   const response = await authorizedFetch(`${API_URL}/platform/orgs/${orgId}/erase`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason, confirm_slug: confirmSlug }),
+    body: JSON.stringify({ reason, confirm_slug: confirmSlug, password }),
   });
   return parseJsonOrThrow<ErasureCertificate>(response);
 }

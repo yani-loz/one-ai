@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.schemas.audit_schemas import AuditLogEntryResponse
 from app.identity.schemas.platform_schemas import OrganizationDetailResponse
+from app.identity.schemas.user_schemas import LoginPassword
 
 
 class ErasureRequest(BaseModel):
@@ -31,6 +32,9 @@ class ErasureRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     # Must echo the org's slug exactly — a GitHub-style guard against accidental destruction.
     confirm_slug: str = Field(min_length=1, max_length=100)
+    # Sudo-style re-authentication: the admin re-enters their own password (bounded like login
+    # so an over-length value can't be run through bcrypt). Verified before any delete.
+    password: LoginPassword
 
 
 class ErasureCertificateResponse(BaseModel):

@@ -1,7 +1,7 @@
 /** Unit tests for the agent insignia spec generator — determinism + the rank grammar. */
 import { describe, expect, it } from "vitest";
 
-import { generateApexInsignia, generateInsignia } from "./generateInsignia";
+import { generateApexInsignia, generateInsignia, seedFromString } from "./generateInsignia";
 
 describe("generateInsignia", () => {
   it("test_same_inputs_produce_identical_spec", () => {
@@ -38,6 +38,24 @@ describe("generateInsignia", () => {
     for (let seed = 0; seed < 40; seed++) {
       expect(generateInsignia(seed, "orchestrator", 3).connection).toBe("web");
     }
+  });
+});
+
+describe("seedFromString", () => {
+  it("test_same_string_yields_same_seed", () => {
+    const id = "00000000-0000-0000-0000-000000000001";
+    expect(seedFromString(id)).toBe(seedFromString(id));
+  });
+
+  it("test_different_strings_yield_different_seeds", () => {
+    expect(seedFromString("alice")).not.toBe(seedFromString("bob"));
+  });
+
+  it("test_seed_is_a_non_negative_32_bit_integer", () => {
+    const seed = seedFromString("any-user-id");
+    expect(Number.isInteger(seed)).toBe(true);
+    expect(seed).toBeGreaterThanOrEqual(0);
+    expect(seed).toBeLessThanOrEqual(0xffffffff);
   });
 });
 

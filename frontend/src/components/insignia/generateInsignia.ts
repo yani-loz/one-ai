@@ -105,3 +105,16 @@ export function generateApexInsignia(seed: number): InsigniaSpec {
     outerRadius: 0.74,
   };
 }
+
+/**
+ * Hash an identity string (e.g. a user or agent UUID) to a stable 32-bit seed, so an
+ * entity always renders the same insignia. FNV-1a — deterministic, no DOM.
+ */
+export function seedFromString(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}

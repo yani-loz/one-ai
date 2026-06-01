@@ -10,7 +10,9 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 
+import { AgentInsignia } from "./components/AgentInsignia";
 import { BrandMark } from "./components/BrandMark";
+import { seedFromString, type AgentRank } from "./components/insignia/generateInsignia";
 import { useAuth } from "./identity";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -28,6 +30,13 @@ const ROLE_LABELS: Record<string, string> = {
   platform_admin: "Platform admin",
   company_admin: "Company admin",
   member: "Member",
+};
+
+/** A user's personal-AI insignia rank reflects their access level. */
+const RANK_BY_ROLE: Record<string, AgentRank> = {
+  platform_admin: 3,
+  company_admin: 2,
+  member: 1,
 };
 
 export function HomePage(): React.JSX.Element {
@@ -77,6 +86,26 @@ export function HomePage(): React.JSX.Element {
           {roleLabel}
           {user?.org_name !== null && user?.org_name !== undefined ? ` · ${user.org_name}` : ""}
         </p>
+
+        {user !== null && (
+          <div className="mt-6 flex items-center gap-3 rounded-xl border border-white/50 bg-white/40 p-3">
+            <AgentInsignia
+              seed={seedFromString(user.id)}
+              branch="orchestrator"
+              rank={RANK_BY_ROLE[user.role] ?? 1}
+              size={52}
+              assembleSeconds={1.6}
+              label={`${user.full_name}'s personal AI`}
+              className="shrink-0"
+            />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text-primary">Your personal AI</p>
+              <p className="text-xs text-text-muted">
+                Orchestrator · {"★".repeat(RANK_BY_ROLE[user.role] ?? 1)}
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 flex items-center justify-center gap-2 text-sm">
           <HealthDot state={healthState} />

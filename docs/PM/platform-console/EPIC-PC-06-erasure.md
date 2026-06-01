@@ -55,7 +55,8 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 
 | AC | Criterion | Proven by |
 |---|---|---|
-| ✅ ⭐ PC-06-AC1 | **Legal-hold-beats-erasure:** a held org → **409**, nothing deleted. | `::test_legal_hold_blocks_erasure_and_deletes_nothing` |
+| ✅ ⭐ PC-06-AC1 | **Legal-hold-beats-erasure:** a held org → **409**, nothing deleted (users, tokens, decider-email, status, audit all untouched). | `::test_legal_hold_blocks_erasure_and_deletes_nothing` |
+| ✅ ⭐ PC-06-AC1b | **Race-safe guard:** erase loads the org `FOR UPDATE`, so a concurrent `set_legal_hold` can't be overwritten by an in-flight erase (TOCTOU closed). | Correct-by-construction (the `FOR UPDATE` convention; review fix) — deterministic end-state test infeasible (orderings share an end state) |
 | ✅ PC-06-AC2 | Erasure deletes the org's **users + refresh tokens**, sets `offboarded`, and returns a certificate with counts. | `::test_erase_deletes_users_revokes_tokens_offboards_and_certifies` |
 | ✅ ⭐ PC-06-AC3 | Erasure **scrubs** `support_grant.decided_by_email` (tenant subject) but **keeps** `requested_by_email` (Ethera staff). | `::test_erase_scrubs_support_grant_decider_email` |
 | ✅ ⭐ PC-06-AC4 | The append-only `audit_log` is **RETAINED** (not deleted); the erasure itself is logged (`org.erased`). | `::test_erase_retains_audit_log_and_records_the_erasure` |
@@ -84,8 +85,14 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 - **Append-only vs erasure:** `audit_log` can't be deleted (immutability trigger), so it is
   **retained under documented legal basis** (Art. 17(3)); `actor_email` pseudonymization is the
   tracked real fix. The certificate reports retained-vs-erased honestly.
-- **Atomic + legal-hold-first:** confirm slug (400) → legal-hold (409, touch nothing) → delete
-  tokens (before users) → scrub → delete users → offboard → audit, all in one transaction.
+- **Atomic + legal-hold-first + ROW-LOCKED:** load the org `FOR UPDATE` → confirm slug (400) →
+  legal-hold (409, touch nothing) → delete tokens (before users) → scrub → delete users →
+  offboard → audit, all in one transaction. The lock (added in review) closes a TOCTOU where a
+  concurrent `set_legal_hold` could be overwritten by an in-flight erase — the same `FOR UPDATE`
+  convention PC-05 + the DYN-01 last-admin guard use.
+- **Retained-PII disclosure** is at TABLE scope: the certificate states the whole append-only
+  `audit_log` is retained (Art. 17(3)) — covering `actor_email` AND `ip_address`. Pseudonymizing
+  both at write time (keep `actor_id`) is the tracked real fix (`FIX_BEFORE_PROD`).
 - **Org row retained** at `offboarded` as the subject of the compliance record; B2B org
   name/slug kept (not personal data).
 

@@ -11,6 +11,8 @@ demo/globex orgs are never erased. Requires Postgres (identity_schema fixture).
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,20 +65,53 @@ async def _count(session: AsyncSession, sql: str, org_id) -> int:
     return result.scalar_one()
 
 
+async def _token_count(session: AsyncSession, user_id) -> int:
+    """Count refresh tokens still held by a user (subject_id keys on the user's id)."""
+    result = await session.execute(
+        text("SELECT count(*) FROM refresh_tokens WHERE subject_id=:u"), {"u": str(user_id)}
+    )
+    return result.scalar_one()
+
+
 async def test_legal_hold_blocks_erasure_and_deletes_nothing(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    # THE HEADLINE: legal hold beats erasure — 409 and the users are untouched.
-    org, _user, platform_admin = await _seed(db_session, legal_hold=True)
+    # THE HEADLINE: legal hold beats erasure — 409 and NOTHING is touched across every store.
+    org, user, platform_admin = await _seed(db_session, legal_hold=True)
+    await client.post(  # a refresh token to prove it survives
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+    grant = SupportGrant(
+        org_id=org.id,
+        requested_by_admin_id=platform_admin.id,
+        requested_by_email="staff-acme@ethera.example",
+        reason="prior visit",
+        status="approved",
+        decided_by_user_id=user.id,
+        decided_by_email="admin@acme.example",
+    )
+    db_session.add(grant)
+    await db_session.commit()
+    headers = _platform_headers(platform_admin.id)
 
     response = await client.post(
-        f"/platform/orgs/{org.id}/erase",
-        json=_erase_body("acme"),
-        headers=_platform_headers(platform_admin.id),
+        f"/platform/orgs/{org.id}/erase", json=_erase_body("acme"), headers=headers
     )
 
     assert response.status_code == 409
+    # Touch NOTHING: users + tokens + decider-email intact, status NOT offboarded, no audit row.
     assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1
+    assert await _token_count(db_session, user.id) >= 1
+    await db_session.refresh(grant)
+    assert grant.decided_by_email == "admin@acme.example"
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM organizations WHERE id=:o"), {"o": str(org.id)}
+        )
+    ).scalar_one()
+    assert status == "active"
+    audit = await client.get(f"/platform/orgs/{org.id}/audit", headers=headers)
+    assert all(entry["action"] != "org.erased" for entry in audit.json())
 
 
 async def test_erase_deletes_users_revokes_tokens_offboards_and_certifies(
@@ -101,7 +136,9 @@ async def test_erase_deletes_users_revokes_tokens_offboards_and_certifies(
     assert cert["tokens_deleted"] >= 1
     assert cert["audit_log_retained"] is True
     assert "17(3)" in cert["retained_legal_basis"]
+    # Verify against the STORES, not just the self-reported certificate.
     assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 0
+    assert await _token_count(db_session, _user.id) == 0
     status = (
         await db_session.execute(
             text("SELECT status FROM organizations WHERE id=:o"), {"o": str(org.id)}
@@ -220,3 +257,79 @@ async def test_compliance_export_rejects_company_token(
     )
 
     assert export.status_code == 401
+
+
+async def test_erase_unknown_org_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _org, _user, platform_admin = await _seed(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{uuid4()}/erase",
+        json=_erase_body("whatever"),
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 404
+
+
+async def test_compliance_export_unknown_org_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _org, _user, platform_admin = await _seed(db_session)
+
+    export = await client.get(
+        f"/platform/orgs/{uuid4()}/compliance-export",
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert export.status_code == 404
+
+
+async def test_re_erase_is_idempotent(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Erasing an already-offboarded org again is a clean no-op with zero counts (operator
+    # double-click on a destructive endpoint must be safe).
+    org, _user, platform_admin = await _seed(db_session)
+    headers = _platform_headers(platform_admin.id)
+    body = _erase_body("acme")
+    first = await client.post(f"/platform/orgs/{org.id}/erase", json=body, headers=headers)
+    assert first.status_code == 200
+
+    second = await client.post(f"/platform/orgs/{org.id}/erase", json=body, headers=headers)
+
+    assert second.status_code == 200
+    assert second.json()["users_erased"] == 0
+    assert second.json()["tokens_deleted"] == 0
+
+
+async def test_compliance_export_after_erase_still_builds(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The proof-of-processing artifact must still build for an erased org (audit retained).
+    org, _user, platform_admin = await _seed(db_session)
+    headers = _platform_headers(platform_admin.id)
+    await client.post(f"/platform/orgs/{org.id}/erase", json=_erase_body("acme"), headers=headers)
+
+    export = await client.get(f"/platform/orgs/{org.id}/compliance-export", headers=headers)
+
+    assert export.status_code == 200
+    body = export.json()
+    assert body["organization"]["status"] == "offboarded"
+    assert body["organization"]["user_count"] == 0
+    assert any(entry["action"] == "org.erased" for entry in body["audit"])  # trail retained
+
+
+async def test_erase_missing_reason_returns_422(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _user, platform_admin = await _seed(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json={"confirm_slug": "acme"},  # reason omitted
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 422

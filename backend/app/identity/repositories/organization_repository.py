@@ -36,6 +36,20 @@ class OrganizationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_for_update(self, org_id: UUID) -> Organization | None:
+        """Return the organization with `org_id` LOCKED (SELECT … FOR UPDATE), or None.
+
+        For state-transition decisions that must not race a concurrent write to the same row
+        — notably ERASURE's legal-hold guard: the lock serializes erase against a concurrent
+        set_legal_hold, so a hold placed as a purge looms can't be overwritten by an in-flight
+        erase reading a stale flag (a second transaction blocks until this one commits, then
+        re-reads). Mirrors the support-grant + last-admin (DYN-01) FOR UPDATE convention.
+        """
+        result = await self._session.execute(
+            select(Organization).where(Organization.id == org_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_slug(self, slug: str) -> Organization | None:
         """Return the organization with `slug`, or None if absent."""
         result = await self._session.execute(

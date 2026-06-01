@@ -77,15 +77,18 @@ class ErasureService:
     ) -> ErasureCertificateResponse:
         """Erase a tenant's personal data and return the deletion certificate.
 
-        Order: confirm slug (400) → legal-hold guard (409, touch nothing) → delete tokens →
-        scrub support emails → delete users → offboard → audit. All atomic.
+        Order: LOCK the org (FOR UPDATE) → confirm slug (400) → legal-hold guard (409, touch
+        nothing) → delete tokens → scrub support emails → delete users → offboard → audit. All
+        atomic. The row lock closes a TOCTOU: a concurrent set_legal_hold can't slip a hold in
+        between the legal_hold read and the deletes — it blocks until this transaction commits,
+        so a hold placed as a purge looms is never overwritten by an in-flight erase.
 
         Raises:
             OrganizationNotFoundError: no such org (-> 404).
             ErasureConfirmationError: confirm_slug != the org's slug (-> 400, nothing deleted).
             LegalHoldError: the org is under legal hold (-> 409, nothing deleted).
         """
-        organization = await self._organizations.get_by_id(org_id)
+        organization = await self._organizations.get_for_update(org_id)
         if organization is None:
             raise OrganizationNotFoundError("Organization not found.")
         if payload.confirm_slug != organization.slug:

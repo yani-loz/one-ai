@@ -75,9 +75,10 @@ indexes every case with its current status and result.
 | Code | Target |
 |---|---|
 | `IA` | Infrastructure + Authentication/Authorization |
+| `PC` | Platform Console backend (`/platform/*`) |
+| `FE` | Frontend (auth client, routing, XSS) |
 | `UM` | User management (CRUD, last-admin, lifecycle) — *planned* |
 | `IV` | Input validation & fuzzing — *planned* |
-| `FE` | Frontend (auth client, routing, XSS) — *planned* |
 
 ### Result legend
 In adversarial testing, **a ❌ Fail is a win** — we broke something. Read results as
@@ -151,10 +152,11 @@ Demo credentials (dev-only, from `docs/FIX_BEFORE_PROD.md`):
 
 | # | Target | Status |
 |---|---|---|
-| 01 | Infrastructure + AuthN/AuthZ | **in progress** |
-| 02 | User management (CRUD, last-admin, lifecycle) | planned |
-| 03 | Input validation & fuzzing | planned |
-| 04 | Frontend (auth client, routing, XSS) | planned |
+| 01 | Infrastructure + AuthN/AuthZ | ✅ done (`01_infrastructure-authn-authz/`) |
+| 02 | Platform Console backend (`/platform/*`) | ✅ done (`02_platform-console/`) |
+| 04 | Frontend (auth client, routing, XSS) | **in progress** (`04_frontend-platform-console/`) |
+| — | User management (CRUD, last-admin, lifecycle) | planned |
+| — | Input validation & fuzzing | planned |
 
 > Connectors (Connect), retrieval (Ask), and the learning loop (Learn) get their own
 > targets as those modules land.

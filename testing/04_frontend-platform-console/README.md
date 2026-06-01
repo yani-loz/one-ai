@@ -56,6 +56,8 @@ regression (covered by the PR-1 review's component tests).
 > Tag: 🆕 NEW · ✔ CONFIRMS-FIXED · ✖ REFUTES-FIX · 📋 CONFIRMS-DOCUMENTED · — n/a.
 > **Run 2026-06-01** (Playwright MCP against the live SPA). **9 cases · 8 ✅ · 1 ❌ (NEW, the win).**
 > The console UI auth model is otherwise sound; the one defect is a prod-reachable multi-tab refresh race.
+> **TC-FE-009 FIXED 2026-06-01** (compare-and-clear + cross-tab Web Lock in `authClient.ts`;
+> unit test `test_refresh_401_does_not_wipe_a_token_another_tab_rotated`). Live two-tab re-test recommended.
 
 | Case | Title | Type | Result | Tag |
 |---|---|---|---|---|
@@ -67,7 +69,7 @@ regression (covered by the PR-1 review's component tests).
 | TC-FE-006 | Logout clears the persisted token + revokes server-side | Positive | ✅ | ✔ CONFIRMS-FIXED |
 | TC-FE-007 | Half-open teardown on /platform/me failure | Adversarial | ✅ | ✔ CONFIRMS-FIXED |
 | TC-FE-008 | Client role is UX-only — server stays authoritative | Adversarial | ✅ | ✔ CONFIRMS-FIXED |
-| **TC-FE-009** | **Multi-tab / concurrent refresh collision wipes the shared session** | Concurrency | **❌** | **🆕 NEW** |
+| **TC-FE-009** | **Multi-tab / concurrent refresh collision wipes the shared session** | Concurrency | **❌ → ✅ fixed** | **🆕 NEW** |
 
 ¹ Passes for a single isolated context; the cross-context defect it first hinted at is owned by TC-FE-009.
 

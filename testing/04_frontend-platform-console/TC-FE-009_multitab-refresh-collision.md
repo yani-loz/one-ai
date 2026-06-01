@@ -97,3 +97,23 @@ deferral — also dissolves it, since the browser, not JS, owns the single token
 A real two-tab timing race (both reloaded within the ~10–30 ms refresh round-trip) is the organic trigger;
 the deterministic repro above proves the mechanism without depending on that window. Re-test after the fix
 with two real tabs.
+
+## Resolution (2026-06-01)
+
+Fixed in `frontend/src/identity/authClient.ts` with two layers:
+
+1. **Cross-tab Web Lock** — company refresh now runs inside `navigator.locks.request("oneai.auth.refresh", …)`
+   (`withRefreshLock`), so only one tab rotates the shared token at a time; the stored token is re-read
+   *inside* the lock, so each tab rotates the CURRENT token, not a stale captured one. Falls back to direct
+   execution where the Web Locks API is unavailable.
+2. **Compare-and-clear** — on a 401, the failure path (`rotateCompanySession`) only `setTokens(null)` if the
+   currently-stored token still equals the one whose refresh just failed. If another tab rotated it meanwhile
+   (the no-Web-Locks fallback race), the winner's live token is preserved and the failure surfaces as
+   "Refresh superseded by another tab" — no session wipe.
+
+**Proof:** unit test `authClient.test.ts::test_refresh_401_does_not_wipe_a_token_another_tab_rotated` —
+a winner rotates the shared token mid-flight; the losing 401 leaves the winner's token intact (not wiped).
+The existing single-tab `test_refresh_rejected_clears_session` (genuine dead session → cleared) still holds.
+
+**Status:** ✅ Fixed (unit-verified). Live two-tab Playwright re-test recommended to confirm against the
+real timing window. Full robust closure remains the tracked httpOnly-cookie deferral (browser owns the token).

@@ -15,9 +15,13 @@
  *     7-day Ethera-staff credential from storage.
  *   - `performRefresh` / `logout` are domain-aware: a platform session rotates/revokes
  *     via /platform/*; a company session via /auth/* (its refresh token in localStorage).
+ *   - Company refresh is serialized ACROSS TABS (Web Locks API) plus a compare-and-clear
+ *     guard, so two tabs racing to rotate the SHARED localStorage token can't log each
+ *     other out (TC-FE-009). Platform refresh is in-memory (single-tab) and needs no lock.
  *   - `authorizedFetch` retries a 401 at most ONCE, and never tries to refresh the
  *     /auth/refresh or /auth/login calls themselves (no infinite loop).
- *   - A failed refresh clears the whole session so callers fall back to /login.
+ *   - A failed refresh clears the session — compare-and-clear: UNLESS another tab already
+ *     rotated the token — so callers fall back to /login.
  */
 import type { AuthUser, CompanyLoginResponse, PlatformAdminView, TokenPair } from "./types";
 
@@ -164,7 +168,36 @@ async function performRefresh(): Promise<string> {
     return tokens.access_token;
   }
 
-  // Company session: rotate via /auth/refresh using the localStorage token.
+  // Company session: serialize rotation ACROSS TABS (Web Locks) so two tabs never rotate
+  // the same localStorage token at once and the loser never wipes the winner's session
+  // (TC-FE-009). Falls back to direct execution (guarded by compare-and-clear) where the
+  // Web Locks API is unavailable.
+  return withRefreshLock(rotateCompanySession);
+}
+
+/**
+ * Run `task` while holding the cross-tab refresh lock (Web Locks API), so only one tab
+ * rotates the shared company refresh token at a time. Falls back to running directly where
+ * `navigator.locks` is unavailable (older browsers, jsdom) — the compare-and-clear guard in
+ * `rotateCompanySession` still applies on that path.
+ */
+function withRefreshLock<T>(task: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  if (locks !== undefined && typeof locks.request === "function") {
+    return locks.request("oneai.auth.refresh", () => task()) as Promise<T>;
+  }
+  return task();
+}
+
+/**
+ * Rotate the company session via POST /auth/refresh. The stored token is re-read here so
+ * (under the cross-tab lock) we always rotate the CURRENT token, not a stale captured one.
+ *
+ * Multi-tab safety (TC-FE-009): on a 401, only clear the session if OUR token is still the
+ * stored one. If another tab rotated it while our request was in flight (the no-Web-Locks
+ * fallback race), the winner's fresh token is live — surface the failure WITHOUT wiping it.
+ */
+async function rotateCompanySession(): Promise<string> {
   const stored = getStoredRefreshToken();
   if (stored === null) {
     throw new AuthRequestError(401, "No refresh token");
@@ -175,8 +208,11 @@ async function performRefresh(): Promise<string> {
     body: JSON.stringify({ refresh_token: stored }),
   });
   if (!response.ok) {
-    setTokens(null);
-    throw new AuthRequestError(response.status, "Refresh rejected");
+    if (getStoredRefreshToken() === stored) {
+      setTokens(null);
+      throw new AuthRequestError(response.status, "Refresh rejected");
+    }
+    throw new AuthRequestError(response.status, "Refresh superseded by another tab");
   }
   const tokens = (await response.json()) as TokenPair;
   setTokens(tokens);

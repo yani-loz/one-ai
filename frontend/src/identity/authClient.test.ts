@@ -144,6 +144,19 @@ describe("refreshTokens", () => {
     expect(getStoredRefreshToken()).toBeNull();
   });
 
+  it("test_refresh_401_does_not_wipe_a_token_another_tab_rotated", async () => {
+    // TC-FE-009 (multi-tab): our refresh loses the race — a winner tab rotated the shared
+    // localStorage token while ours was in flight. Our losing 401 must NOT wipe it.
+    setTokens({ access_token: "a1", refresh_token: "r1", token_type: "bearer" });
+    fetchMock.mockImplementationOnce(async () => {
+      localStorage.setItem("oneai.refresh_token", "r2-from-winner-tab");
+      return jsonResponse(401, {});
+    });
+
+    await expect(refreshTokens()).rejects.toBeInstanceOf(AuthRequestError);
+    expect(getStoredRefreshToken()).toBe("r2-from-winner-tab"); // winner's token preserved
+  });
+
   it("test_refresh_success_rotates_stored_token", async () => {
     setTokens({ access_token: "a1", refresh_token: "r1", token_type: "bearer" });
     fetchMock.mockResolvedValueOnce(

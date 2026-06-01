@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 
+import { BrandMark } from "./components/BrandMark";
 import { useAuth } from "./identity";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -67,10 +68,7 @@ export function HomePage(): React.JSX.Element {
       className="flex min-h-screen items-center justify-center p-6"
     >
       <section className="w-full max-w-md rounded-xl border border-white/50 bg-white/65 p-8 shadow-sm backdrop-blur-xl">
-        <div className="relative mx-auto mb-6 h-16 w-16">
-          <div className="absolute inset-0 animate-aura-pulse rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple blur-md" />
-          <div className="absolute inset-2 rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple" />
-        </div>
+        <BrandMark size={88} className="mx-auto mb-6" />
 
         <h1 className="text-center text-h3 font-bold text-text-primary">
           Welcome, <span className="text-brand-gradient">{user?.full_name}</span>

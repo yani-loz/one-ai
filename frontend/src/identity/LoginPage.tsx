@@ -16,6 +16,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 
+import { BrandMark } from "../components/BrandMark";
 import { AuthRequestError } from "./authClient";
 import { DevCredentialsPanel } from "./DevCredentialsPanel";
 import { useAuth } from "./useAuth";
@@ -82,12 +83,21 @@ export function LoginPage(): React.JSX.Element {
     >
       <div className="w-full max-w-md">
         <section className="rounded-xl border border-white/50 bg-white/65 p-8 shadow-sm backdrop-blur-xl">
-          <div className="relative mx-auto mb-6 h-16 w-16">
-            <div className="absolute inset-0 animate-aura-pulse rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple blur-md" />
-            <div className="absolute inset-2 rounded-full bg-gradient-to-r from-brand-teal via-brand-blue to-brand-purple" />
-          </div>
+          <BrandMark
+            size={120}
+            className="mx-auto mb-5"
+            activity={submitting ? "thinking" : "idle"}
+          />
 
-          <h1 className="text-center text-h2 font-bold text-brand-gradient">One AI</h1>
+          {/* Aurora wordmark — letters ramped teal → blue → purple so all three read. */}
+          <h1 className="text-center text-h2 font-bold" aria-label="One AI">
+            <span style={{ color: "#0d9488" }}>O</span>
+            <span style={{ color: "#2389bd" }}>n</span>
+            <span style={{ color: "#3b82f6" }}>e</span>
+            <span> </span>
+            <span style={{ color: "#636ff6" }}>A</span>
+            <span style={{ color: "#8b5cf6" }}>I</span>
+          </h1>
           <p className="mt-1 text-center text-sm text-text-secondary">
             {isPlatform ? "Platform administration" : "Sign in to your workspace"}
           </p>

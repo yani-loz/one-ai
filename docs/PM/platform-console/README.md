@@ -18,6 +18,8 @@ content**. It is the operator side of the trust architecture: data-minimised by 
 | [PC-01](EPIC-PC-01-super-admin-console.md) | Super-admin console — company fleet view + onboarding | ✅ Done | `feat/platform-console` · `7cc24bc` | [audit](../../audits/2026-06-01_platform-console-pr1-review.md) |
 | [PC-02](EPIC-PC-02-platform-session-hardening.md) | Platform session hardening (`/me` + refresh + logout) | ✅ Done | `feat/platform-session` · `673964a` | [audit](../../audits/2026-06-01_platform-session-pr2-review.md) |
 | [PC-03a](EPIC-PC-03a-org-lifecycle.md) | Org lifecycle — status, legal hold, suspend/reactivate + detail screen | ✅ Done | `feat/platform-lifecycle` · `ee16df8` | [audit](../../audits/2026-06-01_platform-lifecycle-pr3a-review.md) |
+| [PC-04](EPIC-PC-04-audit-log.md) | Append-only `audit_log` + auth/org/user emission + trail viewer | ✅ Done | `main` · `c2fa88f` | [audit](../../audits/2026-06-01_platform-audit-pr4-review.md) |
+| [PC-05](EPIC-PC-05-break-glass.md) | Break-glass support access — grant lifecycle (backend) | 🟢 Backend done | `feat/platform-break-glass` | [audit](../../audits/2026-06-01_platform-break-glass-pr5-review.md) |
 
 ## Roadmap (the "full control plane")
 
@@ -30,8 +32,8 @@ are planned (each becomes its own epic when started).
 | 2 | PC-02 | Session hardening — `/platform/me` + refresh + logout (closes AUD-14) | ✅ Done |
 | 3a | PC-03a | Lifecycle — status enum, legal hold, suspend/reactivate + **detail screen** | ✅ Done |
 | 3b | PC-03b | Governance posture — `organization_governance` table + posture editor | ⏳ Planned |
-| 4 | PC-04 | Append-only `audit_log` + admin/AI action trail | ⏳ Planned |
-| 5 | PC-05 | Break-glass support access (request → customer approval → time-boxed → logged → expire) | ⏳ Planned |
+| 4 | PC-04 | Append-only `audit_log` + admin/AI action trail | ✅ Done |
+| 5 | PC-05 | Break-glass support access (request → customer approval → time-boxed → logged → expire) | 🟢 Backend done (UIs → PC-05b) |
 | 6 | PC-06 | Erasure (legal-hold-beats-erasure) + exportable compliance artifacts | ⏳ Planned |
 
 ## Cross-cutting invariants (every PC epic inherits these)

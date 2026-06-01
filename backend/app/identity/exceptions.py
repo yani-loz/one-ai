@@ -61,6 +61,14 @@ class OrganizationNotFoundError(IdentityError):
     """No organization with the given id/slug exists."""
 
 
+class SupportGrantNotFoundError(IdentityError):
+    """No support grant with the given id is visible in the caller's scope (-> 404).
+
+    A company admin loading another org's grant, or a platform admin loading a grant they
+    did not request, resolves here — never a cross-org existence leak (a 404, not a 403).
+    """
+
+
 # — 409 Conflict —
 class DuplicateUserError(IdentityError):
     """A user with the given email already exists (email is globally unique)."""
@@ -75,4 +83,13 @@ class LastAdminError(IdentityError):
 
     Guards against an admin locking their own org out of user management by
     demoting/deactivating the last active administrator (including themselves).
+    """
+
+
+class InvalidGrantTransitionError(IdentityError):
+    """The requested support-grant transition is illegal from its current state (-> 409).
+
+    e.g. approving/denying a grant that is not `requested`, or revoking one that is already
+    `denied`/`revoked`. Every transition is guarded on the grant's CURRENT status so a
+    revoked grant can't be re-approved and an expired one can't be resurrected.
     """

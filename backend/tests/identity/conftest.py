@@ -36,6 +36,7 @@ from app.identity import models as identity_models  # noqa: F401 — registers t
 from app.identity.models.audit_log import AuditLog
 from app.identity.models.organization import Organization
 from app.identity.models.platform_admin import PlatformAdmin
+from app.identity.models.support_grant import SupportGrant
 from app.identity.models.user import User
 from app.identity.principal import Principal
 from app.identity.security.password import hash_password
@@ -54,6 +55,7 @@ _IDENTITY_TABLES = [
     PlatformAdmin.__table__,
     Organization.metadata.tables["refresh_tokens"],
     AuditLog.__table__,
+    SupportGrant.__table__,
 ]
 
 

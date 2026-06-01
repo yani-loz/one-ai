@@ -13,6 +13,14 @@ from app.identity.models.audit_log import AuditLog
 from app.identity.models.organization import Organization
 from app.identity.models.platform_admin import PlatformAdmin
 from app.identity.models.refresh_token import RefreshToken
+from app.identity.models.support_grant import SupportGrant
 from app.identity.models.user import User
 
-__all__ = ["AuditLog", "Organization", "PlatformAdmin", "RefreshToken", "User"]
+__all__ = [
+    "AuditLog",
+    "Organization",
+    "PlatformAdmin",
+    "RefreshToken",
+    "SupportGrant",
+    "User",
+]

@@ -54,6 +54,10 @@ class AuditAction:
     USER_CREATE = "user.create"
     USER_ROLE_CHANGE = "user.role_change"
     USER_DEACTIVATE = "user.deactivate"
+    SUPPORT_REQUESTED = "support.requested"
+    SUPPORT_APPROVED = "support.approved"
+    SUPPORT_DENIED = "support.denied"
+    SUPPORT_REVOKED = "support.revoked"
 
 
 @dataclass(frozen=True, slots=True)

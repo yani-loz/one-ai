@@ -23,11 +23,13 @@ from app.identity.exceptions import (
     DuplicateUserError,
     IdentityError,
     InvalidCredentialsError,
+    InvalidGrantTransitionError,
     LastAdminError,
     OrganizationNotFoundError,
     OrganizationSuspendedError,
     PermissionDeniedError,
     RefreshTokenInvalidError,
+    SupportGrantNotFoundError,
     TokenExpiredError,
     TokenInvalidError,
     UserNotFoundError,
@@ -43,9 +45,11 @@ _STATUS_BY_EXCEPTION: dict[type[IdentityError], int] = {
     OrganizationSuspendedError: status.HTTP_403_FORBIDDEN,
     UserNotFoundError: status.HTTP_404_NOT_FOUND,
     OrganizationNotFoundError: status.HTTP_404_NOT_FOUND,
+    SupportGrantNotFoundError: status.HTTP_404_NOT_FOUND,
     DuplicateUserError: status.HTTP_409_CONFLICT,
     DuplicateOrganizationError: status.HTTP_409_CONFLICT,
     LastAdminError: status.HTTP_409_CONFLICT,
+    InvalidGrantTransitionError: status.HTTP_409_CONFLICT,
 }
 
 

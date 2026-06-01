@@ -41,6 +41,20 @@ class OrganizationStatus(StrEnum):
     offboarded = "offboarded"
 
 
+class SupportGrantStatus(StrEnum):
+    """Lifecycle state of a break-glass support-access grant.
+
+    Values match the DB CHECK on support_grant.status (ck_support_grant_status). There is
+    deliberately NO `expired` value — expiry is computed live against `expires_at`, never
+    stored, so the access decision always reads the clock rather than a column.
+    """
+
+    requested = "requested"
+    approved = "approved"
+    denied = "denied"
+    revoked = "revoked"
+
+
 class AuditActorType(StrEnum):
     """Who performed an audited action (pins audit_log.actor_type via ck_audit_log_actor_type).
 

@@ -35,6 +35,7 @@ from app.identity.repositories.audit_repository import AuditRepository
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.repositories.platform_admin_repository import PlatformAdminRepository
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
+from app.identity.repositories.support_grant_repository import SupportGrantRepository
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.security.tokens import (
     COMPANY_AUDIENCE,
@@ -43,8 +44,10 @@ from app.identity.security.tokens import (
 )
 from app.identity.services.audit_service import AuditService
 from app.identity.services.auth_service import AuthService
+from app.identity.services.company_support_service import CompanySupportService
 from app.identity.services.platform_auth_service import PlatformAuthService
 from app.identity.services.platform_org_service import PlatformOrgService
+from app.identity.services.platform_support_service import PlatformSupportService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
 from app.identity.services.user_service import UserService
@@ -207,3 +210,35 @@ def get_platform_org_service(
 def get_audit_service(session: AsyncSession = Depends(get_session)) -> AuditService:
     """Provide AuditService on a PLAIN session for the audit READ endpoints (spans orgs)."""
     return AuditService(AuditRepository(session))
+
+
+def get_platform_support_service(
+    session: AsyncSession = Depends(get_session),
+) -> PlatformSupportService:
+    """Provide PlatformSupportService on a PLAIN session (break-glass spans all orgs).
+
+    The AuditService shares this session so each support transition commits atomically
+    with its audit row.
+    """
+    return PlatformSupportService(
+        organizations=OrganizationRepository(session),
+        support_grants=SupportGrantRepository(session),
+        platform_admins=PlatformAdminRepository(session),
+        audit=AuditService(AuditRepository(session)),
+    )
+
+
+def get_company_support_service(
+    session: AsyncSession = Depends(get_tenant_session),
+) -> CompanySupportService:
+    """Provide CompanySupportService on the caller's TENANT-scoped session.
+
+    org_id flows from the verified JWT via get_tenant_session, and the service also filters
+    every grant lookup by the caller's org (defense in depth) — a company_admin can only
+    decide their own org's requests.
+    """
+    return CompanySupportService(
+        support_grants=SupportGrantRepository(session),
+        users=UserRepository(session),
+        audit=AuditService(AuditRepository(session)),
+    )

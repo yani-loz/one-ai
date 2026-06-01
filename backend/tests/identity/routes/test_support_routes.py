@@ -10,6 +10,7 @@ live expiry, and audit emission. Requires Postgres (identity_schema fixture).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -17,7 +18,16 @@ from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import scoped_session
 from app.identity.enums import UserRole
+from app.identity.exceptions import InvalidGrantTransitionError
+from app.identity.models.support_grant import SupportGrant
+from app.identity.principal import Principal
+from app.identity.repositories.audit_repository import AuditRepository
+from app.identity.repositories.support_grant_repository import SupportGrantRepository
+from app.identity.repositories.user_repository import UserRepository
+from app.identity.services.audit_service import AuditService
+from app.identity.services.company_support_service import CompanySupportService
 from tests.identity.conftest import (
     bearer,
     company_token,
@@ -258,3 +268,163 @@ async def test_approve_emits_audit_event_with_expires_at(
     assert entry["org_id"] == str(org.id)
     assert entry["entity_type"] == "support_grant"
     assert "expires_at" in entry["details"]  # "logged → expire"
+
+
+async def test_list_my_requests_is_requester_scoped(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # A platform admin's list returns ONLY their own requests, never another admin's.
+    org, _admin, platform_a = await _seed_actors(db_session)
+    platform_b = await seed_platform_admin(
+        db_session, email="staff-b@ethera.example", full_name="Staff B"
+    )
+    await db_session.commit()
+    grant_a = await _request_grant(client, org.id, platform_a.id)
+    await _request_grant(client, org.id, platform_b.id)  # B's request
+
+    mine = await client.get(
+        "/platform/support-requests", headers=_platform_headers(platform_a.id)
+    )
+
+    assert mine.status_code == 200
+    assert [g["id"] for g in mine.json()] == [grant_a["id"]]  # only A's
+
+
+async def test_cross_tenant_deny_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org_a, _admin_a, platform_admin = await _seed_actors(db_session, slug="acme")
+    org_b, admin_b, _platform_b = await _seed_actors(db_session, slug="globex")
+    grant = await _request_grant(client, org_a.id, platform_admin.id)
+
+    hijack = await client.post(
+        f"/support-access/{grant['id']}/deny",
+        headers=_company_headers(admin_b.id, org_b.id),
+    )
+
+    assert hijack.status_code == 404
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM support_grant WHERE id = :id"), {"id": grant["id"]}
+        )
+    ).scalar_one()
+    assert status == "requested"  # untouched
+
+
+async def test_cross_tenant_revoke_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org_a, admin_a, platform_admin = await _seed_actors(db_session, slug="acme")
+    org_b, admin_b, _platform_b = await _seed_actors(db_session, slug="globex")
+    grant = await _request_grant(client, org_a.id, platform_admin.id)
+    # Approve it (as A) so the revocable (requested|approved) set is exercised cross-tenant.
+    await client.post(
+        f"/support-access/{grant['id']}/approve",
+        headers=_company_headers(admin_a.id, org_a.id),
+    )
+
+    hijack = await client.post(
+        f"/support-access/{grant['id']}/revoke",
+        headers=_company_headers(admin_b.id, org_b.id),
+    )
+
+    assert hijack.status_code == 404
+    status = (
+        await db_session.execute(
+            text("SELECT status FROM support_grant WHERE id = :id"), {"id": grant["id"]}
+        )
+    ).scalar_one()
+    assert status == "approved"  # B couldn't cut off A's grant
+
+
+async def test_company_revoke_approved_grant_succeeds(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The emergency cut-off happy path: approve -> revoke flips to revoked + logs it.
+    org, admin_user, platform_admin = await _seed_actors(db_session)
+    grant = await _request_grant(client, org.id, platform_admin.id)
+    headers = _company_headers(admin_user.id, org.id)
+    await client.post(f"/support-access/{grant['id']}/approve", headers=headers)
+
+    revoked = await client.post(f"/support-access/{grant['id']}/revoke", headers=headers)
+
+    assert revoked.status_code == 200
+    body = revoked.json()
+    assert body["status"] == "revoked"
+    assert body["is_active"] is False  # access cut off
+    audit = await client.get(
+        "/platform/audit",
+        params={"action": "support.revoked"},
+        headers=_platform_headers(platform_admin.id),
+    )
+    assert len(audit.json()) == 1
+
+
+async def test_platform_revoke_own_request_succeeds(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, _admin, platform_admin = await _seed_actors(db_session)
+    grant = await _request_grant(client, org.id, platform_admin.id)
+
+    revoked = await client.post(
+        f"/platform/support-requests/{grant['id']}/revoke",
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+
+
+async def test_request_empty_reason_returns_422(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The consent justification is mandatory + bounded (min_length=1) — pin the contract.
+    org, _admin, platform_admin = await _seed_actors(db_session)
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/support-requests",
+        json={"reason": ""},
+        headers=_platform_headers(platform_admin.id),
+    )
+
+    assert response.status_code == 422
+
+
+async def test_concurrent_transitions_serialize_via_row_lock(
+    db_session: AsyncSession,
+) -> None:
+    # Two simultaneous approves on the same grant must serialize (SELECT ... FOR UPDATE):
+    # exactly one wins, the other re-reads the committed status and is rejected (409). Without
+    # the row lock both would read 'requested' and both commit (lost update). Mirrors DYN-01.
+    org, admin_user, platform_admin = await _seed_actors(db_session)
+    grant = SupportGrant(
+        org_id=org.id,
+        requested_by_admin_id=platform_admin.id,
+        requested_by_email=platform_admin.email,
+        reason=_REASON,
+        status="requested",
+    )
+    db_session.add(grant)
+    await db_session.commit()
+    actor = Principal(
+        subject_id=admin_user.id, org_id=org.id, role="company_admin", subject_type="user"
+    )
+
+    async def approve() -> str:
+        async with scoped_session(org.id) as session:
+            service = CompanySupportService(
+                support_grants=SupportGrantRepository(session),
+                users=UserRepository(session),
+                audit=AuditService(AuditRepository(session)),
+            )
+            try:
+                await service.approve(grant.id, org.id, actor)
+                await session.commit()
+                return "ok"
+            except InvalidGrantTransitionError:
+                await session.rollback()
+                return "rejected"
+
+    outcomes = sorted(await asyncio.gather(approve(), approve()))
+
+    assert outcomes == ["ok", "rejected"]  # exactly one approve stuck

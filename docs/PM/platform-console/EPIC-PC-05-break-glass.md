@@ -67,6 +67,7 @@ content-access gate (a forward hook — no content exists yet).
 | ✅ ⭐ PC-05-AC2 | **Consent:** no platform path produces `approved`; only the company approve endpoint does, and it sets the time box + records the decider. | `::test_request_creates_requested_not_approved_consent`, `::test_full_lifecycle_request_then_company_approves` |
 | ✅ ⭐ PC-05-AC3 | **Cross-tenant isolation:** a company_admin sees/decides **only their org's** grants — another org's grant is invisible (empty inbox) and approving it → **404**, untouched. | `::test_company_inbox_is_org_scoped`, `::test_cross_tenant_approve_returns_404` |
 | ✅ ⭐ PC-05-AC4 | **State machine:** illegal transitions → **409** (approve a non-`requested` grant; revoke a `denied`/`revoked` one). | `::test_approve_twice_returns_409`, `::test_deny_then_revoke_returns_409` |
+| ✅ ⭐ PC-05-AC4b | **No lost updates:** concurrent transitions on the same grant **serialize** (`SELECT … FOR UPDATE`) — a revoke can't be silently overwritten back to `approved`. | `::test_concurrent_transitions_serialize_via_row_lock` (review fix) |
 | ✅ PC-05-AC5 | A platform admin can revoke **their own** request; another admin's grant → 404 (requester-scoped). | `::test_platform_cannot_revoke_another_admins_grant` |
 | ✅ ⭐ PC-05-AC6 | **Audience confinement:** a company token is rejected on the platform request endpoint and a platform token on the company approve endpoint (both 401). | `::test_company_token_rejected_on_platform_request`, `::test_platform_token_rejected_on_company_approve` |
 | ✅ PC-05-AC7 | **Live expiry:** an approved grant past `expires_at` reads `is_active=false` though `status` stays `approved` (the clock decides). | `::test_expiry_is_computed_live_from_expires_at` |
@@ -95,6 +96,11 @@ content-access gate (a forward hook — no content exists yet).
 - **Two service guards ARE the feature** (built + tested first): cross-tenant `get_in_org`
   (404, no existence leak) and per-transition status checks (409). A naive `status='approved'`
   with no current-state check is the bug that lets a revoked grant be re-approved.
+- **Transitions serialize via a row lock** (added in review): the transition loaders
+  `SELECT … FOR UPDATE`, so two concurrent privileged actors can't lost-update one another (a
+  revoke racing an approve must stick). The list reads stay non-locking. Mirrors the DYN-01
+  last-admin lock. `support_grant` also carries an inert `org_isolation` RLS policy (migration
+  `0006`, like `0003`); the platform side is the cross-org BYPASSRLS exception (login/onboard).
 - **Consent is structural,** not a flag: approval lives only on the company router; the
   platform service has no approve method. Pinned by AC2.
 - **Denormalized emails looked up at write time** (requester + decider) — informed consent

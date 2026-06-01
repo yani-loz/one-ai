@@ -1,8 +1,8 @@
 """
-Role: Identity model package — imports all four ORM models so Alembic autogenerate
+Role: Identity model package — imports every identity ORM model so Alembic autogenerate
       and Base.metadata see the full identity schema.
 Used by: app.db.migrations.env (metadata completeness); identity repositories.
-Depends on: the four model modules in this package.
+Depends on: the model modules in this package (see __all__).
 Key invariants:
   - Importing this package registers every identity table on Base.metadata.
 """

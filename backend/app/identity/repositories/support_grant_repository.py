@@ -9,6 +9,12 @@ Key invariants:
   - The two lookups encode the access boundary: get_in_org filters by org_id (a company
     admin can only ever load THEIR org's grant — cross-org → None → 404), get_for_requester
     filters by the platform admin's own id (an admin only loads grants they requested).
+  - Both lookups SELECT ... FOR UPDATE: they are the transition loaders (approve/deny/revoke),
+    so locking the row serializes concurrent transitions on the same grant. Under READ
+    COMMITTED a second transition blocks on the lock, then re-reads the just-committed status
+    and its guard correctly rejects the now-illegal move (e.g. a revoke can't be silently
+    overwritten back to approved). Mirrors the DYN-01 last-admin lock. The LIST reads
+    (list_for_org / list_for_requester) stay non-locking — only transitions need the lock.
 """
 
 from __future__ import annotations
@@ -37,21 +43,31 @@ class SupportGrantRepository:
     async def get_for_requester(
         self, grant_id: UUID, requested_by_admin_id: UUID
     ) -> SupportGrant | None:
-        """Load a grant by id ONLY if the given platform admin requested it, else None."""
+        """Load + LOCK a grant by id iff the given platform admin requested it, else None.
+
+        FOR UPDATE: this is the platform transition loader (revoke), so the row is locked to
+        serialize concurrent transitions (a re-read after the lock sees the committed status).
+        """
         result = await self._session.execute(
-            select(SupportGrant).where(
+            select(SupportGrant)
+            .where(
                 SupportGrant.id == grant_id,
                 SupportGrant.requested_by_admin_id == requested_by_admin_id,
             )
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 
     async def get_in_org(self, grant_id: UUID, org_id: UUID) -> SupportGrant | None:
-        """Load a grant by id ONLY if it targets `org_id` (the company boundary), else None."""
+        """Load + LOCK a grant by id iff it targets `org_id` (the company boundary), else None.
+
+        FOR UPDATE: this is the company transition loader (approve/deny/revoke), so the row is
+        locked to serialize concurrent transitions on the same grant.
+        """
         result = await self._session.execute(
-            select(SupportGrant).where(
-                SupportGrant.id == grant_id, SupportGrant.org_id == org_id
-            )
+            select(SupportGrant)
+            .where(SupportGrant.id == grant_id, SupportGrant.org_id == org_id)
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 

@@ -42,6 +42,7 @@ Thumbs.db
 # ── Tooling artifacts ──────────────────────────────────
 .playwright-mcp/
 oneai-scaffold-running.png
+pc04-audit-trail-walkthrough.png
 
 # ── Claude Code local-only ─────────────────────────────
 .claude/settings.local.json

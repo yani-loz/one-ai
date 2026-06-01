@@ -9,6 +9,12 @@ denormalized emails — the row survives actor/org deletion, like audit_log). st
 to requested|approved|denied|revoked by a CHECK; there is no stored `expired` state (expiry
 is computed). The table is mutable (status transitions), so it carries no append-only trigger.
 
+Like `users` (migration 0003), support_grant gets an inert org-isolation RLS policy DEFINED
+here (enforcement deferred — the superuser app role bypasses it today). Note the PLATFORM side
+(request/list-mine/revoke) reads this table on a GUC-unset plain session, so it joins login +
+onboarding as a legitimately-global flow that needs a BYPASSRLS path once enforcement lands
+(tracked in docs/FIX_BEFORE_PROD.md); the COMPANY side is org-scoped via the tenant GUC.
+
 Revision ID: 0006_support_grant
 Revises: 0005_audit_log
 Create Date: 2026-06-01
@@ -67,8 +73,19 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_support_grant_org_id", "support_grant", ["org_id"])
+    # Inert org-isolation policy (defined now, enforced later — see 0003 + FIX_BEFORE_PROD).
+    op.execute("ALTER TABLE support_grant ENABLE ROW LEVEL SECURITY")
+    op.execute(
+        """
+        CREATE POLICY org_isolation ON support_grant
+            USING (org_id = current_setting('app.current_org_id', true)::uuid)
+            WITH CHECK (org_id = current_setting('app.current_org_id', true)::uuid)
+        """
+    )
 
 
 def downgrade() -> None:
+    op.execute("DROP POLICY IF EXISTS org_isolation ON support_grant")
+    op.execute("ALTER TABLE support_grant DISABLE ROW LEVEL SECURITY")
     op.drop_index("ix_support_grant_org_id", table_name="support_grant")
     op.drop_table("support_grant")

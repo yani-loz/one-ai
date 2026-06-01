@@ -4,7 +4,7 @@
 |---|---|
 | **Epic ID** | PC-06 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | 🟢 Backend done (PC-06a) — org-level erasure + compliance export |
+| **Status** | ✅ **Done** — org-level erasure + compliance export (PC-06a) + the "Erase / Export" UI (PC-06b) |
 | **Branch** | `feat/platform-erasure` (off `main`, which now has PC-01…PC-05) |
 | **PR** | PR-6 (backend: erasure + certificate + compliance export) |
 | **Depends on** | PC-03a (`legal_hold`, `offboarded`), PC-04 (`audit_log` — the retained trail), PC-05 (`support_grant` PII) |
@@ -63,7 +63,7 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 | ✅ PC-06-AC5 | A **slug-confirmation** mismatch → **400**, nothing deleted (accidental-destruction guard). | `::test_slug_confirmation_mismatch_returns_400_and_deletes_nothing` |
 | ✅ ⭐ PC-06-AC6 | Both endpoints reject a **company token** (401 — platform-only). | `::test_erase_rejects_company_token`, `::test_compliance_export_rejects_company_token` |
 | ✅ PC-06-AC7 | The compliance export returns **metadata + the audit trail**. | `::test_compliance_export_returns_metadata_and_trail` |
-| ⏳ PC-06-AC8 | Frontend: an "Erase / Export" control on the org detail screen. | **PC-06b — not yet built.** |
+| ✅ PC-06-AC8 | Frontend: an "Erasure & compliance" control on the org detail screen — export + a type-the-slug erase confirmation. | FE `OrganizationDetailPage.test.tsx::test_renders_the_erasure_panel`, `::test_erase_requires_slug_confirmation_then_offboards` (`OrgErasurePanel.tsx`) |
 
 ## 5. Implementation map
 
@@ -98,9 +98,11 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 
 ## 7. Remaining + notes
 
-- **PC-06b (frontend):** an "Erase company / Export compliance" control on the org detail
-  screen (with the slug-confirmation prompt) — a thin follow-up.
-- **Per-user erasure**, content-layer erasure, `actor_email` pseudonymization, signed export →
-  tracked in `FIX_BEFORE_PROD`.
+- ✅ **PC-06b (frontend) — DONE:** `OrgErasurePanel.tsx` on the org detail screen — "Export
+  compliance record" (downloads the bundle as JSON) + "Erase company" behind a type-the-slug
+  + reason confirmation modal (the destructive-action guard), with a legal-hold (409) message
+  and an already-erased state. The erase reloads the detail (offboarded) + refreshes the trail.
+- **Per-user erasure**, content-layer erasure, `actor_email`/`ip_address` pseudonymization,
+  signed/streamed export → tracked in `FIX_BEFORE_PROD`.
 - **Dynamic QA (Target 08):** an adversarial live pass over erasure (legal-hold bypass attempts,
   partial-failure atomicity, PII-left-behind sweep) to follow.

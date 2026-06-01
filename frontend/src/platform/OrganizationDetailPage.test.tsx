@@ -65,20 +65,43 @@ function auditEntry(overrides: Partial<AuditLogEntry>): AuditLogEntry {
 
 /** Newest-first audit rows the mock returns; the status PATCH prepends a row, like the API. */
 let auditRows: AuditLogEntry[] = [];
+/** Fields the GET detail is overridden with after a mutation (e.g. erase → offboarded). */
+let detailOverride: Record<string, unknown> = {};
 
-/** GET returns the detail/trail; a status PATCH echoes the body AND writes an audit row. */
+/** GET returns the detail/trail; status PATCH echoes the body + writes a row; erase offboards. */
 function mockApi(getStatus = 200): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (url.endsWith("/platform/orgs/org-1") && method === "GET") return json(getStatus, DETAIL);
+      if (url.endsWith("/platform/orgs/org-1") && method === "GET") {
+        return json(getStatus, { ...DETAIL, ...detailOverride });
+      }
       if (url.includes("/platform/orgs/org-1/audit") && method === "GET") {
         return json(200, auditRows);
       }
       if (url.includes("/platform/support-requests") && method === "GET") {
         return json(200, []); // the SupportAccessPanel's requester-scoped list
+      }
+      if (url.includes("/platform/orgs/org-1/compliance-export") && method === "GET") {
+        return json(200, { organization: DETAIL, audit: [], generated_at: "2026-06-01T12:00:00Z" });
+      }
+      if (url.includes("/platform/orgs/org-1/erase") && method === "POST") {
+        detailOverride = { status: "offboarded", user_count: 0 };
+        return json(200, {
+          org_id: "org-1",
+          org_slug: "acme",
+          org_name: "Acme GmbH",
+          status: "offboarded",
+          erased_at: "2026-06-01T12:00:00Z",
+          erased_by_admin_id: "pa",
+          users_erased: 3,
+          tokens_deleted: 1,
+          support_decider_emails_scrubbed: 0,
+          audit_log_retained: true,
+          retained_legal_basis: "GDPR Art. 17(3)",
+        });
       }
       if (url.includes("/platform/orgs/org-1/status") && method === "PATCH") {
         const body = JSON.parse(String(init?.body)) as { status: string };
@@ -126,6 +149,7 @@ beforeEach(() => {
   localStorage.clear();
   // Seed the trail with one prior event so each test starts from a known, isolated state.
   auditRows = [auditEntry({ action: "auth.login.success", actor_email: "admin@acme.example" })];
+  detailOverride = {};
 });
 
 afterEach(() => {
@@ -214,6 +238,37 @@ describe("OrganizationDetailPage", () => {
     expect(
       await screen.findByRole("button", { name: "Request access" }),
     ).toBeInTheDocument();
+  });
+
+  it("test_renders_the_erasure_panel", async () => {
+    mockApi();
+
+    renderDetail();
+
+    // PC-06b: export + erase controls on the detail screen.
+    expect(await screen.findByText("Erasure & compliance")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Export compliance record" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Erase company" })).toBeInTheDocument();
+  });
+
+  it("test_erase_requires_slug_confirmation_then_offboards", async () => {
+    const user = userEvent.setup();
+    mockApi();
+
+    renderDetail();
+    await user.click(await screen.findByRole("button", { name: "Erase company" }));
+    // The destructive button is gated until the exact slug + a reason are typed.
+    const erasePermanently = await screen.findByRole("button", { name: "Erase permanently" });
+    expect(erasePermanently).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/to confirm/), "acme");
+    await user.type(screen.getByLabelText("Reason"), "Customer offboarding");
+    await user.click(screen.getByRole("button", { name: "Erase permanently" }));
+
+    // The org reloads as offboarded; the panel reflects the erasure.
+    expect(await screen.findByText(/has been erased/)).toBeInTheDocument();
   });
 
   it("test_audit_trail_shows_a_lifecycle_action_on_reload", async () => {

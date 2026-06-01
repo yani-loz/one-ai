@@ -71,6 +71,28 @@ export interface AuditLogEntry {
   request_id: string | null;
 }
 
+/** The deletion certificate returned by erasing a company (mirrors ErasureCertificateResponse). */
+export interface ErasureCertificate {
+  org_id: string;
+  org_slug: string;
+  org_name: string;
+  status: string;
+  erased_at: string;
+  erased_by_admin_id: string;
+  users_erased: number;
+  tokens_deleted: number;
+  support_decider_emails_scrubbed: number;
+  audit_log_retained: boolean;
+  retained_legal_basis: string;
+}
+
+/** The compliance export bundle (metadata + the audit trail) — downloaded as-is. */
+export interface ComplianceExport {
+  organization: OrganizationDetail;
+  audit: Array<Record<string, unknown>>;
+  generated_at: string;
+}
+
 /**
  * Payload to onboard a new company plus its first company_admin. Field bounds mirror the
  * backend OrganizationCreateRequest validators:

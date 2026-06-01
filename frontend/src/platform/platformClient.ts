@@ -19,6 +19,8 @@
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type {
   AuditLogEntry,
+  ComplianceExport,
+  ErasureCertificate,
   OnboardCompanyRequest,
   OnboardedCompany,
   OrganizationDetail,
@@ -126,4 +128,37 @@ export async function getOrganizationAudit(
     `${API_URL}/platform/orgs/${orgId}/audit?limit=${limit}`,
   );
   return parseJsonOrThrow<AuditLogEntry[]>(response);
+}
+
+/**
+ * Erase a company's personal data via POST /platform/orgs/{id}/erase.
+ *
+ * Contract: `confirmSlug` must equal the org's slug (the backend re-checks). Returns the
+ * deletion certificate. Throws AuthRequestError — 409 when the org is under legal hold,
+ * 400 on a slug mismatch, 401 when the session has lapsed.
+ */
+export async function eraseOrganization(
+  orgId: string,
+  reason: string,
+  confirmSlug: string,
+): Promise<ErasureCertificate> {
+  const response = await authorizedFetch(`${API_URL}/platform/orgs/${orgId}/erase`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason, confirm_slug: confirmSlug }),
+  });
+  return parseJsonOrThrow<ErasureCertificate>(response);
+}
+
+/**
+ * Fetch the compliance export (metadata + audit trail) via GET .../compliance-export.
+ *
+ * Contract: returns the bundle for download. Throws AuthRequestError (404 unknown org,
+ * 401 lapsed session).
+ */
+export async function exportCompliance(orgId: string): Promise<ComplianceExport> {
+  const response = await authorizedFetch(
+    `${API_URL}/platform/orgs/${orgId}/compliance-export`,
+  );
+  return parseJsonOrThrow<ComplianceExport>(response);
 }

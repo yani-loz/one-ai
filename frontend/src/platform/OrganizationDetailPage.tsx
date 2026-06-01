@@ -25,6 +25,7 @@ import { AuthRequestError, useAuth } from "../identity";
 import { SupportAccessPanel } from "../support";
 import { AuditTrail } from "./AuditTrail";
 import { formatShortDate } from "./format";
+import { OrgErasurePanel } from "./OrgErasurePanel";
 import {
   getOrganization,
   updateOrganizationLegalHold,
@@ -77,6 +78,12 @@ export function OrganizationDetailPage(): React.JSX.Element {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // After an erase: reload the (now offboarded) detail AND refresh the trail (org.erased).
+  const handleErased = useCallback((): void => {
+    void load();
+    setAuditReloadSignal((signal) => signal + 1);
   }, [load]);
 
   /** Run a lifecycle mutation, re-rendering from the server's authoritative response. */
@@ -220,6 +227,14 @@ export function OrganizationDetailPage(): React.JSX.Element {
               <AuditTrail
                 orgId={org.id}
                 reloadSignal={auditReloadSignal}
+                onAuthExpired={handleAuthExpired}
+              />
+            </Section>
+
+            <Section title="Erasure & compliance">
+              <OrgErasurePanel
+                org={org}
+                onErased={handleErased}
                 onAuthExpired={handleAuthExpired}
               />
             </Section>

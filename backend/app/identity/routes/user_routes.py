@@ -47,7 +47,7 @@ async def create_user(
     service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """Create a user in the caller's organization."""
-    return await service.create_user(principal.org_id, payload)
+    return await service.create_user(principal.org_id, payload, principal)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -58,7 +58,7 @@ async def update_user(
     service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """Apply a partial update to a user in the caller's organization."""
-    return await service.update_user(principal.org_id, user_id, payload)
+    return await service.update_user(principal.org_id, user_id, payload, principal)
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -68,4 +68,4 @@ async def deactivate_user(
     service: UserService = Depends(get_user_service),
 ) -> None:
     """Deactivate (soft-delete) a user in the caller's organization."""
-    await service.deactivate_user(principal.org_id, user_id)
+    await service.deactivate_user(principal.org_id, user_id, principal)

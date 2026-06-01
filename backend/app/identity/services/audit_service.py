@@ -51,6 +51,9 @@ class AuditAction:
     ORG_STATUS_CHANGE = "org.status_change"
     ORG_LEGAL_HOLD_SET = "org.legal_hold.set"
     ORG_LEGAL_HOLD_CLEAR = "org.legal_hold.clear"
+    USER_CREATE = "user.create"
+    USER_ROLE_CHANGE = "user.role_change"
+    USER_DEACTIVATE = "user.deactivate"
 
 
 @dataclass(frozen=True, slots=True)

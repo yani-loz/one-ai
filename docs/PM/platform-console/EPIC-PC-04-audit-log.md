@@ -4,7 +4,7 @@
 |---|---|
 | **Epic ID** | PC-04 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | 🟢 Backend + audit-trail viewer (AC8) done — **only `user.\*` emission remains** (the PC-04a tail) |
+| **Status** | ✅ **Done** — audit_log + trigger, auth/org/user emission, read API, and the frontend audit-trail viewer all shipped (the only residual is platform-admin *login* emission + admin `actor_email`, tracked in FIX_BEFORE_PROD) |
 | **Branch** | `feat/platform-lifecycle` (continues the stack) |
 | **PR** | PR-4 (backend core: table + trigger, auth & org-lifecycle emission, read API) |
 | **Review** | [docs/audits/2026-06-01_platform-audit-pr4-review.md](../../audits/2026-06-01_platform-audit-pr4-review.md) — 5 confirmed (1 high), all fixed; 1 dismissed |
@@ -68,7 +68,7 @@ certificates (PC-06) attach to.
 |---|---|---|
 | ✅ ⭐ PC-04-AC1 | The `audit_log` table is **append-only**: any `UPDATE` or `DELETE` raises (DB trigger), even for the superuser app role; INSERT succeeds. | BE `models/test_audit_log.py::test_audit_log_update_is_blocked_by_trigger`, `::test_audit_log_delete_is_blocked_and_row_survives`, `::test_audit_log_insert_succeeds` (+ live psql proof) |
 | ✅ PC-04-AC2 | Auth events are recorded: `login.success`, `login.failure` (actor_email = attempted email, actor_id null), `refresh`, `logout`. | BE `routes/test_platform_audit_routes.py::test_login_success_records_event_with_denormalized_email`, `::test_failed_login_records_failure_without_secrets` |
-| 🟡 PC-04-AC3 | Lifecycle + management events recorded: `org.suspend`/`reactivate`, `org.legal_hold.set`/`clear`, `org.onboard` ✅; `user.create`/`deactivate`/`role_change` ⏳. | BE `::test_suspend_records_event_metadata_only`, `::test_org_audit_is_newest_first_and_paginated` (reactivate + legal_hold.set); `test_platform_auth_service.py` onboard tests emit `org.onboard`. **user.\* → PC-04a remaining.** |
+| ✅ PC-04-AC3 | Lifecycle + management events recorded: `org.suspend`/`reactivate`, `org.legal_hold.set`/`clear`, `org.onboard`, and `user.create`/`role_change`/`deactivate`. | BE `test_platform_audit_routes.py::test_suspend_records_event_metadata_only`, `::test_org_audit_is_newest_first_and_paginated`; `test_user_service.py::test_create_user_writes_content_blind_audit_row`, `::test_role_change_emits_audit_row`, `::test_deactivate_user_emits_audit_row` (content-blind: target id + role, never the user's email) |
 | ✅ ⭐ PC-04-AC4 | **No secrets**: no audit row ever contains a password, hash, or token (asserted on `details`/serialized rows). | BE `::test_failed_login_records_failure_without_secrets` (attempted password + `_PASSWORD` absent from the serialized trail) |
 | ✅ PC-04-AC5 | `GET /platform/orgs/{id}/audit` returns that org's trail newest-first, paginated, **metadata only**. | BE `::test_org_audit_is_newest_first_and_paginated` |
 | ✅ ⭐ PC-04-AC6 | Both audit endpoints reject a **company token** (exactly 401) and require the platform gate. | BE `::test_audit_endpoints_reject_company_token` |
@@ -131,9 +131,12 @@ row *tags* the affected `org_id`):
 - ✅ **Frontend audit-trail viewer (AC8)** — DONE: a newest-first "Audit trail" section on the org
   detail screen (`AuditTrail.tsx`, reading `GET /platform/orgs/{id}/audit`), re-fetching on a
   `reloadSignal` so a UI suspend/legal-hold appears on reload. Humanized labels, metadata only.
-- **`user.*` emission (AC3 tail)** — `user.create` / `deactivate` / `role_change` from
-  `UserService` (tenant session; `audit_log` is intentionally outside RLS so a tenant-session
-  INSERT works). Plus platform-admin login emission + platform-admin `actor_email` denormalization.
+- ✅ **`user.*` emission (AC3 tail)** — DONE: `user.create` / `role_change` / `deactivate` from
+  `UserService` (tenant session; `audit_log` is intentionally outside RLS so the tenant-session
+  INSERT works). Content-blind: the row carries the target's id + role, never the user's email.
+- **Residual (tracked in FIX_BEFORE_PROD)** — platform-admin *login* emission (who entered the
+  console) + denormalizing `actor_email` for platform-admin/user actions (today admin/user actions
+  record `actor_id` only; the principal carries no email).
 - **Dynamic QA (Target 06)** — an adversarial validation pass over the live audit pipeline
   (immutability under load, no-secret invariant, the independent-writer survival) to follow,
   per the established per-PR pattern.

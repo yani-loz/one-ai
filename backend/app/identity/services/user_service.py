@@ -25,13 +25,14 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from app.identity.enums import UserRole
+from app.identity.enums import AuditActorType, UserRole
 from app.identity.exceptions import (
     DuplicateUserError,
     LastAdminError,
     UserNotFoundError,
 )
 from app.identity.models.user import User
+from app.identity.principal import Principal
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.schemas.user_schemas import (
     UserCreateRequest,
@@ -39,25 +40,32 @@ from app.identity.schemas.user_schemas import (
     UserUpdateRequest,
 )
 from app.identity.security.password import hash_password
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
+
+_ENTITY_USER = "user"
 
 
 class UserService:
     """Org-scoped CRUD for company users (company_admin only)."""
 
-    def __init__(self, users: UserRepository) -> None:
-        """Bind to the user repository on the caller's TENANT-scoped session."""
+    def __init__(self, users: UserRepository, audit: AuditService) -> None:
+        """Bind to the user repository + audit writer (one TENANT-scoped session)."""
         self._users = users
+        self._audit = audit
 
     async def list_users(self, org_id: UUID) -> list[UserResponse]:
         """Return all users in the caller's org (newest first)."""
         users = await self._users.list_by_org(org_id)
         return [UserResponse.model_validate(user) for user in users]
 
-    async def create_user(self, org_id: UUID, payload: UserCreateRequest) -> UserResponse:
+    async def create_user(
+        self, org_id: UUID, payload: UserCreateRequest, actor: Principal
+    ) -> UserResponse:
         """Create a user in the caller's org from a validated payload.
 
         Contract: hashes the password (bcrypt), forces org_id to the caller's org,
-        and persists. Returns the created user view.
+        persists, and records a `user.create` audit row on the SAME session (so the user
+        and its audit row commit together). Returns the created user view.
 
         Raises:
             DuplicateUserError: the email already belongs to a user (-> 409).
@@ -78,14 +86,21 @@ class UserService:
             # Lost a concurrent race against the users.email UNIQUE constraint after the
             # pre-check passed: surface the documented 409, not an opaque 500 (AUD-05).
             raise DuplicateUserError("A user with this email already exists.") from exc
+        # Content-blind: record the target's id + role, NEVER the email — the audit is
+        # platform-readable, and a tenant user's email is PII the platform must not see.
+        await self._audit.record(
+            self._user_event(AuditAction.USER_CREATE, actor, created, {"role": created.role})
+        )
         return UserResponse.model_validate(created)
 
     async def update_user(
-        self, org_id: UUID, user_id: UUID, payload: UserUpdateRequest
+        self, org_id: UUID, user_id: UUID, payload: UserUpdateRequest, actor: Principal
     ) -> UserResponse:
         """Apply a partial update to a user in the caller's org.
 
-        Contract: only the provided fields change; org_id is never mutated.
+        Contract: only the provided fields change; org_id is never mutated. A role change
+        records `user.role_change` and a deactivation records `user.deactivate` on the same
+        session (committed with the update).
 
         Raises:
             UserNotFoundError: no such user in this org (-> 404; never leaks existence
@@ -98,6 +113,8 @@ class UserService:
 
         await self._guard_last_admin(org_id, user, payload.role, payload.is_active)
 
+        previous_role = user.role
+        previous_active = user.is_active
         if payload.full_name is not None:
             user.full_name = payload.full_name
         if payload.role is not None:
@@ -106,10 +123,23 @@ class UserService:
             user.is_active = payload.is_active
 
         await self._users.add(user)
+        if user.role != previous_role:
+            await self._audit.record(
+                self._user_event(
+                    AuditAction.USER_ROLE_CHANGE,
+                    actor,
+                    user,
+                    {"from_role": previous_role, "to_role": user.role},
+                )
+            )
+        if previous_active and not user.is_active:
+            await self._audit.record(
+                self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {})
+            )
         return UserResponse.model_validate(user)
 
-    async def deactivate_user(self, org_id: UUID, user_id: UUID) -> None:
-        """Soft-delete a user in the caller's org (is_active=False).
+    async def deactivate_user(self, org_id: UUID, user_id: UUID, actor: Principal) -> None:
+        """Soft-delete a user in the caller's org (is_active=False), audited same-tx.
 
         Raises:
             UserNotFoundError: no such user in this org (-> 404).
@@ -119,8 +149,28 @@ class UserService:
         if user is None:
             raise UserNotFoundError("User not found.")
         await self._guard_last_admin(org_id, user, new_role=None, new_is_active=False)
+        already_inactive = not user.is_active
         user.is_active = False
         await self._users.add(user)
+        if not already_inactive:
+            await self._audit.record(
+                self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {})
+            )
+
+    @staticmethod
+    def _user_event(
+        action: str, actor: Principal, target: User, details: dict[str, object]
+    ) -> AuditEvent:
+        """Build a content-blind user-management audit event (target id + role, no email)."""
+        return AuditEvent(
+            action=action,
+            actor_type=AuditActorType.user,
+            actor_id=actor.subject_id,
+            org_id=target.org_id,
+            entity_type=_ENTITY_USER,
+            entity_id=target.id,
+            details=details,
+        )
 
     async def _guard_last_admin(
         self,

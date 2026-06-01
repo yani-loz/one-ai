@@ -164,8 +164,15 @@ def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthServic
 
 
 def get_user_service(session: AsyncSession = Depends(get_tenant_session)) -> UserService:
-    """Provide UserService on the caller's TENANT-scoped session (admin CRUD)."""
-    return UserService(users=UserRepository(session))
+    """Provide UserService on the caller's TENANT-scoped session (admin CRUD).
+
+    The AuditService shares the tenant session so user.create/role_change/deactivate
+    events commit atomically with the change. audit_log is intentionally not under RLS,
+    so the tenant-scoped INSERT works once RLS enforcement lands.
+    """
+    return UserService(
+        users=UserRepository(session), audit=AuditService(AuditRepository(session))
+    )
 
 
 def get_platform_auth_service(

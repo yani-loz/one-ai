@@ -6,6 +6,8 @@ token helpers on a real session (no internal mocking). Requires Postgres.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,17 +18,25 @@ from app.identity.exceptions import (
     InvalidCredentialsError,
     RefreshTokenInvalidError,
 )
+from app.identity.principal import Principal
+from app.identity.repositories.audit_repository import AuditRepository
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.repositories.platform_admin_repository import PlatformAdminRepository
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.schemas.platform_schemas import OrganizationCreateRequest
+from app.identity.services.audit_service import AuditService
 from app.identity.services.platform_auth_service import PlatformAuthService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
 from tests.identity.conftest import seed_organization, seed_platform_admin, seed_user
 
 _PASSWORD = "Sup3r-Dev-Only-2026!"
+
+# The platform admin performing onboarding (id is all the audit row needs as actor).
+_ACTOR = Principal(
+    subject_id=uuid4(), org_id=None, role="platform_admin", subject_type="platform_admin"
+)
 
 
 def _platform_service(session: AsyncSession) -> PlatformAuthService:
@@ -37,6 +47,7 @@ def _platform_service(session: AsyncSession) -> PlatformAuthService:
         users=UserRepository(session),
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
+        audit=AuditService(AuditRepository(session)),
     )
 
 
@@ -106,7 +117,7 @@ async def test_logout_then_refresh_raises_invalid(db_session: AsyncSession) -> N
 async def test_onboard_creates_org_and_first_admin(db_session: AsyncSession) -> None:
     service = _platform_service(db_session)
 
-    result = await service.onboard_organization(_onboard_payload())
+    result = await service.onboard_organization(_onboard_payload(), _ACTOR)
 
     assert result.organization.slug == "new-gmbh"
     assert result.organization.user_count == 1
@@ -122,7 +133,7 @@ async def test_onboard_duplicate_slug_raises_and_creates_nothing(
     service = _platform_service(db_session)
 
     with pytest.raises(DuplicateOrganizationError):
-        await service.onboard_organization(_onboard_payload())
+        await service.onboard_organization(_onboard_payload(), _ACTOR)
 
     # Atomic: the admin user must NOT have been created when the slug clashes.
     assert await UserRepository(db_session).email_exists("owner@new.example") is False
@@ -137,7 +148,7 @@ async def test_onboard_duplicate_admin_email_raises(db_session: AsyncSession) ->
     service = _platform_service(db_session)
 
     with pytest.raises(DuplicateUserError):
-        await service.onboard_organization(_onboard_payload())
+        await service.onboard_organization(_onboard_payload(), _ACTOR)
 
 
 async def test_list_organizations_returns_metadata_with_counts(

@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.base_model import Base
 from app.core.database import SessionLocal, engine
 from app.identity import models as identity_models  # noqa: F401 — registers tables on Base.metadata
+from app.identity.models.audit_log import AuditLog
 from app.identity.models.organization import Organization
 from app.identity.models.platform_admin import PlatformAdmin
 from app.identity.models.user import User
@@ -45,12 +46,14 @@ from app.identity.security.tokens import (
 )
 from app.main import app
 
-# The four identity tables, in dependency order (users FK -> organizations).
+# The identity tables, in dependency order (users FK -> organizations). audit_log has no
+# FKs (durable attribution) and isn't tenant-scoped — it's last and stands alone.
 _IDENTITY_TABLES = [
     Organization.__table__,
     User.__table__,
     PlatformAdmin.__table__,
     Organization.metadata.tables["refresh_tokens"],
+    AuditLog.__table__,
 ]
 
 
@@ -91,8 +94,8 @@ async def identity_schema() -> AsyncIterator[None]:
             else:
                 await connection.execute(
                     text(
-                        "TRUNCATE TABLE refresh_tokens, users, platform_admins, "
-                        "organizations RESTART IDENTITY CASCADE"
+                        "TRUNCATE TABLE audit_log, refresh_tokens, users, "
+                        "platform_admins, organizations RESTART IDENTITY CASCADE"
                     )
                 )
 

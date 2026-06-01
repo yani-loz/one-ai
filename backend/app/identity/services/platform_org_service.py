@@ -17,19 +17,31 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from app.identity.enums import OrganizationStatus
+from app.identity.enums import AuditActorType, OrganizationStatus
 from app.identity.exceptions import OrganizationNotFoundError
 from app.identity.models.organization import Organization
+from app.identity.principal import Principal
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.schemas.platform_schemas import OrganizationDetailResponse
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
+
+_ENTITY_ORGANIZATION = "organization"
+# Status value -> the specific audit action it represents (others -> generic change).
+_STATUS_ACTION = {
+    OrganizationStatus.suspended.value: AuditAction.ORG_SUSPEND,
+    OrganizationStatus.active.value: AuditAction.ORG_REACTIVATE,
+}
 
 
 class PlatformOrgService:
     """Per-organization lifecycle administration (platform domain, metadata only)."""
 
-    def __init__(self, organizations: OrganizationRepository) -> None:
-        """Wire the organization repository (bound to a plain platform session)."""
+    def __init__(
+        self, organizations: OrganizationRepository, audit: AuditService
+    ) -> None:
+        """Wire the organization repository + audit writer (one plain platform session)."""
         self._organizations = organizations
+        self._audit = audit
 
     async def get_detail(self, org_id: UUID) -> OrganizationDetailResponse:
         """Return one org's lifecycle detail (metadata + legal hold).
@@ -41,30 +53,58 @@ class PlatformOrgService:
         return self._to_detail(organization, user_count)
 
     async def set_status(
-        self, org_id: UUID, status: OrganizationStatus
+        self, org_id: UUID, status: OrganizationStatus, actor: Principal
     ) -> OrganizationDetailResponse:
         """Set an org's lifecycle status (e.g. suspend/reactivate); return the new detail.
 
         Contract: a 'suspended' org's company logins + refreshes are blocked by the auth
-        service; this only flips the status (the caller's session commits the change).
+        service; this flips the status and records the action on the SAME session, so the
+        change and its audit row commit together (the caller's unit-of-work commits both).
 
         Raises:
             OrganizationNotFoundError: no org with `org_id` (-> 404).
         """
         organization, user_count = await self._load(org_id)
+        from_status = organization.status
         organization.status = status.value
+        await self._audit.record(
+            AuditEvent(
+                action=_STATUS_ACTION.get(status.value, AuditAction.ORG_STATUS_CHANGE),
+                actor_type=AuditActorType.platform_admin,
+                actor_id=actor.subject_id,
+                org_id=org_id,
+                entity_type=_ENTITY_ORGANIZATION,
+                entity_id=org_id,
+                details={"from_status": from_status, "to_status": status.value},
+            )
+        )
         return self._to_detail(organization, user_count)
 
     async def set_legal_hold(
-        self, org_id: UUID, legal_hold: bool
+        self, org_id: UUID, legal_hold: bool, actor: Principal
     ) -> OrganizationDetailResponse:
-        """Set or clear an org's legal hold; return the new detail.
+        """Set or clear an org's legal hold; return the new detail (audited same-tx).
 
         Raises:
             OrganizationNotFoundError: no org with `org_id` (-> 404).
         """
         organization, user_count = await self._load(org_id)
         organization.legal_hold = legal_hold
+        await self._audit.record(
+            AuditEvent(
+                action=(
+                    AuditAction.ORG_LEGAL_HOLD_SET
+                    if legal_hold
+                    else AuditAction.ORG_LEGAL_HOLD_CLEAR
+                ),
+                actor_type=AuditActorType.platform_admin,
+                actor_id=actor.subject_id,
+                org_id=org_id,
+                entity_type=_ENTITY_ORGANIZATION,
+                entity_id=org_id,
+                details={"legal_hold": legal_hold},
+            )
+        )
         return self._to_detail(organization, user_count)
 
     async def _load(self, org_id: UUID) -> tuple[Organization, int]:

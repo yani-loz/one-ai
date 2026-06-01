@@ -23,14 +23,20 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.identity.dependencies import (
+    get_audit_service,
     get_current_platform_admin,
     get_platform_auth_service,
     get_platform_org_service,
 )
 from app.identity.principal import Principal
+from app.identity.schemas.audit_schemas import (
+    DEFAULT_AUDIT_PAGE_SIZE,
+    MAX_AUDIT_PAGE_SIZE,
+    AuditLogEntryResponse,
+)
 from app.identity.schemas.auth_schemas import (
     LogoutRequest,
     RefreshRequest,
@@ -46,6 +52,7 @@ from app.identity.schemas.platform_schemas import (
     PlatformAdminResponse,
     PlatformLoginRequest,
 )
+from app.identity.services.audit_service import AuditService
 from app.identity.services.platform_auth_service import PlatformAuthService
 from app.identity.services.platform_org_service import PlatformOrgService
 
@@ -114,11 +121,11 @@ async def read_current_platform_admin(
 )
 async def onboard_organization(
     payload: OrganizationCreateRequest,
-    _admin: Principal = Depends(get_current_platform_admin),
+    admin: Principal = Depends(get_current_platform_admin),
     service: PlatformAuthService = Depends(get_platform_auth_service),
 ) -> OrganizationOnboardedResponse:
-    """Create a new organization and its first company_admin atomically."""
-    return await service.onboard_organization(payload)
+    """Create a new organization and its first company_admin atomically (audited)."""
+    return await service.onboard_organization(payload, admin)
 
 
 @router.get("/orgs", response_model=list[OrganizationResponse])
@@ -144,19 +151,48 @@ async def get_organization_detail(
 async def update_organization_status(
     org_id: UUID,
     payload: OrganizationStatusUpdateRequest,
-    _admin: Principal = Depends(get_current_platform_admin),
+    admin: Principal = Depends(get_current_platform_admin),
     service: PlatformOrgService = Depends(get_platform_org_service),
 ) -> OrganizationDetailResponse:
     """Set an organization's lifecycle status (suspend/reactivate/onboarding/offboarded)."""
-    return await service.set_status(org_id, payload.status)
+    return await service.set_status(org_id, payload.status, admin)
 
 
 @router.patch("/orgs/{org_id}/legal-hold", response_model=OrganizationDetailResponse)
 async def update_organization_legal_hold(
     org_id: UUID,
     payload: LegalHoldUpdateRequest,
-    _admin: Principal = Depends(get_current_platform_admin),
+    admin: Principal = Depends(get_current_platform_admin),
     service: PlatformOrgService = Depends(get_platform_org_service),
 ) -> OrganizationDetailResponse:
     """Set or clear an organization's legal hold."""
-    return await service.set_legal_hold(org_id, payload.legal_hold)
+    return await service.set_legal_hold(org_id, payload.legal_hold, admin)
+
+
+@router.get(
+    "/orgs/{org_id}/audit", response_model=list[AuditLogEntryResponse]
+)
+async def get_organization_audit(
+    org_id: UUID,
+    limit: int = Query(DEFAULT_AUDIT_PAGE_SIZE, ge=1, le=MAX_AUDIT_PAGE_SIZE),
+    offset: int = Query(0, ge=0),
+    _admin: Principal = Depends(get_current_platform_admin),
+    service: AuditService = Depends(get_audit_service),
+) -> list[AuditLogEntryResponse]:
+    """Return one organization's audit trail (newest-first, paginated, metadata only)."""
+    return await service.list_for_org(org_id, limit=limit, offset=offset)
+
+
+@router.get("/audit", response_model=list[AuditLogEntryResponse])
+async def get_global_audit(
+    action: str | None = Query(None, max_length=64),
+    org_id: UUID | None = Query(None),
+    limit: int = Query(DEFAULT_AUDIT_PAGE_SIZE, ge=1, le=MAX_AUDIT_PAGE_SIZE),
+    offset: int = Query(0, ge=0),
+    _admin: Principal = Depends(get_current_platform_admin),
+    service: AuditService = Depends(get_audit_service),
+) -> list[AuditLogEntryResponse]:
+    """Return the global audit trail, optionally filtered (newest-first, paginated)."""
+    return await service.list_global(
+        action=action, org_id=org_id, limit=limit, offset=offset
+    )

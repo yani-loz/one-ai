@@ -23,7 +23,7 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from app.identity.enums import UserRole
+from app.identity.enums import AuditActorType, UserRole
 from app.identity.exceptions import (
     DuplicateOrganizationError,
     DuplicateUserError,
@@ -48,6 +48,7 @@ from app.identity.security.password import (
     verify_password,
 )
 from app.identity.security.tokens import PLATFORM_AUDIENCE
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
 
@@ -64,13 +65,15 @@ class PlatformAuthService:
         users: UserRepository,
         token_issuer: TokenIssuer,
         token_rotator: TokenRotator,
+        audit: AuditService,
     ) -> None:
-        """Wire the repositories + token helpers (all bound to one plain session)."""
+        """Wire the repositories, token helpers, and audit writer (one plain session)."""
         self._platform_admins = platform_admins
         self._organizations = organizations
         self._users = users
         self._token_issuer = token_issuer
         self._token_rotator = token_rotator
+        self._audit = audit
 
     async def login(self, email: str, password: str) -> tuple[str, str]:
         """Authenticate a platform admin; return a fresh (access, refresh) pair.
@@ -139,13 +142,14 @@ class PlatformAuthService:
         return PlatformAdminResponse.model_validate(admin)
 
     async def onboard_organization(
-        self, payload: OrganizationCreateRequest
+        self, payload: OrganizationCreateRequest, actor: Principal
     ) -> OrganizationOnboardedResponse:
         """Create a new org and its first company_admin atomically.
 
         Contract: validates slug + admin-email uniqueness, inserts the org, then the
         admin user (role=company_admin) scoped to that org with a bcrypt-hashed
-        password. Returns both as metadata/views. Caller commits once.
+        password, and records an `org.onboard` audit row on the SAME session. Returns
+        both as metadata/views. Caller commits once (org + admin + audit row together).
 
         Raises:
             DuplicateOrganizationError: the slug is already taken (-> 409).
@@ -179,6 +183,17 @@ class PlatformAuthService:
             # Lost a concurrent race against users.email UNIQUE (AUD-05) -> 409; the whole
             # onboarding transaction rolls back, so no orphan org is committed.
             raise DuplicateUserError("A user with this email already exists.") from exc
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.ORG_ONBOARD,
+                actor_type=AuditActorType.platform_admin,
+                actor_id=actor.subject_id,
+                org_id=organization.id,
+                entity_type="organization",
+                entity_id=organization.id,
+                details={"slug": organization.slug, "name": organization.name},
+            )
+        )
         return OrganizationOnboardedResponse(
             organization=OrganizationResponse(
                 id=organization.id,

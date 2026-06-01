@@ -12,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.identity.enums import UserRole
 from app.identity.exceptions import InvalidCredentialsError, RefreshTokenInvalidError
 from app.identity.principal import Principal
+from app.identity.repositories.audit_repository import AuditRepository
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.security.password import DUMMY_PASSWORD_HASH
 from app.identity.security.tokens import PLATFORM_AUDIENCE
+from app.identity.services.audit_service import AuditService
 from app.identity.services.auth_service import AuthService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
@@ -32,6 +34,7 @@ def _auth_service(session: AsyncSession) -> AuthService:
         organizations=OrganizationRepository(session),
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
+        audit=AuditService(AuditRepository(session)),
     )
 
 

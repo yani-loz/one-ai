@@ -25,6 +25,7 @@ from app.api.routes.health import router as health_router
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.middleware import MaxBodySizeMiddleware
+from app.core.request_context import RequestContextMiddleware
 from app.identity import identity_router, register_identity_exception_handlers
 
 
@@ -56,6 +57,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Bind the per-request forensic context (client IP + request id) for audit rows, then
+    # reset the ContextVar after each request. Sits inside the body-size guard.
+    app.add_middleware(RequestContextMiddleware)
     # Added last → outermost: reject oversized bodies before anything buffers them.
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
     app.include_router(health_router)

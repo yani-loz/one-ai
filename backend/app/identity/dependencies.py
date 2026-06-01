@@ -31,6 +31,7 @@ from app.core.database import get_session, scoped_session
 from app.identity.enums import SubjectType, UserRole
 from app.identity.exceptions import PermissionDeniedError, TokenInvalidError
 from app.identity.principal import Principal
+from app.identity.repositories.audit_repository import AuditRepository
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.repositories.platform_admin_repository import PlatformAdminRepository
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
@@ -40,6 +41,7 @@ from app.identity.security.tokens import (
     PLATFORM_AUDIENCE,
     decode_access_token,
 )
+from app.identity.services.audit_service import AuditService
 from app.identity.services.auth_service import AuthService
 from app.identity.services.platform_auth_service import PlatformAuthService
 from app.identity.services.platform_org_service import PlatformOrgService
@@ -146,13 +148,18 @@ async def get_tenant_session(
 
 
 def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthService:
-    """Provide AuthService on a PLAIN session (login/refresh have no tenant yet)."""
+    """Provide AuthService on a PLAIN session (login/refresh have no tenant yet).
+
+    The AuditService shares this session, so a success event commits atomically with the
+    login/refresh; failure/blocked events use the AuditService's own independent session.
+    """
     refresh_tokens = RefreshTokenRepository(session)
     return AuthService(
         users=UserRepository(session),
         organizations=OrganizationRepository(session),
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
+        audit=AuditService(AuditRepository(session)),
     )
 
 
@@ -172,11 +179,24 @@ def get_platform_auth_service(
         users=UserRepository(session),
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
+        audit=AuditService(AuditRepository(session)),
     )
 
 
 def get_platform_org_service(
     session: AsyncSession = Depends(get_session),
 ) -> PlatformOrgService:
-    """Provide PlatformOrgService on a PLAIN session (org lifecycle spans all orgs)."""
-    return PlatformOrgService(organizations=OrganizationRepository(session))
+    """Provide PlatformOrgService on a PLAIN session (org lifecycle spans all orgs).
+
+    The AuditService shares this session, so each lifecycle event (suspend/reactivate/
+    legal-hold) commits atomically with the status/legal-hold change.
+    """
+    return PlatformOrgService(
+        organizations=OrganizationRepository(session),
+        audit=AuditService(AuditRepository(session)),
+    )
+
+
+def get_audit_service(session: AsyncSession = Depends(get_session)) -> AuditService:
+    """Provide AuditService on a PLAIN session for the audit READ endpoints (spans orgs)."""
+    return AuditService(AuditRepository(session))

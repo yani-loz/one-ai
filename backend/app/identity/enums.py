@@ -39,3 +39,16 @@ class OrganizationStatus(StrEnum):
     suspended = "suspended"
     onboarding = "onboarding"
     offboarded = "offboarded"
+
+
+class AuditActorType(StrEnum):
+    """Who performed an audited action (pins audit_log.actor_type via ck_audit_log_actor_type).
+
+    `user` and `platform_admin` mirror SubjectType; `system` covers actions with no human
+    actor. Room is reserved for `agent` once Connect/Ask/Learn emit AI actions — that value
+    must be added to the DB CHECK before it is used.
+    """
+
+    platform_admin = "platform_admin"
+    user = "user"
+    system = "system"

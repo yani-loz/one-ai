@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from app.identity.enums import OrganizationStatus
+from app.identity.enums import AuditActorType, OrganizationStatus
 from app.identity.exceptions import (
     InvalidCredentialsError,
     OrganizationNotFoundError,
@@ -32,6 +32,7 @@ from app.identity.repositories.user_repository import UserRepository
 from app.identity.schemas.auth_schemas import AuthenticatedUserResponse, TokenPairResponse
 from app.identity.security.password import DUMMY_PASSWORD_HASH, verify_password
 from app.identity.security.tokens import COMPANY_AUDIENCE
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 from app.identity.services.token_issuer import TokenIssuer
 from app.identity.services.token_rotator import TokenRotator
 
@@ -47,12 +48,14 @@ class AuthService:
         organizations: OrganizationRepository,
         token_issuer: TokenIssuer,
         token_rotator: TokenRotator,
+        audit: AuditService,
     ) -> None:
-        """Wire the repositories and token helpers (all bound to one plain session)."""
+        """Wire the repositories, token helpers, and audit writer (one plain session)."""
         self._users = users
         self._organizations = organizations
         self._token_issuer = token_issuer
         self._token_rotator = token_rotator
+        self._audit = audit
 
     async def login(self, email: str, password: str) -> TokenPairResponse:
         """Authenticate a company user and issue a fresh token pair.
@@ -71,15 +74,53 @@ class AuthService:
         password_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
         password_ok = verify_password(password, password_hash)
         if user is None or not user.is_active or not password_ok:
+            # Failed login is recorded on an INDEPENDENT session: this path raises, so a
+            # same-session row would be rolled back. actor_id is null; actor_email is the
+            # attempted (already-normalized) email — internal log only, never surfaced to
+            # the generic 401 response, so it adds no enumeration oracle.
+            await self._audit.record_independently(
+                AuditEvent(
+                    action=AuditAction.LOGIN_FAILURE,
+                    actor_type=AuditActorType.user,
+                    actor_email=email,
+                    details={"reason": "invalid_credentials"},
+                )
+            )
             raise InvalidCredentialsError("Invalid email or password.")
 
         # Credentials are valid; now gate on the org's lifecycle. A suspended org blocks
         # login (403) — raised only AFTER the password check, so it is not an enumeration
         # oracle (an attacker without valid creds can't distinguish a suspended org).
-        organization = await self._load_loginable_org(user.org_id)
+        try:
+            organization = await self._load_loginable_org(user.org_id)
+        except OrganizationSuspendedError:
+            # Also a rolling-back path -> independent writer (valuable for incident response:
+            # someone with valid creds trying to use a suspended org).
+            await self._audit.record_independently(
+                AuditEvent(
+                    action=AuditAction.LOGIN_BLOCKED,
+                    actor_type=AuditActorType.user,
+                    actor_id=user.id,
+                    actor_email=user.email,
+                    org_id=user.org_id,
+                    details={"reason": "org_suspended"},
+                )
+            )
+            raise
         principal = self._principal_for(user)
         access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, COMPANY_AUDIENCE, _USER_SUBJECT_TYPE
+        )
+        # Success is recorded on the REQUEST session: it commits atomically with the
+        # issued refresh token, so a successful login can never be silently unlogged.
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.LOGIN_SUCCESS,
+                actor_type=AuditActorType.user,
+                actor_id=user.id,
+                actor_email=user.email,
+                org_id=user.org_id,
+            )
         )
         user_view = self._build_user_view(user, organization)
         return TokenPairResponse(
@@ -105,11 +146,28 @@ class AuthService:
         access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, COMPANY_AUDIENCE, _USER_SUBJECT_TYPE
         )
+        # Same-session: the rotation (old revoked + new issued) and its audit row commit
+        # together.
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.REFRESH,
+                actor_type=AuditActorType.user,
+                actor_id=user.id,
+                actor_email=user.email,
+                org_id=user.org_id,
+            )
+        )
         return TokenPairResponse(access_token=access_token, refresh_token=refresh_token)
 
     async def logout(self, raw_refresh_token: str) -> None:
         """Revoke the presented refresh token (idempotent — unknown token is a no-op)."""
         await self._token_rotator.revoke(raw_refresh_token)
+        # The opaque token is not resolved to a subject here, so the actor is unattributed
+        # (enriching it is a tracked follow-up); the event + IP are still recorded. Same
+        # session — logout returns 204 and commits.
+        await self._audit.record(
+            AuditEvent(action=AuditAction.LOGOUT, actor_type=AuditActorType.user)
+        )
 
     async def build_authenticated_user_by_id(
         self, user_id: UUID

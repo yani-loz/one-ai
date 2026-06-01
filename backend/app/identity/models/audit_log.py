@@ -83,10 +83,12 @@ class AuditLog(Base, UUIDPrimaryKeyMixin):
     org_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True))
     entity_type: Mapped[str | None] = mapped_column(String(40))
     entity_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True))
-    details: Mapped[dict] = mapped_column(
+    details: Mapped[dict[str, object]] = mapped_column(
         postgresql.JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     ip_address: Mapped[str | None] = mapped_column(String(45))
+    # String(64) must match REQUEST_ID_MAX_LENGTH in app.core.request_context, which clamps
+    # the inbound X-Request-ID to this width so a same-tx INSERT can never overflow.
     request_id: Mapped[str | None] = mapped_column(String(64))
 
 

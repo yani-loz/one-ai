@@ -34,6 +34,6 @@ class AuditLogEntryResponse(BaseModel):
     org_id: UUID | None
     entity_type: str | None
     entity_id: UUID | None
-    details: dict
+    details: dict[str, object]
     ip_address: str | None
     request_id: str | None

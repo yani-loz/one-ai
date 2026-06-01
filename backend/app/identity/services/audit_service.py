@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from app.core.database import SessionLocal
-from app.core.request_context import current_request_context
+from app.core.request_context import REQUEST_ID_MAX_LENGTH, current_request_context
 from app.identity.enums import AuditActorType
 from app.identity.models.audit_log import AuditLog
 from app.identity.repositories.audit_repository import AuditRepository
@@ -100,8 +100,14 @@ class AuditService:
 
     @staticmethod
     def _build_row(event: AuditEvent) -> AuditLog:
-        """Construct an AuditLog row, stamping IP + request id from the request context."""
+        """Construct an AuditLog row, stamping IP + request id from the request context.
+
+        request_id is defensively clamped to the column width even though the middleware
+        already bounds it — so a non-middleware contextvar setter can never make a same-tx
+        INSERT overflow and roll back the action it was recording.
+        """
         context = current_request_context()
+        request_id = context.request_id[:REQUEST_ID_MAX_LENGTH] if context is not None else None
         return AuditLog(
             actor_type=event.actor_type.value,
             actor_id=event.actor_id,
@@ -112,7 +118,7 @@ class AuditService:
             entity_id=event.entity_id,
             details=dict(event.details),
             ip_address=context.ip_address if context is not None else None,
-            request_id=context.request_id if context is not None else None,
+            request_id=request_id,
         )
 
     async def list_for_org(

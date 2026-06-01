@@ -7,6 +7,7 @@
 | **Status** | 🟢 Backend done (PR-4) — **user.\* emission + the frontend audit-trail viewer (AC8) remain** (the PC-04a/04b split, mirroring 3a/3b) |
 | **Branch** | `feat/platform-lifecycle` (continues the stack) |
 | **PR** | PR-4 (backend core: table + trigger, auth & org-lifecycle emission, read API) |
+| **Review** | [docs/audits/2026-06-01_platform-audit-pr4-review.md](../../audits/2026-06-01_platform-audit-pr4-review.md) — 5 confirmed (1 high), all fixed; 1 dismissed |
 | **Depends on** | PC-01..PC-03a (the actions it records); the Identity auth domain |
 | **Enables** | **PC-05** break-glass (every grant + access writes here) and **PC-06** erasure (deletion certificates reference it) |
 | **Closes (FIX_BEFORE_PROD)** | "Add the append-only `audit_log` table" + "Log all auth and permission-change events" |

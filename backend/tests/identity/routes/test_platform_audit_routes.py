@@ -159,3 +159,55 @@ async def test_audit_endpoints_reject_company_token(
 
     assert org_audit.status_code == 401  # AC6: cross-domain rejected
     assert global_audit.status_code == 401
+
+
+async def test_blocked_login_records_event_with_full_actor(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Valid creds against a SUSPENDED org -> 403, recorded via the INDEPENDENT writer (the
+    # path rolls back) with a FULLY-POPULATED row (actor_id + org_id + actor_email). This is
+    # the compliance/incident signal and the only populated-row exercise of that writer.
+    org = await _seed_company_admin(db_session, status="suspended")
+
+    blocked = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+    assert blocked.status_code == 403
+
+    audit = await client.get(
+        "/platform/audit",
+        params={"action": "auth.login.blocked"},
+        headers=_platform_headers(),
+    )
+
+    entries = audit.json()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["actor_type"] == "user"
+    assert entry["actor_id"] is not None  # populated, unlike the failure-shape row
+    assert entry["org_id"] == str(org.id)
+    assert entry["actor_email"] == "admin@acme.example"
+    assert entry["details"]["reason"] == "org_suspended"
+
+
+async def test_oversized_request_id_does_not_roll_back_the_login(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Regression: an over-length inbound X-Request-ID must NOT overflow audit_log.request_id
+    # (String(64)) and roll back the same-transaction login. The id is clamped at the source,
+    # so the action succeeds (200) and exactly one login.success row is written, bounded to 64.
+    org = await _seed_company_admin(db_session)
+
+    login = await client.post(
+        "/auth/login",
+        json={"email": "admin@acme.example", "password": _PASSWORD},
+        headers={"x-request-id": "z" * 200},
+    )
+    assert login.status_code == 200
+
+    audit = await client.get(
+        f"/platform/orgs/{org.id}/audit", headers=_platform_headers()
+    )
+    success = [e for e in audit.json() if e["action"] == "auth.login.success"]
+    assert len(success) == 1
+    assert len(success[0]["request_id"]) <= 64

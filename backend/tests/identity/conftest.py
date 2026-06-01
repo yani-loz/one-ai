@@ -76,11 +76,11 @@ async def identity_schema() -> AsyncIterator[None]:
     """Give each test a clean identity schema, then reset it.
 
     Function-scoped on purpose (see module docstring). Setup creates any MISSING
-    identity tables (checkfirst). Teardown then either:
-      - drops the tables this fixture created (fresh DB → leave it pristine), or
-      - TRUNCATEs the data if the tables pre-existed (CI applies the migration before
-        pytest, so the schema is Alembic-managed — wipe rows, keep the tables).
-    This keeps every test isolated whether or not the migration has run.
+    identity tables (checkfirst). Teardown handles every mix independently:
+      - TRUNCATEs the tables that already existed (CI/migrated: wipe rows, keep tables), AND
+      - drops the tables this fixture created (fresh DB → leave it pristine).
+    Doing BOTH (not one-or-the-other) keeps isolation in the partial state too — e.g. a DB
+    migrated only to 0004 where audit_log (migration 0005) is the sole missing table.
     """
     async with engine.begin() as connection:
         created_tables = await connection.run_sync(_missing_identity_tables)
@@ -89,15 +89,19 @@ async def identity_schema() -> AsyncIterator[None]:
         yield
     finally:
         async with engine.begin() as connection:
+            # Partial-state-safe cleanup — TRUNCATE the tables that already existed (migrated:
+            # wipe rows, keep schema) AND drop the ones THIS fixture created (fresh: leave the
+            # DB pristine). The old all-or-nothing branch skipped truncation whenever audit_log
+            # (its own later migration 0005) was the sole missing table, leaving the other four
+            # un-truncated across tests — an order-dependent isolation break for local dev.
+            pre_existing = [table for table in _IDENTITY_TABLES if table not in created_tables]
+            if pre_existing:
+                table_names = ", ".join(table.name for table in pre_existing)
+                await connection.execute(
+                    text(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE")
+                )
             if created_tables:
                 await connection.run_sync(Base.metadata.drop_all, tables=created_tables)
-            else:
-                await connection.execute(
-                    text(
-                        "TRUNCATE TABLE audit_log, refresh_tokens, users, "
-                        "platform_admins, organizations RESTART IDENTITY CASCADE"
-                    )
-                )
 
 
 @pytest_asyncio.fixture

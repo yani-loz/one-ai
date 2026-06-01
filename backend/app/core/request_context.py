@@ -28,6 +28,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+# Bound the request id to the audit_log.request_id column width (String(64)). The inbound
+# X-Request-ID is an UNVALIDATED external header; if it reached a same-transaction audit
+# INSERT over-length, Postgres would RAISE (varchar does not truncate) and roll back the
+# whole request — undoing an otherwise-successful action. Clamping at the source keeps the
+# request id a bounded, safe input. Must match String(64) in app.identity.models.audit_log.
+REQUEST_ID_MAX_LENGTH = 64
+
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:
@@ -76,7 +83,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         """Set the request context, run the request, then reset the ContextVar."""
         context = RequestContext(
             ip_address=_validated_client_ip(request),
-            request_id=request.headers.get("x-request-id") or uuid4().hex,
+            request_id=(request.headers.get("x-request-id") or uuid4().hex)[
+                :REQUEST_ID_MAX_LENGTH
+            ],
         )
         token = _request_context.set(context)
         try:

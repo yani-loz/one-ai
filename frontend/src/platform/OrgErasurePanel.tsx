@@ -12,8 +12,12 @@
  *   - On success the parent reloads (onErased) — the org re-renders as `offboarded`, and an
  *     already-erased org offers export only.
  *   - Metadata only: the export bundle is actions/metadata, never tenant content.
+ *   - The confirm modal is PORTALED to document.body: its fixed overlay must escape the
+ *     nested glass/`backdrop-blur` (transform) stacking contexts of the detail page, or a
+ *     lower element intercepts clicks on the destructive button (caught in live testing).
  */
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { AuthRequestError } from "../identity";
@@ -143,17 +147,18 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
         </p>
       )}
 
-      <AnimatePresence>
-        {dialogOpen && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={closeDialog}
-              className="fixed inset-0 z-40 bg-text-primary/20 backdrop-blur-sm"
-              aria-hidden="true"
-            />
+      {createPortal(
+        <AnimatePresence>
+          {dialogOpen && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={closeDialog}
+                className="fixed inset-0 z-40 bg-text-primary/20 backdrop-blur-sm"
+                aria-hidden="true"
+              />
             <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
               <motion.div
                 ref={dialogRef}
@@ -226,7 +231,9 @@ export function OrgErasurePanel({ org, onErased, onAuthExpired }: Props): React.
             </div>
           </>
         )}
-      </AnimatePresence>
+        </AnimatePresence>,
+        document.body,
+      )}
     </>
   );
 }

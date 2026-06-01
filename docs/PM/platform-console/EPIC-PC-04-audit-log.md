@@ -4,7 +4,7 @@
 |---|---|
 | **Epic ID** | PC-04 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | 🟢 Backend done (PR-4) — **user.\* emission + the frontend audit-trail viewer (AC8) remain** (the PC-04a/04b split, mirroring 3a/3b) |
+| **Status** | 🟢 Backend + audit-trail viewer (AC8) done — **only `user.\*` emission remains** (the PC-04a tail) |
 | **Branch** | `feat/platform-lifecycle` (continues the stack) |
 | **PR** | PR-4 (backend core: table + trigger, auth & org-lifecycle emission, read API) |
 | **Review** | [docs/audits/2026-06-01_platform-audit-pr4-review.md](../../audits/2026-06-01_platform-audit-pr4-review.md) — 5 confirmed (1 high), all fixed; 1 dismissed |
@@ -73,7 +73,7 @@ certificates (PC-06) attach to.
 | ✅ PC-04-AC5 | `GET /platform/orgs/{id}/audit` returns that org's trail newest-first, paginated, **metadata only**. | BE `::test_org_audit_is_newest_first_and_paginated` |
 | ✅ ⭐ PC-04-AC6 | Both audit endpoints reject a **company token** (exactly 401) and require the platform gate. | BE `::test_audit_endpoints_reject_company_token` |
 | ✅ PC-04-AC7 | The **actor_email is denormalized** (durable attribution); the row has **no FK** to users/orgs, so it survives their deletion. | BE `::test_login_success_records_event_with_denormalized_email` (actor_email persisted); model has no FK (PC-06 erasure-safe) |
-| ⏳ PC-04-AC8 | Frontend: the detail screen shows the org's audit trail; a UI action (e.g. suspend) **appears in the trail** on reload. | **PC-04a (frontend viewer) — not yet built.** |
+| ✅ PC-04-AC8 | Frontend: the detail screen shows the org's audit trail; a UI action (e.g. suspend) **appears in the trail** on reload. | FE `OrganizationDetailPage.test.tsx::test_renders_the_audit_trail`, `::test_audit_trail_shows_a_lifecycle_action_on_reload` (self-contained `AuditTrail.tsx`, re-fetches on a `reloadSignal`) |
 
 ## 5. Design sketch (to validate before the migration)
 
@@ -126,10 +126,11 @@ row *tags* the affected `org_id`):
   is deliberately untrusted. `ip_address` stored as `String(45)` (not `inet`) to avoid an
   asyncpg bind error rolling back a same-tx login — both tracked in `FIX_BEFORE_PROD.md`.
 
-## 7. Remaining (the PC-04a slice) + notes
+## 7. Remaining (the PC-04a tail) + notes
 
-- **Frontend audit-trail viewer (AC8)** — a section/tab on the org detail screen, newest-first,
-  reading `GET /platform/orgs/{id}/audit`. Deferred for context budget, mirroring the 3a/3b split.
+- ✅ **Frontend audit-trail viewer (AC8)** — DONE: a newest-first "Audit trail" section on the org
+  detail screen (`AuditTrail.tsx`, reading `GET /platform/orgs/{id}/audit`), re-fetching on a
+  `reloadSignal` so a UI suspend/legal-hold appears on reload. Humanized labels, metadata only.
 - **`user.*` emission (AC3 tail)** — `user.create` / `deactivate` / `role_change` from
   `UserService` (tenant session; `audit_log` is intentionally outside RLS so a tenant-session
   INSERT works). Plus platform-admin login emission + platform-admin `actor_email` denormalization.

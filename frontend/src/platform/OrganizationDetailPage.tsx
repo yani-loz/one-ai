@@ -4,13 +4,16 @@
  *       governance posture slots (filled in PC-03b). Metadata only — content stays sealed.
  * Used by: App.tsx (the /platform/orgs/:orgId route, behind PlatformRoute).
  * Depends on: ../identity (useAuth, AuthRequestError), ./platformClient, ./format,
- *             ./StatusBadge, ./SealedBanner, ../components/BrandMark, react-router-dom, motion.
+ *             ./AuditTrail, ./StatusBadge, ./SealedBanner, ../components/BrandMark,
+ *             react-router-dom, motion.
  * Key invariants:
  *   - Rendered only for an authenticated platform admin (PlatformRoute gates it); a 401
  *     means the session lapsed → logout, and the guard routes to /login.
  *   - Shows operational metadata only — never tenant content.
  *   - Mutations re-render from the server's authoritative response; a transient failure
  *     reloads the detail rather than trusting stale local state.
+ *   - Each lifecycle mutation bumps auditReloadSignal so the audit trail re-fetches and
+ *     the new event shows on the same screen (AC8).
  */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "motion/react";
@@ -19,6 +22,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { BrandMark } from "../components/BrandMark";
 import { seedFromString } from "../components/insignia/generateInsignia";
 import { AuthRequestError, useAuth } from "../identity";
+import { AuditTrail } from "./AuditTrail";
 import { formatShortDate } from "./format";
 import {
   getOrganization,
@@ -48,6 +52,12 @@ export function OrganizationDetailPage(): React.JSX.Element {
   const [org, setOrg] = useState<OrganizationDetail | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [busy, setBusy] = useState(false);
+  const [auditReloadSignal, setAuditReloadSignal] = useState(0);
+
+  // Stable so the AuditTrail's fetch effect doesn't re-run every render (refetch loop).
+  const handleAuthExpired = useCallback((): void => {
+    void logout();
+  }, [logout]);
 
   const load = useCallback(async (): Promise<void> => {
     if (orgId === undefined) return;
@@ -74,6 +84,7 @@ export function OrganizationDetailPage(): React.JSX.Element {
       setBusy(true);
       try {
         setOrg(await update());
+        setAuditReloadSignal((signal) => signal + 1); // the action just wrote an audit row
       } catch (error) {
         if (error instanceof AuthRequestError && error.status === 401) {
           await logout();
@@ -198,6 +209,14 @@ export function OrganizationDetailPage(): React.JSX.Element {
                   </div>
                 ))}
               </div>
+            </Section>
+
+            <Section title="Audit trail">
+              <AuditTrail
+                orgId={org.id}
+                reloadSignal={auditReloadSignal}
+                onAuthExpired={handleAuthExpired}
+              />
             </Section>
 
             <div className="mt-8">

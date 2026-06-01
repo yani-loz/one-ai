@@ -47,6 +47,31 @@ export interface OrganizationDetail {
 }
 
 /**
+ * One entry in a company's append-only audit trail from GET /platform/orgs/{id}/audit —
+ * metadata about an ACTION (who/what/when/where), never tenant content or secrets. Mirrors
+ * the backend AuditLogEntryResponse.
+ */
+export interface AuditLogEntry {
+  id: string;
+  /** ISO-8601 timestamp the action occurred. */
+  occurred_at: string;
+  /** "platform_admin" | "user" | "system". */
+  actor_type: string;
+  actor_id: string | null;
+  /** Denormalized so a deleted/renamed actor's past actions stay attributable. */
+  actor_email: string | null;
+  /** Dotted action namespace, e.g. "org.suspend", "auth.login.success". */
+  action: string;
+  org_id: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  /** Structured, never-secret metadata about the action. */
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  request_id: string | null;
+}
+
+/**
  * Payload to onboard a new company plus its first company_admin. Field bounds mirror the
  * backend OrganizationCreateRequest validators:
  *   - org_name / admin_full_name: 1..200 chars, no control characters (SafeName).

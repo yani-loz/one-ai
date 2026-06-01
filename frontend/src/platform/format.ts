@@ -14,3 +14,18 @@ export function formatShortDate(isoTimestamp: string): string {
   }
   return parsed.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
+
+/** Format an ISO-8601 timestamp as a short date + time (e.g. "1 Jun 2026, 10:00") for the trail. */
+export function formatDateTime(isoTimestamp: string): string {
+  const parsed = new Date(isoTimestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return "—";
+  }
+  return parsed.toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}

@@ -18,6 +18,7 @@
  */
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type {
+  AuditLogEntry,
   OnboardCompanyRequest,
   OnboardedCompany,
   OrganizationDetail,
@@ -108,4 +109,21 @@ export async function updateOrganizationLegalHold(
     body: JSON.stringify({ legal_hold: legalHold }),
   });
   return parseJsonOrThrow<OrganizationDetail>(response);
+}
+
+/**
+ * Fetch one company's audit trail via GET /platform/orgs/{id}/audit.
+ *
+ * Contract: returns up to `limit` entries newest-first — metadata about actions
+ * (who/what/when/where), never tenant content or secrets. Throws AuthRequestError (404
+ * unknown org, 401 lapsed session).
+ */
+export async function getOrganizationAudit(
+  orgId: string,
+  limit = 25,
+): Promise<AuditLogEntry[]> {
+  const response = await authorizedFetch(
+    `${API_URL}/platform/orgs/${orgId}/audit?limit=${limit}`,
+  );
+  return parseJsonOrThrow<AuditLogEntry[]>(response);
 }

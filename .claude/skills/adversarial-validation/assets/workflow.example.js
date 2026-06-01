@@ -8,6 +8,21 @@
 // end-to-end yourself (login, provision, forge, one probe) so every agent inherits proven
 // plumbing. Author testing/README.md + TEMPLATE.md too. Then synthesize the dashboard +
 // audit doc yourself AFTER the workflow returns (and re-verify headline NEW findings).
+//
+// RESILIENCE — the StructuredOutput gate is FRAGILE (observed twice: Target-02 TOKEN suite,
+// PC-03a phase-1). A schema-forced agent can do ALL its work (author TC-*.md, run harnesses,
+// record results to disk) yet finish WITHOUT calling StructuredOutput, which throws and — inside
+// a parallel() — can abort the whole run (later phases never start). DESIGN FOR THIS:
+//   1) The durable source of truth is the on-disk TC-<TT>-<NNN>_*.md files, NOT the structured
+//      return value. Agents write results to disk as they go, so the work survives the throw.
+//   2) On failure, DO NOT blindly re-run the flaky fan-out — Glob testing/<NN>/, harvest the
+//      recorded results from the .md files, and finish + re-verify the missing/unrecorded cases
+//      yourself with the proven harness (a lead "_finish_*.py" script). That is faster and avoids
+//      re-suspending orgs / re-polluting the shared DB.
+//   3) Re-derive any HEADLINE result that came from an abnormally-ended run first-hand before you
+//      ship it — agent output from an aborted run is exactly what must be independently confirmed.
+//   4) Keep schema OPTIONAL-friendly where you can (smaller suites, fewer required fields); the
+//      agents still produce the real artifact (the .md files) regardless of the structured echo.
 
 export const meta = {
   name: 'adversarial-validation',

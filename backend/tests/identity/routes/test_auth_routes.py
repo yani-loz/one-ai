@@ -140,6 +140,38 @@ async def test_me_with_valid_token_succeeds_even_when_org_suspended(
     assert response.json()["email"] == "admin@acme.example"
 
 
+async def test_refresh_token_survives_suspension_then_rotates_after_reactivation(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # TC-OL-003 (high if it fails): a suspension-failed refresh must NOT burn the token.
+    # consume() stages the revoke UPDATE *before* _load_loginable_org raises 403, so
+    # correctness depends on get_session rolling that back — the token's revoked_at stays
+    # NULL and it rotates cleanly once the org is reactivated (suspend = pause, not reset).
+    # This pins the rollback so the AUD-06 reuse-family work can't silently regress it.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    await seed_user(
+        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        role=UserRole.company_admin, password=_PASSWORD,
+    )
+    await db_session.commit()
+    login = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+    refresh_token = login.json()["refresh_token"]
+
+    org.status = "suspended"
+    await db_session.commit()
+    blocked = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+
+    org.status = "active"
+    await db_session.commit()
+    restored = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+
+    assert blocked.status_code == 403
+    assert restored.status_code == 200  # the SAME token survived the 403
+    assert restored.json()["refresh_token"] != refresh_token  # and really rotated
+
+
 async def test_login_wrong_password_returns_401_generic(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

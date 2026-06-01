@@ -77,6 +77,7 @@ indexes every case with its current status and result.
 | `IA` | Infrastructure + Authentication/Authorization |
 | `PC` | Platform Console backend (`/platform/*`) |
 | `FE` | Frontend (auth client, routing, XSS) |
+| `OL` | Org Lifecycle (PC-03a — suspend/legal-hold + detail) |
 | `UM` | User management (CRUD, last-admin, lifecycle) — *planned* |
 | `IV` | Input validation & fuzzing — *planned* |
 
@@ -154,7 +155,8 @@ Demo credentials (dev-only, from `docs/FIX_BEFORE_PROD.md`):
 |---|---|---|
 | 01 | Infrastructure + AuthN/AuthZ | ✅ done (`01_infrastructure-authn-authz/`) |
 | 02 | Platform Console backend (`/platform/*`) | ✅ done (`02_platform-console/`) |
-| 04 | Frontend (auth client, routing, XSS) | **in progress** (`04_frontend-platform-console/`) |
+| 04 | Frontend (auth client, routing, XSS) | ✅ done (`04_frontend-platform-console/`) |
+| 05 | Org Lifecycle (PC-03a) | ✅ done (`05_org-lifecycle/`) |
 | — | User management (CRUD, last-admin, lifecycle) | planned |
 | — | Input validation & fuzzing | planned |
 

@@ -46,6 +46,7 @@ refresh); the `/platform/orgs/:id` full-screen detail route.
 | PC-03a-AC1 | `status` is pinned to the enum (invalid → 422); suspend↔reactivate works. | BE `test_platform_routes.py::test_patch_org_status_invalid_value_returns_422`, `::test_patch_org_status_suspend_then_reactivate` |
 | PC-03a-AC2 | Detail returns **metadata only** (7 fields incl. legal_hold); unknown id → 404. | BE `::test_get_org_detail_returns_metadata_and_legal_hold`, `::test_get_org_detail_unknown_returns_404` |
 | ⭐ PC-03a-AC3 | A **suspended** org blocks **login and refresh** (403), and the 403 is reachable **only with valid credentials** (wrong password → generic 401, no oracle). | BE `test_auth_routes.py::test_login_suspended_org_returns_403`, `::test_login_suspended_org_wrong_password_stays_401_no_oracle`, `::test_refresh_blocked_after_org_suspended` |
+| ⭐ PC-03a-AC3b | A suspension-failed refresh **does NOT burn the token** (the staged revoke rolls back) — it rotates again after reactivation (suspend = pause, not reset). | BE `test_auth_routes.py::test_refresh_token_survives_suspension_then_rotates_after_reactivation` (dynamically proven: TC-OL-003) |
 | ⭐ PC-03a-AC4 | `/auth/me` still **200** for a valid token under suspension (the deliberate asymmetry). | BE `test_auth_routes.py::test_me_with_valid_token_succeeds_even_when_org_suspended` |
 | ⭐ PC-03a-AC5 | The PATCH write **reaches the auth gate** end-to-end (suspend via endpoint → login 403 → reactivate → login 200). | BE `test_platform_routes.py::test_patch_status_endpoint_drives_the_login_gate_end_to_end` |
 | ⭐ PC-03a-AC6 | A **company token** is rejected (exactly 401) on all three new endpoints (discriminating, real-admin sub). | BE `::test_get_org_detail_with_company_token_is_rejected`, `::test_patch_org_status_with_company_token_is_rejected`, `::test_patch_org_legal_hold_with_company_token_is_rejected` |
@@ -74,6 +75,19 @@ refresh); the `/platform/orgs/:id` full-screen detail route.
 ## 7. Known gaps / follow-ups
 
 - **PC-03b**: `organization_governance` table + posture editor (the slots are placeholders now).
+- **Suspension is immediate for new sessions but eventual (≤ access-TTL, ~15 min) for in-flight
+  ones** — the access-token path doesn't re-check org status (testing TC-OL-005). Tracked:
+  *access-token denylist* in `FIX_BEFORE_PROD.md` (now names org suspension).
+- **Forged dev-secret platform token** can drive the new write endpoints (suspend / legal-hold)
+  — same tracked gate as everywhere (*Rotate `JWT_SECRET`* + *Enforce RLS*); testing TC-OL-024/025.
 - **Test-file size:** `test_platform_routes.py` is at 468 lines — split into auth-session vs
   org-management test files soon (soft-warn; under the 500 hard ceiling).
 - Audit logging of suspend/legal-hold actions → **PC-04** (`audit_log`).
+
+## 8. Dynamic QA
+
+Target 05 (`testing/05_org-lifecycle/`, run 2026-06-01): **31 cases · 26 ✅ · 3 ⚠️ · 2 ❌ · 0 new
+defects** — matches the static review. The headline: **TC-OL-003** settled live (with psql
+ground-truth) the transaction question the static review couldn't — the pre-suspension refresh
+token **survives** the 403 and rotates after reactivation; that invariant is now pinned by the
+unit test `test_refresh_token_survives_suspension_then_rotates_after_reactivation` (AC3b).

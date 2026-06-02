@@ -31,3 +31,14 @@
 - Full backend suite **183 passed** (+5 review-fix tests), ruff clean, coverage 92.8%.
 - The TOCTOU fix mirrors the proven `FOR UPDATE` pattern already in `support_grant` + the last-admin guard.
 - Fixes committed on `feat/platform-erasure` after `8e9c531`.
+
+## Carried forward (post-review change)
+
+- **Sudo password re-auth on erase (`13da7fe`, landed after this review).** Erase now requires a `password`
+  re-auth verified before any delete (order: lock → slug 400 → **password 403** → legal-hold 409 → deletes).
+  This was **not** part of the reviewed commit. The dynamic adversarial pass
+  (`docs/audits/2026-06-01_erasure-dynamic-adversarial.md`) confirmed it live and its side effect: a forged
+  dev-secret token (random `sub`) now hits **403** at the password step, so a forged token *alone* can no
+  longer erase (TC-ER-032) — the one forged-token write that's now second-factored (suspend/legal-hold/
+  support-approve and all reads remain forgeable; see `FIX_BEFORE_PROD` → *Rotate JWT_SECRET*). Recommend the
+  control be documented in the epic (done: PC-06-AC5b) and the negative path kept under test.

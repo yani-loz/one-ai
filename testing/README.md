@@ -78,6 +78,8 @@ indexes every case with its current status and result.
 | `PC` | Platform Console backend (`/platform/*`) |
 | `FE` | Frontend (auth client, routing, XSS) |
 | `OL` | Org Lifecycle (PC-03a — suspend/legal-hold + detail) |
+| `BG` | Break-glass support access (PC-05) |
+| `ER` | GDPR erasure + compliance export (PC-06) |
 | `UM` | User management (CRUD, last-admin, lifecycle) — *planned* |
 | `IV` | Input validation & fuzzing — *planned* |
 
@@ -157,6 +159,9 @@ Demo credentials (dev-only, from `docs/FIX_BEFORE_PROD.md`):
 | 02 | Platform Console backend (`/platform/*`) | ✅ done (`02_platform-console/`) |
 | 04 | Frontend (auth client, routing, XSS) | ✅ done (`04_frontend-platform-console/`) |
 | 05 | Org Lifecycle (PC-03a) | ✅ done (`05_org-lifecycle/`) |
+| 07 | Break-glass support access (PC-05) | ✅ done (`07_break-glass/`) |
+| 08 | GDPR erasure + compliance export (PC-06) | ✅ done (`08_erasure/`) |
+| — | Platform Console audit log (PC-04) | planned |
 | — | User management (CRUD, last-admin, lifecycle) | planned |
 | — | Input validation & fuzzing | planned |
 

@@ -99,8 +99,9 @@ class UserService:
         """Apply a partial update to a user in the caller's org.
 
         Contract: only the provided fields change; org_id is never mutated. A role change
-        records `user.role_change` and a deactivation records `user.deactivate` on the same
-        session (committed with the update).
+        records `user.role_change`, a deactivation records `user.deactivate`, and a
+        reactivation records `user.reactivate` on the same session (committed with the update)
+        — both activation directions are audited, mirroring org suspend/reactivate.
 
         Raises:
             UserNotFoundError: no such user in this org (-> 404; never leaks existence
@@ -135,6 +136,12 @@ class UserService:
         if previous_active and not user.is_active:
             await self._audit.record(
                 self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {})
+            )
+        if not previous_active and user.is_active:
+            # Restoring access (possibly admin access) is as audit-worthy as removing it — a
+            # DPO/Betriebsrat must see both directions (mirrors org suspend/reactivate).
+            await self._audit.record(
+                self._user_event(AuditAction.USER_REACTIVATE, actor, user, {})
             )
         return UserResponse.model_validate(user)
 

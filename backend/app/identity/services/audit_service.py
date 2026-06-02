@@ -54,6 +54,7 @@ class AuditAction:
     USER_CREATE = "user.create"
     USER_ROLE_CHANGE = "user.role_change"
     USER_DEACTIVATE = "user.deactivate"
+    USER_REACTIVATE = "user.reactivate"
     SUPPORT_REQUESTED = "support.requested"
     SUPPORT_APPROVED = "support.approved"
     SUPPORT_DENIED = "support.denied"

@@ -304,6 +304,42 @@ async def test_deactivate_user_emits_audit_row(db_session: AsyncSession) -> None
     assert rows[0].entity_id == member.id
 
 
+async def test_reactivate_user_emits_audit_row(db_session: AsyncSession) -> None:
+    # Restoring a deactivated user records user.reactivate — the inverse of deactivate is
+    # equally audit-worthy (a DPO/Betriebsrat must see access being RESTORED, not just removed).
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    member = await seed_user(
+        db_session, org_id=org.id, email="m@acme.example", full_name="M", role=UserRole.member
+    )
+    service = _service(db_session)
+    await service.deactivate_user(org.id, member.id, _ACTOR)
+
+    await service.update_user(org.id, member.id, UserUpdateRequest(is_active=True), _ACTOR)
+
+    rows = await _audit_rows(db_session, "user.reactivate")
+    assert len(rows) == 1
+    assert rows[0].entity_id == member.id
+    assert rows[0].org_id == org.id
+    # Both directions are now audited — the asymmetry is fixed (deactivate row still present).
+    assert len(await _audit_rows(db_session, "user.deactivate")) == 1
+
+
+async def test_reactivate_already_active_user_emits_no_audit_row(
+    db_session: AsyncSession,
+) -> None:
+    # A no-op "reactivation" (the user was already active) must NOT spuriously audit — only a
+    # real False->True transition records user.reactivate.
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    member = await seed_user(
+        db_session, org_id=org.id, email="m@acme.example", full_name="M", role=UserRole.member
+    )
+    service = _service(db_session)
+
+    await service.update_user(org.id, member.id, UserUpdateRequest(is_active=True), _ACTOR)
+
+    assert await _audit_rows(db_session, "user.reactivate") == []
+
+
 async def test_last_admin_guard_serializes_concurrent_removals(db_session: AsyncSession) -> None:
     # DYN-01: two admins removed concurrently (separate transactions) must NOT both
     # succeed and strand the org at 0 admins. The guard locks the active-admin set

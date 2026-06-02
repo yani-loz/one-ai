@@ -3,8 +3,8 @@
  *       compliance record (download) and erases the company behind a type-the-slug
  *       confirmation modal — the irreversible-action guard, mirroring the backend.
  * Used by: OrganizationDetailPage (rendered inside an "Erasure & compliance" Section).
- * Depends on: motion, ../identity (AuthRequestError), ./platformClient, ./useDialogA11y,
- *             ./types, the aurora theme.
+ * Depends on: motion, ../identity (AuthRequestError), ./platformClient,
+ *             ../components/useDialogA11y, ./types, the aurora theme.
  * Key invariants:
  *   - Erase is gated client-side too: "Erase permanently" stays disabled until the operator
  *     types the EXACT slug + a reason + their own password (sudo-style re-auth). The backend
@@ -25,7 +25,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { AuthRequestError } from "../identity";
 import { eraseOrganization, exportCompliance } from "./platformClient";
 import type { OrganizationDetail } from "./types";
-import { useDialogA11y } from "./useDialogA11y";
+import { useDialogA11y } from "../components/useDialogA11y";
 
 const POP = { duration: 0.3, ease: [0.32, 0.72, 0, 1] } as const;
 

@@ -238,7 +238,7 @@ export function useDirectionalTransition() {
 
 ## What NOT to Do
 
-- No heavy drop shadows (max `shadow-sm`).
+- No heavy drop shadows on cards/panels (max `shadow-sm`). Elevated overlays — modals, drawers, sidebars — are a distinct surface and may use a deeper shadow (`shadow-xl`) to lift off the page.
 - No solid opaque cards (always glass / near-transparent).
 - No harsh borders (use `border-white/50` or softer).
 - No static pages — everything fades or slides in.

@@ -19,7 +19,7 @@ import { AuthRequestError } from "../identity";
 import { isOnboardFormValid, slugify } from "./onboardValidation";
 import { onboardCompany } from "./platformClient";
 import { OnboardSuccess } from "./OnboardSuccess";
-import { useDialogA11y } from "./useDialogA11y";
+import { useDialogA11y } from "../components/useDialogA11y";
 import type { OnboardedCompany } from "./types";
 
 const SLIDE = { duration: 0.5, ease: [0.32, 0.72, 0, 1] } as const;

@@ -3,7 +3,10 @@
  *       moves focus into the container, traps Tab within it, closes on Escape, and
  *       restores focus to the previously-focused element on close. Lets a motion-driven
  *       drawer honour the `aria-modal` contract it advertises.
- * Used by: platform/OnboardCompanyDrawer.tsx.
+ * Used by: platform/OnboardCompanyDrawer.tsx, platform/OrgErasurePanel.tsx,
+ *          admin/CreateUserDrawer.tsx, admin/ConfirmDialog.tsx. Shared across modules, so
+ *          it lives in components/ (deep-path import, like BrandMark) rather than in one
+ *          feature module — a single focus-trap implementation, never a divergent copy.
  * Depends on: react (useEffect, useRef). No DOM/focus-trap libraries.
  * Key invariants:
  *   - Focus management runs ONCE per activation (keyed on `active`), so typing inside the

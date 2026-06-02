@@ -1,19 +1,21 @@
 /**
- * Role: Root route shell — wires the public /login, the protected company home "/", and
- *       the platform-admin console "/platform" with the iOS-style directional page
- *       transitions, wrapped in AnimatePresence.
+ * Role: Root route shell — wires the public /login, the protected company home "/", the
+ *       company-admin console "/admin", and the platform-admin console "/platform" with the
+ *       iOS-style directional page transitions, wrapped in AnimatePresence.
  * Used by: src/main.tsx (inside BrowserRouter + AuthProvider).
  * Depends on: react-router-dom (Routes/Route/Navigate), motion (AnimatePresence),
- *             ./identity (LoginPage, ProtectedRoute, useAuth), ./platform
- *             (PlatformConsolePage, OrganizationDetailPage, PlatformRoute), ./HomePage,
- *             ./pageTransition.
+ *             ./identity (LoginPage, ProtectedRoute, useAuth), ./admin (AdminConsolePage,
+ *             AdminRoute), ./platform (PlatformConsolePage, OrganizationDetailPage,
+ *             PlatformRoute), ./HomePage, ./pageTransition.
  * Key invariants: screen-level motion.divs are `absolute inset-0` so the incoming and
  *   outgoing pages overlap during the slide; routing must run inside <BrowserRouter>.
- *   "/" routes a platform admin onward to /platform so each role lands on its own home.
+ *   "/" routes a platform admin onward to /platform so each role lands on its own home;
+ *   "/admin" is the company_admin console, reached from the home (AdminRoute gates it).
  */
 import { AnimatePresence, motion } from "motion/react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
+import { AdminConsolePage, AdminRoute } from "./admin";
 import { HomePage } from "./HomePage";
 import { LoginPage, ProtectedRoute, useAuth } from "./identity";
 import { OrganizationDetailPage, PlatformConsolePage, PlatformRoute } from "./platform";
@@ -67,6 +69,16 @@ export function App(): React.JSX.Element {
                 <ProtectedRoute>
                   <RoleHome />
                 </ProtectedRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <AnimatedScreen>
+                <AdminRoute>
+                  <AdminConsolePage />
+                </AdminRoute>
               </AnimatedScreen>
             }
           />

@@ -33,6 +33,9 @@
   --animate-shimmer: shimmer 2.5s linear infinite;
   --animate-aura-pulse: aura-pulse 3s ease-in-out infinite;
   --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+  /* Human-in-the-Loop "needs your approval" glow (purple expanding ring) — the break-glass
+     support inbox uses it. box-shadow is the one sanctioned non-transform/opacity animation. */
+  --animate-clari-pulse: clari-pulse 2s ease-in-out infinite;
 }
 
 @keyframes gradient-x {
@@ -80,6 +83,17 @@
   }
   50% {
     opacity: 0.4;
+  }
+}
+@keyframes clari-pulse {
+  0%,
+  100% {
+    box-shadow: 0 4px 16px rgba(139, 92, 246, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 4px 24px rgba(139, 92, 246, 0.55),
+      0 0 0 8px rgba(139, 92, 246, 0.1);
   }
 }
 

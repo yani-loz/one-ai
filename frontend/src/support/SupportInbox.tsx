@@ -2,7 +2,7 @@
  * Role: Company-side break-glass approval inbox (Human-in-the-Loop). A company_admin sees
  *       support-access requests targeting THEIR org and approves / denies / revokes them.
  *       Pending requests glow (animate-clari-pulse) — "this needs your approval".
- * Used by: HomePage (rendered for a company_admin only).
+ * Used by: admin/AdminConsolePage (the company-admin console, for a company_admin only).
  * Depends on: ./supportClient, ./types, ../platform/format.
  * Key invariants:
  *   - Pull-only: fetches on mount + after each decision (no push notification yet).

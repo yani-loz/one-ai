@@ -71,11 +71,20 @@ so no secret in VCS) · DML `GRANT`s + `ALTER DEFAULT PRIVILEGES` · `ALTER TABL
 LEVEL SECURITY` (belt-and-suspenders; not strictly required since the runtime roles aren't owners). **No policy
 rewrite** — 0003/0006 are already correct.
 
-## The standing-invariant test (the one real residual)
-A test that **dynamically enumerates** every `TenantMixin` subclass (not a hardcoded `{users, support_grant}`)
-and asserts each table has `relrowsecurity` + `relforcerowsecurity` + an `org_isolation` policy. Without the
-dynamic enumeration, a future tenant table silently ships cross-org-readable. (Also extend the erasure-path
-completeness invariant the same way.)
+## The standing-invariant test — DONE (ENABLE + policy); FORCE assertion folds into the flip
+✅ **Shipped** (`backend/tests/identity/models/test_rls_invariants.py`, commit `f8a4fbd`): a test that
+**dynamically enumerates** every `TenantMixin` subclass (not a hardcoded `{users, support_grant}`) and asserts
+each table has `relrowsecurity` (ENABLE) + an `org_isolation` policy, with two anti-rot guards (non-empty +
+`{User, SupportGrant}` present; the 4 content-blind platform tables stay out). Skips loudly on a non-migrated DB.
+**Deferred to THIS flip commit:** add the `relforcerowsecurity` assertion to the same test once migration `0007`
+sets FORCE — asserting it earlier would fail (FORCE isn't on yet). (Also extend the erasure-path completeness
+invariant the same way.)
+
+> **Also done as a safe pre-slice (commit `f8a4fbd`):** reframe-1's JWT gate generalization —
+> `Settings.requires_secure_secrets` + `_forbid_insecure_defaults_outside_dev` now fail boot for any `app_env`
+> outside `{local, test}` (staging / typo no longer slip through). Adding the 2 new role passwords
+> (`ONEAI_APP_PASSWORD`/`ONEAI_GLOBAL_PASSWORD`) to the guarded `insecure` list still belongs to THIS flip
+> commit (they don't exist until then).
 
 ## Verification (must prove BOTH, on a migrated + role-provisioned DB)
 - **Isolation enforces:** as `oneai_app`, `SET app.current_org_id='<orgA>'; SELECT * FROM users` returns **zero**

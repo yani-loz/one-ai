@@ -18,8 +18,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import InsecureConfigurationError
 
-# Known-insecure local-dev defaults. Production must override both; the model
-# validator on Settings refuses to boot if either still holds when running in prod.
+# Known-insecure local-dev defaults. Every non-dev environment must override both; the
+# model validator on Settings refuses to boot if either still holds whenever app_env is
+# anything other than the explicit dev/test envs (local | test) — so staging, production,
+# or a typo'd env all fail closed instead of silently signing tokens with the public key.
 _INSECURE_JWT_SECRET = "dev-only-insecure-secret-change-me-in-prod"
 _INSECURE_POSTGRES_PASSWORD = "oneai"
 
@@ -39,7 +41,9 @@ class Settings(BaseSettings):
     )
 
     # — Runtime —
-    app_env: str = "local"  # local | staging | production
+    # local | test → dev defaults tolerated. Anything else (staging | production | a typo)
+    # MUST supply real secrets (see requires_secure_secrets) or the process refuses to boot.
+    app_env: str = "local"
     app_name: str = "One AI"
     app_version: str = "0.1.0"
 
@@ -81,18 +85,37 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_production(self) -> bool:
-        """True when running in the production environment."""
+        """True when running in the production environment.
+
+        Kept narrow (production-only) on purpose: scripts.seed_identity gates demo-seed
+        refusal on this. The dev-secret boot guard uses requires_secure_secrets instead,
+        which is broader — every non-dev env, not just production.
+        """
         return self.app_env.lower() == "production"
 
-    @model_validator(mode="after")
-    def _forbid_insecure_defaults_in_production(self) -> Settings:
-        """Refuse to boot in production while a known dev-default secret is unchanged.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def requires_secure_secrets(self) -> bool:
+        """True for every environment that must NOT run with the dev-default secrets.
 
-        Fail-closed guard: a production process must never sign tokens with the public
-        default JWT key or use the default database password. Raises
-        InsecureConfigurationError (a hard boot failure) naming each offending secret.
+        Fail-closed by design: ONLY the explicit dev/test envs (local | test) may use the
+        convenience defaults. Staging, production, AND any unrecognized/typo'd app_env all
+        require real secrets — so an unknown env boots loud rather than silently signing
+        tokens with the public dev key. This is the whole-of-non-dev generalization of the
+        old production-only gate (a staging box or a typo'd APP_ENV previously slipped through).
         """
-        if not self.is_production:
+        return self.app_env.lower() not in {"local", "test"}
+
+    @model_validator(mode="after")
+    def _forbid_insecure_defaults_outside_dev(self) -> Settings:
+        """Refuse to boot outside dev/test while a known dev-default secret is unchanged.
+
+        Fail-closed guard: any non-dev process (staging, production, or an unrecognized
+        app_env) must never sign tokens with the public default JWT key or use the default
+        database password. Raises InsecureConfigurationError (a hard boot failure) naming
+        each offending secret. Only app_env 'local' or 'test' is exempt.
+        """
+        if not self.requires_secure_secrets:
             return self
         insecure = [
             name
@@ -104,8 +127,9 @@ class Settings(BaseSettings):
         ]
         if insecure:
             raise InsecureConfigurationError(
-                "Refusing to start in production with insecure default secret(s): "
-                f"{', '.join(insecure)}. Provide them via environment / secret manager."
+                f"Refusing to start with app_env={self.app_env!r} while using insecure "
+                f"default secret(s): {', '.join(insecure)}. Provide them via environment / "
+                "secret manager. Only app_env 'local' or 'test' may use the dev defaults."
             )
         return self
 

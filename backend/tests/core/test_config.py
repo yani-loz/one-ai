@@ -37,14 +37,40 @@ def test_is_production_false_for_local_env() -> None:
 
 
 def test_local_env_tolerates_insecure_default_secrets() -> None:
-    # The guard only fires in production: dev convenience defaults are fine locally.
+    # Only the explicit dev/test envs are exempt: dev convenience defaults are fine locally.
     settings = Settings(
         app_env="local",
         jwt_secret="dev-only-insecure-secret-change-me-in-prod",
         postgres_password="oneai",
     )
 
-    assert settings.is_production is False
+    assert settings.requires_secure_secrets is False
+
+
+def test_test_env_tolerates_insecure_default_secrets() -> None:
+    # app_env='test' is the other exempt env (CI/local suites run with dev defaults).
+    settings = Settings(
+        app_env="test",
+        jwt_secret="dev-only-insecure-secret-change-me-in-prod",
+        postgres_password="oneai",
+    )
+
+    assert settings.requires_secure_secrets is False
+
+
+def test_requires_secure_secrets_false_only_for_dev_and_test() -> None:
+    assert Settings(app_env="local").requires_secure_secrets is False
+    assert Settings(app_env="test").requires_secure_secrets is False
+    assert Settings(app_env="LOCAL").requires_secure_secrets is False  # case-insensitive
+
+
+def test_requires_secure_secrets_true_for_staging_production_and_typos() -> None:
+    secure = {"jwt_secret": _SECURE_JWT, "postgres_password": _SECURE_DB_PASSWORD}
+    assert Settings(app_env="staging", **secure).requires_secure_secrets is True
+    assert Settings(app_env="production", **secure).requires_secure_secrets is True
+    # An unrecognized / typo'd env is treated as non-dev — fail closed, never exempt.
+    assert Settings(app_env="prod", **secure).requires_secure_secrets is True
+    assert Settings(app_env="developmnt", **secure).requires_secure_secrets is True
 
 
 def test_production_with_default_jwt_secret_refuses_to_boot() -> None:
@@ -70,4 +96,36 @@ def test_production_with_secure_secrets_boots() -> None:
         app_env="production", jwt_secret=_SECURE_JWT, postgres_password=_SECURE_DB_PASSWORD
     )
 
+    assert settings.jwt_secret == _SECURE_JWT
+
+
+def test_staging_with_default_jwt_secret_refuses_to_boot() -> None:
+    # The headline gap the generalization closes: staging previously slipped through the
+    # production-only gate and booted signing tokens with the public dev secret.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(
+            app_env="staging",
+            jwt_secret="dev-only-insecure-secret-change-me-in-prod",
+            postgres_password=_SECURE_DB_PASSWORD,
+        )
+
+
+def test_unknown_env_with_default_jwt_secret_refuses_to_boot() -> None:
+    # A typo'd / unrecognized app_env must fail closed, not silently fall back to dev defaults.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(
+            app_env="prod",
+            jwt_secret="dev-only-insecure-secret-change-me-in-prod",
+            postgres_password=_SECURE_DB_PASSWORD,
+        )
+
+
+def test_staging_with_secure_secrets_boots() -> None:
+    # Positive control: it's the insecure SECRET that gates the boot, not the env name —
+    # staging with real secrets must start.
+    settings = Settings(
+        app_env="staging", jwt_secret=_SECURE_JWT, postgres_password=_SECURE_DB_PASSWORD
+    )
+
+    assert settings.requires_secure_secrets is True
     assert settings.jwt_secret == _SECURE_JWT

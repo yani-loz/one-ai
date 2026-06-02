@@ -129,3 +129,40 @@ def test_staging_with_secure_secrets_boots() -> None:
 
     assert settings.requires_secure_secrets is True
     assert settings.jwt_secret == _SECURE_JWT
+
+
+def test_production_with_blank_jwt_secret_refuses_to_boot() -> None:
+    # The blank-secret bypass (testing TC-SG-006): an empty key is NOT the dev default, but it
+    # is not a valid HS256 key either — the strength floor must catch it, not let it slip through.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(app_env="production", jwt_secret="", postgres_password=_SECURE_DB_PASSWORD)
+
+
+def test_production_with_whitespace_only_jwt_secret_refuses_to_boot() -> None:
+    # ' ' round-trips as a forgeable HS256 key in PyJWT (TC-SG-006); whitespace must strip to
+    # zero length and be rejected, never counted toward the strength floor.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(app_env="production", jwt_secret="   ", postgres_password=_SECURE_DB_PASSWORD)
+
+
+def test_production_with_short_jwt_secret_refuses_to_boot() -> None:
+    # A 31-byte key is one byte under the RFC 7518 HS256 floor (32 bytes) -> rejected.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(app_env="production", jwt_secret="x" * 31, postgres_password=_SECURE_DB_PASSWORD)
+
+
+def test_production_with_exactly_32_byte_jwt_secret_boots() -> None:
+    # Boundary: exactly the HS256 minimum (32 bytes) is acceptable and boots.
+    settings = Settings(
+        app_env="production", jwt_secret="x" * 32, postgres_password=_SECURE_DB_PASSWORD
+    )
+
+    assert settings.jwt_secret == "x" * 32
+
+
+def test_local_env_tolerates_short_jwt_secret() -> None:
+    # The strength floor is a non-dev gate only: local/test still boot with a weak/short secret,
+    # so the dev stack and CI are unaffected by the hardening.
+    settings = Settings(app_env="local", jwt_secret="short", postgres_password="oneai")
+
+    assert settings.requires_secure_secrets is False

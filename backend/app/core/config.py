@@ -25,6 +25,15 @@ from app.core.exceptions import InsecureConfigurationError
 _INSECURE_JWT_SECRET = "dev-only-insecure-secret-change-me-in-prod"
 _INSECURE_POSTGRES_PASSWORD = "oneai"
 
+# Minimum HS256 signing-key length. RFC 7518 §3.2: an HMAC key MUST be at least as long as
+# the hash output — 256 bits / 32 bytes for HS256. The boot guard rejects any non-dev JWT
+# secret below this (blank, whitespace-only, or short) even when it is NOT the literal dev
+# default, because a weak key signs forgeable tokens just the same (testing TC-SG-006). No
+# equivalent strength floor is imposed on POSTGRES_PASSWORD: a blank value can be legitimate
+# (IAM / peer / cert auth) and a genuinely wrong password fails the DB connection loudly on
+# its own — so a floor there would fail-close a valid deployment.
+_MIN_JWT_SECRET_BYTES = 32
+
 
 class Settings(BaseSettings):
     """Strongly-typed application settings.
@@ -60,8 +69,9 @@ class Settings(BaseSettings):
     default_org_id: str = "00000000-0000-0000-0000-000000000001"
 
     # — Identity / JWT (app.identity) —
-    # jwt_secret signs HS256 access tokens. The dev default below is INSECURE and
-    # MUST be overridden via env in staging/production — never ship it.
+    # jwt_secret signs HS256 access tokens. The dev default below is INSECURE and MUST be
+    # overridden via env in staging/production with a strong key of at least
+    # _MIN_JWT_SECRET_BYTES (a shorter/blank one is refused at boot — never ship either).
     jwt_secret: str = _INSECURE_JWT_SECRET
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 15
@@ -108,27 +118,36 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _forbid_insecure_defaults_outside_dev(self) -> Settings:
-        """Refuse to boot outside dev/test while a known dev-default secret is unchanged.
+        """Refuse to boot outside dev/test on a dev-default OR weak signing secret.
 
-        Fail-closed guard: any non-dev process (staging, production, or an unrecognized
-        app_env) must never sign tokens with the public default JWT key or use the default
-        database password. Raises InsecureConfigurationError (a hard boot failure) naming
-        each offending secret. Only app_env 'local' or 'test' is exempt.
+        Fail-closed guard with two layers, active only when requires_secure_secrets is True
+        (every env except local | test):
+          - Denylist: the known dev-default JWT secret / DB password must never reach a
+            non-dev env (staging, production, or an unrecognized app_env).
+          - Strength: the JWT signing key must be a real HS256 key — at least
+            _MIN_JWT_SECRET_BYTES (RFC 7518 §3.2). A blank, whitespace-only, or short key is
+            rejected even though it is not the literal dev default, because it signs forgeable
+            tokens just the same (testing TC-SG-006). POSTGRES_PASSWORD keeps the denylist-only
+            check (see _MIN_JWT_SECRET_BYTES for why no strength floor applies there).
+
+        Raises InsecureConfigurationError (a hard boot failure) naming each offending secret.
+        Only app_env 'local' or 'test' is exempt.
         """
         if not self.requires_secure_secrets:
             return self
-        insecure = [
-            name
-            for name, value, default in (
-                ("JWT_SECRET", self.jwt_secret, _INSECURE_JWT_SECRET),
-                ("POSTGRES_PASSWORD", self.postgres_password, _INSECURE_POSTGRES_PASSWORD),
-            )
-            if value == default
-        ]
+
+        insecure: list[str] = []
+        if self.jwt_secret == _INSECURE_JWT_SECRET:
+            insecure.append("JWT_SECRET (dev default)")
+        elif len(self.jwt_secret.strip().encode("utf-8")) < _MIN_JWT_SECRET_BYTES:
+            insecure.append(f"JWT_SECRET (blank or under {_MIN_JWT_SECRET_BYTES} bytes)")
+        if self.postgres_password == _INSECURE_POSTGRES_PASSWORD:
+            insecure.append("POSTGRES_PASSWORD (dev default)")
+
         if insecure:
             raise InsecureConfigurationError(
                 f"Refusing to start with app_env={self.app_env!r} while using insecure "
-                f"default secret(s): {', '.join(insecure)}. Provide them via environment / "
+                f"secret(s): {', '.join(insecure)}. Provide strong values via environment / "
                 "secret manager. Only app_env 'local' or 'test' may use the dev defaults."
             )
         return self

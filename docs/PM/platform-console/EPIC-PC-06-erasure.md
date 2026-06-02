@@ -29,10 +29,13 @@ artifact** (metadata + the audit trail) — the proof a DACH customer/regulator 
 
 **In scope (PC-06a — backend, org-level):**
 - `POST /platform/orgs/{id}/erase` — platform-gated; body carries a **reason** + **slug
-  confirmation** (GitHub-style guard). **Legal-hold-beats-erasure** (409, nothing touched).
-  Atomic: delete `users` + `refresh_tokens` (tokens first — they key on the users' ids),
-  **scrub** `support_grant.decided_by_email`, set org `status='offboarded'`, emit `org.erased`.
-  Returns the deletion certificate.
+  confirmation** (GitHub-style guard) + a **sudo-style `password` re-auth** (added in `13da7fe`:
+  the admin re-enters their own password, verified before any delete; wrong/absent → 403/422,
+  nothing touched). **Legal-hold-beats-erasure** (409, nothing touched). Guard order:
+  lock (FOR UPDATE) → slug (400) → **password (403)** → legal-hold (409) → deletes. Atomic:
+  delete `users` + `refresh_tokens` (tokens first — they key on the users' ids), **scrub**
+  `support_grant.decided_by_email`, set org `status='offboarded'`, emit `org.erased`. Returns
+  the deletion certificate.
 - `GET /platform/orgs/{id}/compliance-export` — metadata + the org's full audit trail.
 
 **Out of scope (later):** per-**USER** right-to-erasure (this is org/offboarding-level); the
@@ -61,6 +64,7 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 | ✅ ⭐ PC-06-AC3 | Erasure **scrubs** `support_grant.decided_by_email` (tenant subject) but **keeps** `requested_by_email` (Ethera staff). | `::test_erase_scrubs_support_grant_decider_email` |
 | ✅ ⭐ PC-06-AC4 | The append-only `audit_log` is **RETAINED** (not deleted); the erasure itself is logged (`org.erased`). | `::test_erase_retains_audit_log_and_records_the_erasure` |
 | ✅ PC-06-AC5 | A **slug-confirmation** mismatch → **400**, nothing deleted (accidental-destruction guard). | `::test_slug_confirmation_mismatch_returns_400_and_deletes_nothing` |
+| ✅ ⭐ PC-06-AC5b | **Sudo password re-auth** (`13da7fe`): a wrong password → **403**, an absent one → **422**, nothing deleted; the password is verified before any delete. **Side effect (dynamic, TC-ER-032):** a forged dev-secret token with a random `sub` resolves to no admin → **403**, so a forged token alone can no longer erase — partially mitigating the `Rotate JWT_SECRET` deferral *for the erase endpoint only*. | BE `::test_erase_wrong_password_returns_403` ; dynamic `docs/audits/2026-06-01_erasure-dynamic-adversarial.md` (TC-ER-032/023) |
 | ✅ ⭐ PC-06-AC6 | Both endpoints reject a **company token** (401 — platform-only). | `::test_erase_rejects_company_token`, `::test_compliance_export_rejects_company_token` |
 | ✅ PC-06-AC7 | The compliance export returns **metadata + the audit trail**. | `::test_compliance_export_returns_metadata_and_trail` |
 | ✅ PC-06-AC8 | Frontend: an "Erasure & compliance" control on the org detail screen — export + a type-the-slug erase confirmation. | FE `OrganizationDetailPage.test.tsx::test_renders_the_erasure_panel`, `::test_erase_requires_slug_confirmation_then_offboards` (`OrgErasurePanel.tsx`) |

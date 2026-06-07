@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DataError
 
 from app.api.routes.health import router as health_router
+from app.connectors import connectors_router, register_connector_exception_handlers
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.middleware import MaxBodySizeMiddleware
@@ -64,7 +65,9 @@ def create_app() -> FastAPI:
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
     app.include_router(health_router)
     app.include_router(identity_router)
+    app.include_router(connectors_router)
     register_identity_exception_handlers(app)
+    register_connector_exception_handlers(app)
     app.add_exception_handler(DataError, _handle_data_error)
     return app
 

@@ -1,0 +1,5 @@
+# Never commit fetched mail (real PII) or local dumps.
+imap_dump/
+*_dump/
+*.eml
+**/_state.json

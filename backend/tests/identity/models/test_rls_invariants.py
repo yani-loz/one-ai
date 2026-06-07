@@ -7,8 +7,8 @@ ORM model mixing in TenantMixin has its table protected by ENABLE ROW LEVEL SECU
 fails HERE instead of silently shipping cross-org-readable. Two guards keep this from rotting
 into a silent no-op: the enumeration must be non-empty AND must not sweep in a non-tenant
 platform table (a stray mix-in). FORCE ROW LEVEL SECURITY is intentionally NOT asserted yet —
-that switch, plus the non-superuser runtime role, lands with the role/engine flip (migration
-0007); see docs/rls-jwt-enforcement-plan.md.
+that switch, plus the non-superuser runtime role, lands with the RLS role/engine flip (its own
+later migration; 0007 is connector_connection); see docs/rls-jwt-enforcement-plan.md.
 
 Requires a MIGRATED database: the policies live only in the Alembic migrations (not in the
 models / create_all). On a fresh create_all DB the policies are absent, so the DB-level test
@@ -22,8 +22,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Importing each domain's model package registers its TenantMixin subclasses, so the dynamic
+# enumeration below covers EVERY domain's tenant tables (a tenant table whose model isn't imported
+# here would be invisible to this safety net).
+import app.connectors.imap.models  # noqa: E402, F401 — registers email Layer-1 TenantMixin subclasses
+import app.connectors.models  # noqa: E402, F401 — registers connector TenantMixin subclasses
+import app.entities.models  # noqa: E402, F401 — registers entity-graph TenantMixin subclasses
 from app.common.base_model import TenantMixin
+from app.connectors.imap.models.email import EmailMessage
+from app.connectors.models.connector_connection import ConnectorConnection
 from app.core.database import SessionLocal
+from app.entities.models.person import Person
 from app.identity import models as identity_models  # noqa: F401 — registers TenantMixin subclasses
 from app.identity.models.support_grant import SupportGrant
 from app.identity.models.user import User
@@ -87,7 +96,13 @@ def test_tenant_model_enumeration_is_non_vacuous_and_content_blind() -> None:
         "TenantMixin enumeration is empty — identity models not imported; the RLS "
         "invariant below would pass vacuously."
     )
-    assert {User.__table__.name, SupportGrant.__table__.name} <= tenant_tables
+    assert {
+        User.__table__.name,
+        SupportGrant.__table__.name,
+        ConnectorConnection.__table__.name,
+        Person.__table__.name,
+        EmailMessage.__table__.name,
+    } <= tenant_tables
     assert tenant_tables.isdisjoint(_KNOWN_NON_TENANT_TABLES), (
         f"A non-tenant platform table mixed in TenantMixin: "
         f"{tenant_tables & _KNOWN_NON_TENANT_TABLES}"
@@ -99,7 +114,7 @@ async def test_every_tenant_table_has_rls_enabled_and_isolation_policy() -> None
 
     Dynamically enumerated (see module docstring) so adding a tenant table without its RLS
     policy fails here. Skips on a non-migrated DB where the migration-only policies are absent.
-    FORCE is not asserted yet — it lands with migration 0007.
+    FORCE is not asserted yet — it lands with the RLS role/engine flip (a later migration).
     """
     tenant_tables = sorted(model.__table__.name for model in _all_tenant_models())
 

@@ -126,7 +126,11 @@ export function AdminConsolePage(): React.JSX.Element {
           </p>
         )}
 
-        <section className="mt-5 space-y-2">
+        <section
+          className="mt-5 space-y-2"
+          aria-busy={controller.loadState === "loading"}
+          aria-label="User list"
+        >
           {controller.loadState === "loading" && (
             <>
               <SkeletonRow />

@@ -78,6 +78,16 @@ const ADMIN_ROW = {
   created_at: "2026-05-01T10:00:00Z",
 };
 
+const DEACTIVATED_ROW = {
+  id: "u-3",
+  email: "carol@acme.de",
+  full_name: "Carol Gone",
+  role: "member",
+  is_active: false,
+  org_id: "org-1",
+  created_at: "2026-06-02T10:00:00Z",
+};
+
 function renderPage(logout = vi.fn()) {
   const value: AuthContextValue = {
     user: ADMIN,
@@ -275,5 +285,61 @@ describe("AdminConsolePage", () => {
     });
 
     expect(await screen.findByText(/at least one administrator/i)).toBeInTheDocument();
+  });
+
+  it("test_reactivate_deactivated_user_patches_is_active_true", async () => {
+    // The only state-changing console action with no prior page-level test — and the only one
+    // that renders the inactive-row UI (Deactivated badge + Reactivate) at all.
+    installFetch((call) =>
+      call.method === "PATCH"
+        ? json(200, { ...DEACTIVATED_ROW, is_active: true })
+        : json(200, [ADMIN_ROW, DEACTIVATED_ROW]),
+    );
+    renderPage();
+    await screen.findByText("Carol Gone");
+
+    const row = screen.getByText("Carol Gone").closest("li") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "Reactivate" }));
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "PATCH" &&
+            call.url.includes("/users/u-3") &&
+            call.body?.is_active === true,
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("test_inline_role_change_keeps_rows_visible_no_skeleton_flash", async () => {
+    // M1: the post-mutation refetch is silent — the existing rows stay mounted, never flashing to
+    // skeletons. Hold the reload GET open and assert Bob's row is still on screen meanwhile (the
+    // old loud reload would have unmounted the list to skeleton placeholders here).
+    let releaseReload: () => void = () => {};
+    let getCount = 0;
+    installFetch((call) => {
+      if (call.method === "PATCH") return json(200, { ...MEMBER_ROW, role: "company_admin" });
+      getCount += 1;
+      if (getCount === 1) return json(200, [ADMIN_ROW, MEMBER_ROW]);
+      // The 2nd GET is the post-mutation reload — keep it pending until we release it.
+      return new Promise<Response>((resolve) => {
+        releaseReload = () => resolve(json(200, [ADMIN_ROW, MEMBER_ROW]));
+      }) as unknown as Response;
+    });
+    renderPage();
+    await screen.findByText("Bob Member");
+
+    fireEvent.change(screen.getByLabelText("Change role for Bob Member"), {
+      target: { value: "company_admin" },
+    });
+
+    // While the reload GET is still pending, the row must remain rendered (no skeleton swap).
+    await waitFor(() => expect(getCount).toBe(2));
+    expect(screen.getByText("Bob Member")).toBeInTheDocument();
+
+    releaseReload();
+    await waitFor(() => expect(screen.getByText("Bob Member")).toBeInTheDocument());
   });
 });

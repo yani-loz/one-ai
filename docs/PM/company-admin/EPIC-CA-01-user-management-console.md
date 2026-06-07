@@ -73,7 +73,7 @@ password reset gate the "production for real shared customers" claim (see §8).
 | CA-01-AC2 | Add user posts the payload; submit disabled until email/name/password mirror backend bounds (incl. 72-byte cap). | FE `CreateUserDrawer.test.tsx::test_submit_disabled_until_form_is_valid`, `::test_short_password_keeps_submit_disabled`, `::test_invalid_email_keeps_submit_disabled`, `::test_successful_create_calls_on_created_and_closes`; `userValidation.test.ts` (×15); `adminClient.test.ts::test_create_posts_payload_and_returns_user` |
 | CA-01-AC3 | Duplicate email → **409 → "already exists"** (distinguished by call-site, not message text). | FE `CreateUserDrawer.test.tsx::test_duplicate_email_shows_specific_message`; `adminClient.test.ts::test_create_throws_409_on_duplicate_email` |
 | CA-01-AC4 | Inline role change PATCHes `{role}`. | FE `AdminConsolePage.test.tsx::test_inline_role_change_patches_the_role`; `adminClient.test.ts::test_update_patches_the_role_body` |
-| CA-01-AC5 | Deactivate behind a confirm → DELETE; reactivate PATCHes `{is_active:true}`. | FE `AdminConsolePage.test.tsx::test_deactivate_member_confirms_then_calls_delete`; `adminClient.test.ts::test_deactivate_sends_delete_and_resolves_on_204`, `::test_update_patches_the_is_active_body` |
+| CA-01-AC5 | Deactivate behind a confirm → DELETE; reactivate PATCHes `{is_active:true}`. | FE `AdminConsolePage.test.tsx::test_deactivate_member_confirms_then_calls_delete`, `::test_reactivate_deactivated_user_patches_is_active_true`; `adminClient.test.ts::test_deactivate_sends_delete_and_resolves_on_204`, `::test_update_patches_the_is_active_body`; BE `test_user_routes.py::test_patch_reactivates_user_returns_200` |
 | CA-01-AC6 | Last-admin guard (**409**) surfaced clearly (inline notice / dialog). | FE `AdminConsolePage.test.tsx::test_last_admin_deactivate_shows_409_in_dialog`; `adminClient.test.ts::test_update_throws_409_on_last_admin`, `::test_deactivate_throws_409_on_last_admin`; BE `test_user_service.py` (last-admin guard, concurrency) |
 | CA-01-AC7 | Self-demotion is **confirmed**, then **logs out** to re-auth with reduced privileges. | FE `AdminConsolePage.test.tsx::test_self_demotion_confirms_then_logs_out` |
 | CA-01-AC8 | Only `company_admin` reaches `/admin`; member/platform/anon routed away; loading → skeleton (no flicker). | FE `AdminRoute.test.tsx` (×5) |
@@ -148,3 +148,28 @@ password reset gate the "production for real shared customers" claim (see §8).
 - **No global nav** — `/admin` is reached via the home entry point only (a nav shell is a follow-up).
 - **`identity/` is becoming a god-module** — the backend `identity/company` vs `identity/platform`
   sub-package split lands with CA-02's audit route (split with a reason, not preemptively).
+
+## 9. Post-review hardening (2026-06-06)
+
+A three-source adversarial review (manual pass + a 6-dimension Claude workflow with per-finding
+source verification; the cross-vendor GPT leg was **blocked by the egress guard**, so this was a
+2-source review, not 3). **No tenant-isolation or privilege-escalation issue** surfaced. The
+reactivation-audit asymmetry used as a calibration seed was already closed in `868fed6`. Fixes:
+
+- **Inline mutations no longer flash the list to skeletons** — `useCompanyUsers.reload(silent)`
+  keeps the table mounted on post-mutation refetches, and a monotonic sequence guard drops an
+  out-of-order reload so it can't apply a stale list. (Locked by
+  `AdminConsolePage.test.tsx::test_inline_role_change_keeps_rows_visible_no_skeleton_flash`.)
+- **`CreateUserSuccess` re-asserts dialog focus** on the form→success swap (the shared focus trap
+  is keyed on `open`, unchanged across the swap), restoring Tab/Escape and announcing "User added"
+  — *without* a live region over the plaintext password. (Locked by `CreateUserSuccess.test.tsx`.)
+- **Tests added:** FE reactivate test (first to render the inactive-row UI) + the two above; BE
+  `test_member_patching_user_returns_403` / `test_member_deleting_user_returns_403` (role gate on
+  the destructive paths) + `test_patch_reactivates_user_returns_200` (HTTP reactivate).
+- **Docs:** `user_repository` module docstring now enumerates all three non-org-scoped reads
+  (rule A4, the hardest-rule invariant); `audit_log` docstring clarifies `actor_email` is
+  auth-event-only (the Principal driving admin actions carries no email).
+- **Deferred (tracked, with reasoning):** the cross-tenant email-existence oracle (AUD-04,
+  accepted MVP trade-off); a global `MotionConfig` reduced-motion guard (systemic across all five
+  top-level screens, not CA-01-specific); a `Set`-based per-row busy slot (N3 — the sequence guard
+  already closes its one real correctness sub-bug).

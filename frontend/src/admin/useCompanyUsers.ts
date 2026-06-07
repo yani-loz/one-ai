@@ -12,8 +12,10 @@
  *     (reduced) privileges rather than sitting in a stale-role limbo.
  *   - The last-admin guard is server-side (409); this surfaces it as a friendly message,
  *     in the page notice (inline changes) or the confirm dialog (confirmed actions).
+ *   - Post-mutation refetches are SILENT (keep the table mounted, no skeleton flash) and
+ *     sequence-guarded so an out-of-order reload can't apply a stale list.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AuthRequestError } from "../identity";
 import { deactivateCompanyUser, listCompanyUsers, updateCompanyUser } from "./adminClient";
@@ -44,7 +46,7 @@ export interface CompanyUsersController {
   confirmCopy: ConfirmCopy | null;
   confirmBusy: boolean;
   confirmError: string | null;
-  reload: () => Promise<void>;
+  reload: (silent?: boolean) => Promise<void>;
   changeRole: (target: CompanyUser, role: CompanyUserRole) => void;
   reactivate: (target: CompanyUser) => void;
   requestDeactivate: (target: CompanyUser) => void;
@@ -111,19 +113,32 @@ export function useCompanyUsers(
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
-  const reload = useCallback(async (): Promise<void> => {
-    setLoadState("loading");
-    try {
-      setUsers(await listCompanyUsers());
-      setLoadState("loaded");
-    } catch (error) {
-      if (isAuthFailure(statusOf(error))) {
-        await logout();
-        return;
+  // Monotonic id so an out-of-order refetch (two mutations racing their reloads) cannot apply a
+  // stale list: only the most-recently-issued reload commits its result.
+  const reloadSeq = useRef(0);
+
+  const reload = useCallback(
+    async (silent = false): Promise<void> => {
+      const seq = ++reloadSeq.current;
+      // A silent reload (after a mutation) keeps the table mounted instead of flashing the whole
+      // list to skeletons; only the initial load and an explicit Retry use the loud state.
+      if (!silent) setLoadState("loading");
+      try {
+        const list = await listCompanyUsers();
+        if (seq !== reloadSeq.current) return; // superseded by a newer reload
+        setUsers(list);
+        setLoadState("loaded");
+      } catch (error) {
+        if (seq !== reloadSeq.current) return;
+        if (isAuthFailure(statusOf(error))) {
+          await logout();
+          return;
+        }
+        setLoadState("error");
       }
-      setLoadState("error");
-    }
-  }, [logout]);
+    },
+    [logout],
+  );
 
   useEffect(() => {
     void reload();
@@ -145,7 +160,7 @@ export function useCompanyUsers(
       setBusyUserId(userId);
       try {
         await updateCompanyUser(userId, payload);
-        await reload();
+        await reload(true);
       } catch (error) {
         if (isAuthFailure(statusOf(error))) {
           await logout();
@@ -164,6 +179,7 @@ export function useCompanyUsers(
       if (role === target.role) return;
       // Demoting yourself out of admin is a self-eject — confirm it, then log out on success.
       if (target.id === currentUserId && role === "member") {
+        setNotice(null);
         setConfirmError(null);
         setPending({ kind: "demote-self", user: target });
         return;
@@ -181,6 +197,7 @@ export function useCompanyUsers(
   );
 
   const requestDeactivate = useCallback((target: CompanyUser): void => {
+    setNotice(null);
     setConfirmError(null);
     setPending({ kind: "deactivate", user: target });
   }, []);
@@ -202,7 +219,7 @@ export function useCompanyUsers(
         return;
       }
       setPending(null);
-      await reload();
+      await reload(true);
     } catch (error) {
       if (isAuthFailure(statusOf(error))) {
         await logout();

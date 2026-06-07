@@ -79,6 +79,7 @@ Agents work overnight on user-assigned tasks (research, analysis) and AI-initiat
 Modules that plug into company data sources (email, documents, chat, CRM, HR, project management…) with authentication, initial sync, continuous sync, and schema mapping.
 - **Priority set:** Email, Documents, Slack; meeting transcription (Fathom).
 - **Engineering discipline:** build connectors **one at a time**, fully verify each before the next, keep each **self-contained** in its own folder so it can be plugged in/out without affecting others (`BaseConnector` ABC).
+- **Data handling (privacy by design):** a connector ingests into the **one shared DB** as *derived knowledge* — extracted text + resolved entities, **not** a raw copy of the source (data-minimisation; the source system stays the system of record). **Disconnecting** a connector **revokes the AI's access** to its data (enforced at retrieval; data retained so a reconnect needs no re-sync); **deleting** purges it. Detail: [`docs/connect-email-ingestion-design.md`](connect-email-ingestion-design.md).
 
 ---
 
@@ -205,7 +206,7 @@ Cost-awareness is built in from day one.
 **Shape of the system:**
 - **Two-layer storage.** Layer 1 = source-specific relational tables that preserve each source's natural metadata. Layer 2 = a unified semantic memory of text chunks with **dual indexing**: vector embeddings (HNSW) **and** a keyword index (`tsvector`/GIN).
 - **Hybrid retrieval.** Search combines keyword ranking (BM25) and vector similarity, merged via **Reciprocal Rank Fusion** — so exact terms (names, abbreviations, Bulgarian words) and semantic matches both surface. Keyword config is language-agnostic (works for English and Bulgarian).
-- **Cross-source entity resolution.** Persons and organizations are merged across all sources **deterministically** (no LLM) via a unique email key, so the same human appearing as an email sender, a meeting participant, and a chat user is one entity.
+- **Cross-source entity resolution.** Persons and organizations are first-class entities; the same human appearing as an email sender, a meeting participant, and a chat user is merged into **one** entity **deterministically (no LLM) via a unique email key** — a person owns *many* emails (work / personal / aliases), so email is the *match key*, not the primary key. The ambiguous "is this an existing person?" tail goes to a **review queue resolved by the mailbox owner with one click** (HITL §11.1; every link carries provenance — `email_key` / `signal` / `llm` / `human`), with an **LLM disambiguator as a *later* tier** trained on those human picks. Detail: [`docs/connect-email-ingestion-design.md`](connect-email-ingestion-design.md).
 - **Agentic retrieval.** The AI chooses purpose-built tools via function-calling; an **`AgentLoop`** orchestrates think → act → observe cycles with an iteration cap. Prefer many fine-grained, specific tools over a few generic ones.
 - **Provider-agnostic AI layer** (§12) behind an `AIProvider` abstraction.
 - **Cost tracking** from the first commit (§14).

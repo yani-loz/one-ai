@@ -65,19 +65,21 @@ Medium/low (track, don't block local/CI): BYPASSRLS role creation needs a *true*
 RDS/Cloud SQL — fallback = a scoped permissive `app.bypass_rls` policy); rollback = set the 4 role user/pwd
 vars back to the `oneai` owner creds (URLs are computed_fields); `DROP ROLE` fails with live connections.
 
-## Migration 0007 (DDL only — owner runs it)
+## Migration (the RLS flip — DDL only, owner runs it; the NEXT migration after Connect's tables — do NOT pin the number)
 `CREATE ROLE oneai_app/oneai_global` (NOLOGIN + correct attrs; LOGIN+password set out-of-band by the script,
-so no secret in VCS) · DML `GRANT`s + `ALTER DEFAULT PRIVILEGES` · `ALTER TABLE users, support_grant FORCE ROW
-LEVEL SECURITY` (belt-and-suspenders; not strictly required since the runtime roles aren't owners). **No policy
-rewrite** — 0003/0006 are already correct.
+so no secret in VCS) · DML `GRANT`s + `ALTER DEFAULT PRIVILEGES` · `ALTER TABLE … FORCE ROW LEVEL SECURITY`
+on EVERY tenant table (belt-and-suspenders; not strictly required since the runtime roles aren't owners).
+**No policy rewrite** — the per-table policies (0003/0006/0007/0008) are already correct. NB: every tenant
+table that lands before the flip must be in the FORCE list; the standing-invariant test enumerates them
+dynamically, so it will flag a forgotten policy (Connect's step-3 schema added 9 tables in 0008).
 
 ## The standing-invariant test — DONE (ENABLE + policy); FORCE assertion folds into the flip
 ✅ **Shipped** (`backend/tests/identity/models/test_rls_invariants.py`, commit `f8a4fbd`): a test that
 **dynamically enumerates** every `TenantMixin` subclass (not a hardcoded `{users, support_grant}`) and asserts
 each table has `relrowsecurity` (ENABLE) + an `org_isolation` policy, with two anti-rot guards (non-empty +
 `{User, SupportGrant}` present; the 4 content-blind platform tables stay out). Skips loudly on a non-migrated DB.
-**Deferred to THIS flip commit:** add the `relforcerowsecurity` assertion to the same test once migration `0007`
-sets FORCE — asserting it earlier would fail (FORCE isn't on yet). (Also extend the erasure-path completeness
+**Deferred to THIS flip commit:** add the `relforcerowsecurity` assertion to the same test once the flip
+migration sets FORCE — asserting it earlier would fail (FORCE isn't on yet). (Also extend the erasure-path completeness
 invariant the same way.)
 
 > **Also done as a safe pre-slice (commit `f8a4fbd`):** reframe-1's JWT gate generalization —
@@ -96,4 +98,4 @@ invariant the same way.)
 ## Risk & rollback
 The flip is **atomic** (migration + provisioning + engine split + all importers + conftest + CI land together).
 Kill-switch: point both runtime engines back at the `oneai` owner creds (one config change) — RLS goes inert,
-app recovers immediately. Keep `0007` downgrade's `DROP ROLE` optional + drain connections first.
+app recovers immediately. Keep the flip migration's downgrade `DROP ROLE` optional + drain connections first.

@@ -23,9 +23,11 @@ class TenantContextMissingError(OneAIError):
 
 
 class InsecureConfigurationError(OneAIError):
-    """Raised at startup when production runs with a known-insecure default secret.
+    """Raised at startup when a non-dev environment is configured with an insecure secret.
 
-    Fail-closed guard: the app refuses to boot in production while a dev-default
-    secret (the JWT signing key or the database password) is still in place, rather
-    than silently signing tokens with a publicly-known, forgeable key.
+    Fail-closed guard: the app refuses to boot in any environment that requires secure
+    secrets (every app_env except local/test) while the JWT signing key is a dev default,
+    blank, whitespace-only, or shorter than the HS256 minimum, or the database password is a
+    dev default — rather than silently signing tokens with a publicly-known, forgeable, or
+    weak key.
     """

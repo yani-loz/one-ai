@@ -166,3 +166,36 @@ def test_local_env_tolerates_short_jwt_secret() -> None:
     settings = Settings(app_env="local", jwt_secret="short", postgres_password="oneai")
 
     assert settings.requires_secure_secrets is False
+
+
+def test_production_with_whitespace_padded_default_jwt_secret_refuses_to_boot() -> None:
+    # Cross-vendor finding F1: the PUBLIC dev default with surrounding whitespace is != the raw
+    # default, so it slipped the exact-match denylist yet still signed forgeable tokens. The
+    # validator canonicalizes (strip) BEFORE the denylist, so the padded default is now caught —
+    # a trailing newline copy-pasted from .env.example is a realistic, zero-brute-force misconfig.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(
+            app_env="production",
+            jwt_secret=" dev-only-insecure-secret-change-me-in-prod\n",
+            postgres_password=_SECURE_DB_PASSWORD,
+        )
+
+
+def test_production_with_trailing_newline_secret_canonicalizes_and_boots() -> None:
+    # Canonicalization must NOT fail-close a legitimate secret that arrives with a trailing newline
+    # (common from a Docker/Vault secret mount): it strips to the clean value, boots, and stores the
+    # canonical form so token signing uses exactly what was validated (no validate-vs-sign drift).
+    settings = Settings(
+        app_env="production",
+        jwt_secret=_SECURE_JWT + "\n",
+        postgres_password=_SECURE_DB_PASSWORD,
+    )
+
+    assert settings.jwt_secret == _SECURE_JWT
+
+
+def test_staging_with_short_jwt_secret_refuses_to_boot() -> None:
+    # Parity: the strength floor is a property of requires_secure_secrets, not of production alone —
+    # staging must reject a sub-32-byte secret exactly as production does.
+    with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
+        Settings(app_env="staging", jwt_secret="x" * 31, postgres_password=_SECURE_DB_PASSWORD)

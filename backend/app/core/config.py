@@ -28,10 +28,12 @@ _INSECURE_POSTGRES_PASSWORD = "oneai"
 # Minimum HS256 signing-key length. RFC 7518 §3.2: an HMAC key MUST be at least as long as
 # the hash output — 256 bits / 32 bytes for HS256. The boot guard rejects any non-dev JWT
 # secret below this (blank, whitespace-only, or short) even when it is NOT the literal dev
-# default, because a weak key signs forgeable tokens just the same (testing TC-SG-006). No
-# equivalent strength floor is imposed on POSTGRES_PASSWORD: a blank value can be legitimate
-# (IAM / peer / cert auth) and a genuinely wrong password fails the DB connection loudly on
-# its own — so a floor there would fail-close a valid deployment.
+# default, because a weak key signs forgeable tokens just the same (testing TC-SG-006). This
+# is a LENGTH floor, not an entropy check: a long but low-entropy key (e.g. 32 identical bytes)
+# still passes — operators must supply a high-entropy random value; the gate only rules out the
+# obviously-too-short. No equivalent strength floor is imposed on POSTGRES_PASSWORD: a blank
+# value can be legitimate (IAM / peer / cert auth) and a genuinely wrong password fails the DB
+# connection loudly on its own — so a floor there would fail-close a valid deployment.
 _MIN_JWT_SECRET_BYTES = 32
 
 
@@ -77,6 +79,15 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 7
 
+    # — Connectors (app.connectors) —
+    # AES-256-GCM key material encrypting stored connector credentials (e.g. IMAP app
+    # passwords) at rest. The dev default below is INSECURE; non-dev envs must override it with
+    # a strong value (e.g. `openssl rand -base64 32`). Unlike jwt_secret this is NOT checked by
+    # the boot guard — it is validated lazily in connectors.security.credential_cipher only when
+    # a connector is actually used, so a deployment with no connectors still boots. This literal
+    # MUST equal _INSECURE_CONNECTOR_KEY in that module.
+    connector_secret_key: str = "dev-only-insecure-connector-secret-change-me"
+
     # — CORS — origins the browser is allowed to call the API from —
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
 
@@ -118,28 +129,37 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _forbid_insecure_defaults_outside_dev(self) -> Settings:
-        """Refuse to boot outside dev/test on a dev-default OR weak signing secret.
+        """Canonicalize the JWT secret, then refuse to boot outside dev/test on a dev-default
+        OR weak signing secret.
 
-        Fail-closed guard with two layers, active only when requires_secure_secrets is True
+        First strips surrounding whitespace off jwt_secret and stores it back, so validation and
+        token-signing (identity/security/tokens.py) can never diverge: a trailing newline from a
+        Docker/Vault secret mount is trimmed rather than fail-closed, and a whitespace-padded copy
+        of the public dev default can no longer slip the raw-equality denylist while still signing
+        forgeable tokens (testing TC-SG-006 / cross-vendor finding F1).
+
+        Then a fail-closed guard with two layers, active only when requires_secure_secrets is True
         (every env except local | test):
           - Denylist: the known dev-default JWT secret / DB password must never reach a
             non-dev env (staging, production, or an unrecognized app_env).
-          - Strength: the JWT signing key must be a real HS256 key — at least
-            _MIN_JWT_SECRET_BYTES (RFC 7518 §3.2). A blank, whitespace-only, or short key is
-            rejected even though it is not the literal dev default, because it signs forgeable
-            tokens just the same (testing TC-SG-006). POSTGRES_PASSWORD keeps the denylist-only
-            check (see _MIN_JWT_SECRET_BYTES for why no strength floor applies there).
+          - Strength: the JWT signing key must be at least _MIN_JWT_SECRET_BYTES (RFC 7518 §3.2;
+            a length floor, not an entropy check — see the constant). A blank, whitespace-only, or
+            short key is rejected even though it is not the literal dev default, because it signs
+            forgeable tokens just the same. POSTGRES_PASSWORD keeps the denylist-only check.
 
         Raises InsecureConfigurationError (a hard boot failure) naming each offending secret.
         Only app_env 'local' or 'test' is exempt.
         """
+        # Canonicalize first so the value we validate is exactly the value tokens.py will sign with.
+        self.jwt_secret = self.jwt_secret.strip()
+
         if not self.requires_secure_secrets:
             return self
 
         insecure: list[str] = []
         if self.jwt_secret == _INSECURE_JWT_SECRET:
             insecure.append("JWT_SECRET (dev default)")
-        elif len(self.jwt_secret.strip().encode("utf-8")) < _MIN_JWT_SECRET_BYTES:
+        elif len(self.jwt_secret.encode("utf-8")) < _MIN_JWT_SECRET_BYTES:
             insecure.append(f"JWT_SECRET (blank or under {_MIN_JWT_SECRET_BYTES} bytes)")
         if self.postgres_password == _INSECURE_POSTGRES_PASSWORD:
             insecure.append("POSTGRES_PASSWORD (dev default)")

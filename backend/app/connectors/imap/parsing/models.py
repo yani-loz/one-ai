@@ -39,9 +39,9 @@ class ParsedRecipient:
 
 @dataclass(frozen=True, slots=True)
 class ParsedAttachment:
-    """An attachment's metadata + its transient raw bytes. `extracted_text` is filled by the
-    attachment extractor (None until then, and None for formats not yet supported); `payload` is
-    dropped after extraction and never persisted."""
+    """An attachment's metadata + its transient raw bytes. The ingest runner derives the stored text
+    by calling attachment_extractor.extract_text(self); `payload` is dropped after and never
+    persisted (lean-attachments decision, design §4)."""
 
     filename: str | None
     content_type: str
@@ -50,7 +50,6 @@ class ParsedAttachment:
     is_inline: bool
     content_id: str | None
     payload: bytes
-    extracted_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

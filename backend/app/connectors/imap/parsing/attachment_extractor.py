@@ -16,6 +16,7 @@ Key invariants:
 
 from __future__ import annotations
 
+from app.connectors.imap.parsing.headers import strip_nul
 from app.connectors.imap.parsing.models import ParsedAttachment
 
 # Content-types whose payload is decoded as text directly. Binary formats (application/pdf,
@@ -52,6 +53,7 @@ def _is_text_like(content_type: str) -> bool:
 
 
 def _decode_text(payload: bytes) -> str | None:
-    """Decode bytes to text (utf-8, replacing undecodable runs); None if the result is blank."""
-    text = payload.decode("utf-8", errors="replace").strip()
+    """Decode bytes to text (utf-8, replacing undecodable runs); NUL-stripped (Postgres text rejects
+    it); None if the result is blank."""
+    text = strip_nul(payload.decode("utf-8", errors="replace")).strip()
     return text or None

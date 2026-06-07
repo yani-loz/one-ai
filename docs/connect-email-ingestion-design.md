@@ -40,8 +40,12 @@ fetch (IMAP) → parse + resolve → structured rows in DB → [clean → chunk/
   the kept text from the DB and works the backlog asynchronously via a **DB work-queue** (claim with
   `SELECT … FOR UPDATE SKIP LOCKED`). No Redis/Kafka — in-process async + a DB queue is enough (Bible
   §15); more worker replicas pull the same queue to scale.
-- **Per-message error isolation:** a parse failure on one email marks it `parse_failed` for retry and
-  never aborts the run.
+- **Per-message error isolation:** one bad email never aborts the run. *v1 (the dev disk ingest):*
+  isolation is by **tally + log** — a failing email is rolled back, counted as `failed`, and the run
+  continues (the `.eml` stays on disk, so it is re-ingestable). *Deferred to the production SyncRunner:*
+  persisting a `parse_status='failed'` stub row + an automatic **retry** (the parser is validated to
+  never raise on the real corpus, so the stub/retry machinery is dead weight until the SyncRunner —
+  which discards bytes after parse — actually needs it).
 
 ## 3. Production execution — what happens when a user clicks "Sync"
 
@@ -137,6 +141,26 @@ Every table above is org-scoped: `org_id` NOT NULL + the inert `org_isolation` R
 negative test, and joins the erasure obligation. The RLS engine-flip remains the hard gate before this
 content reaches a real tenant (tracked in `docs/FIX_BEFORE_PROD.md`). Per-source/mailbox access control
 (who may retrieve which mailbox's data) is the access-control-below-`org_id` work, tracked separately.
+
+### Encryption posture (DECIDED) — disk + transit, NOT field-level on content
+
+The email content (`subject`, `body_text`, `headers`, recipient names/addresses, the person/company graph)
+is stored as **plaintext columns**. The only ciphertext is the connector **credential** (the IMAP app
+password) — AES-256-GCM via `connectors.security.credential_cipher`. This is deliberate:
+
+- **At rest** → **full-database / disk encryption (AES-256)**, a deployment switch, NOT app-level column
+  encryption. Defends a stolen disk / backup / cloud volume. (`security.md`; tracked in FIX_BEFORE_PROD.)
+- **In transit** → **TLS 1.3** at the ingress (the dev stack is HTTP-only). (Tracked in FIX_BEFORE_PROD.)
+- **NOT field-level encryption of the content.** One AI's entire value (Ask/Learn) is to **search, embed,
+  and reason over** `body_text`/`chunks`; encrypting it per-row would force a decrypt on every query and
+  make keyword + vector indexing impossible — it defeats the product. This is the same posture every
+  enterprise AI/search system takes. Confidentiality of the content is instead enforced by **tenant
+  isolation (RLS) + access control + at-rest/in-transit encryption + data-minimization** (no raw email
+  kept) + **erasure** (Art. 17). A *specific* ultra-sensitive field could be field-encrypted later as a
+  narrow exception, but never the searchable body.
+
+This is the conventional, GDPR-defensible posture for the DACH market — provided the at-rest + in-transit +
+RLS gates above are actually closed before a real tenant's data lands.
 
 ## 8. Storage architecture & connector lifecycle
 

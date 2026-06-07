@@ -30,7 +30,7 @@ from app.connectors.imap.services.email_ingest_service import EmailIngestService
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.security.credential_cipher import CredentialCipher
 from app.core.config import get_settings
-from app.core.database import SessionLocal
+from app.core.database import GlobalSessionLocal
 
 # A fixed DEV org for disk ingests — distinct from the demo seed orgs (00000000-…-0001/0002).
 _DEV_INGEST_ORG = UUID("d1500000-0000-0000-0000-000000000001")
@@ -38,7 +38,7 @@ _DEV_INGEST_ORG = UUID("d1500000-0000-0000-0000-000000000001")
 
 async def _assert_migrated() -> None:
     """Fail fast with a clear message if the Connect tables aren't migrated on the target DB."""
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         result = await session.execute(text("SELECT to_regclass('public.email_message')"))
         if result.scalar() is None:
             raise SystemExit("Connect tables missing — run 'alembic upgrade head' first.")
@@ -79,7 +79,7 @@ async def _get_or_create_connection(
 async def _ingest_mailbox(mailbox: str, files: list[Path], org_id: UUID) -> Counter:
     """Ingest one mailbox's .eml files under its connection, one transaction per email."""
     tally: Counter = Counter()
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         connection = await _get_or_create_connection(session, org_id, mailbox)
         await session.commit()  # persist the connection (expire_on_commit=False keeps it usable)
         service = EmailIngestService(session, connection)
@@ -90,13 +90,20 @@ async def _ingest_mailbox(mailbox: str, files: list[Path], org_id: UUID) -> Coun
                 outcome = await service.ingest_email(raw)
                 await session.commit()
                 tally[outcome.value] += 1
-            except IntegrityError:
+            except IntegrityError as exc:
                 await session.rollback()
-                tally["skipped"] += 1  # a dedup race counts as already-present, not a failure
+                # Only the dedup unique violation is an expected "already present"; any OTHER
+                # integrity error (a real constraint breach) must surface as a failure, not hide.
+                if "uq_email_message_dedup" in str(exc.orig):
+                    tally["skipped"] += 1
+                else:
+                    tally["failed"] += 1
+                    print(f"  [fail] {type(exc.orig).__name__} @ {path.name}", flush=True)
             except Exception as exc:  # one bad email must never abort the run
                 await session.rollback()
                 tally["failed"] += 1
-                print(f"  [fail] {type(exc).__name__}: {str(exc)[:120]} @ {path.name}", flush=True)
+                # Print the exception TYPE only — str(exc) can echo bound parameters (subject/body).
+                print(f"  [fail] {type(exc).__name__} @ {path.name}", flush=True)
             if index % 500 == 0:
                 print(f"  {mailbox}: {index}/{len(files)}  {dict(tally)}", flush=True)
     return tally
@@ -120,6 +127,14 @@ async def _run(root: Path, limit: int, org_id: UUID) -> int:
     if limit > 0:
         files = files[:: max(1, len(files) // limit)][:limit]
     groups = _group_by_mailbox(root, files)
+    not_addresses = [m for m in groups if "@" not in m]
+    if not_addresses:
+        # The <mailbox> segment must be an email address; folder names here mean --root points one
+        # level too deep (at an account dir), which would split one mailbox across many fake
+        # "connections" and defeat dedup. Fail fast.
+        raise SystemExit(
+            f"--root looks wrong: {not_addresses[:3]} are not addresses; point it at the dump ROOT."
+        )
     print(f"ingesting {len(files)} .eml across {len(groups)} mailbox(es) into org {org_id}")
 
     total: Counter = Counter()

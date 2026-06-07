@@ -29,6 +29,7 @@ _MSGID_RE = re.compile(r"<[^>]+>")
 # addr-spec at 254); truncating it is the safe choice and only ever hits garbage.
 ADDR_MAX = 320
 MSGID_MAX = 998
+CONTENT_TYPE_MAX = 255  # email_attachment.content_type column width
 
 
 def parse_id_headers(raw_bytes: bytes) -> Message:

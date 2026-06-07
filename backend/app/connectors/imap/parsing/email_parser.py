@@ -35,6 +35,7 @@ from app.connectors.imap.parsing.flags import (
 )
 from app.connectors.imap.parsing.headers import (
     ADDR_MAX,
+    CONTENT_TYPE_MAX,
     MSGID_MAX,
     build_headers,
     clean_message_id,
@@ -172,7 +173,7 @@ def _extract_attachments(message: EmailMessage) -> list[ParsedAttachment]:
         attachments.append(
             ParsedAttachment(
                 filename=sanitize(part.get_filename(), MSGID_MAX),
-                content_type=part.get_content_type(),
+                content_type=sanitize(part.get_content_type(), CONTENT_TYPE_MAX),
                 size_bytes=len(payload),
                 content_hash=sha256(payload).hexdigest(),
                 is_inline=part.get_content_disposition() == "inline",

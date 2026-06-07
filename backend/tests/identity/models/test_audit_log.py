@@ -3,7 +3,7 @@ DB-level tests for the audit_log append-only trigger (PC-04-AC1).
 
 Requires Postgres with the immutability trigger present — created by migration 0005 on a
 migrated DB, or by the model's after_create DDL event on the create_all (fresh-DB) test
-path. Proves UPDATE and DELETE both RAISE (even under the superuser app role) and the row
+path. Proves UPDATE and DELETE both RAISE (even via the BYPASSRLS global role) and the row
 survives, so no code path can rewrite history. INSERT must still succeed.
 """
 
@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import SessionLocal
+from app.core.database import GlobalSessionLocal
 from app.identity.models.audit_log import AuditLog
 
 
@@ -30,7 +30,7 @@ async def test_audit_log_insert_succeeds(db_session: AsyncSession) -> None:
     entry = await _insert_selftest_row(db_session)
     await db_session.commit()
 
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         count = await session.execute(
             text("SELECT count(*) FROM audit_log WHERE id = :id"), {"id": str(entry.id)}
         )
@@ -43,7 +43,7 @@ async def test_audit_log_update_is_blocked_by_trigger(db_session: AsyncSession) 
     await db_session.commit()
 
     with pytest.raises(DBAPIError) as raised:
-        async with SessionLocal() as session:
+        async with GlobalSessionLocal() as session:
             await session.execute(
                 text("UPDATE audit_log SET action = 'tampered' WHERE id = :id"),
                 {"id": str(entry.id)},
@@ -60,7 +60,7 @@ async def test_audit_log_delete_is_blocked_and_row_survives(
     await db_session.commit()
 
     with pytest.raises(DBAPIError) as raised:
-        async with SessionLocal() as session:
+        async with GlobalSessionLocal() as session:
             await session.execute(
                 text("DELETE FROM audit_log WHERE id = :id"), {"id": str(entry.id)}
             )
@@ -68,7 +68,7 @@ async def test_audit_log_delete_is_blocked_and_row_survives(
 
     assert "append-only" in str(raised.value).lower()
 
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         count = await session.execute(
             text("SELECT count(*) FROM audit_log WHERE id = :id"), {"id": str(entry.id)}
         )

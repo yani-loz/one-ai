@@ -2,8 +2,8 @@
 Role: DB-backed fixtures for the identity test suite — schema lifecycle, committed
       seed sessions, an HTTP client, and JWT minting helpers.
 Used by: every test under tests/identity/ that touches the database or the routes.
-Depends on: app.core.database (engine, SessionLocal, scoped_session), app.identity
-            models + security.tokens, app.main (the ASGI app).
+Depends on: app.core.database (engine, GlobalSessionLocal, scoped_session, runtime_roles_present),
+            app.identity models + security.tokens, app.main (the ASGI app).
 Key invariants:
   - Per-test DB isolation holds whether the identity tables are Alembic-managed (CI
     runs `alembic upgrade head` before pytest) or absent: the schema fixture creates
@@ -25,13 +25,14 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from uuid import UUID, uuid4
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.base_model import Base
-from app.core.database import SessionLocal, engine
+from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.identity import models as identity_models  # noqa: F401 — registers tables on Base.metadata
 from app.identity.models.audit_log import AuditLog
 from app.identity.models.organization import Organization
@@ -84,6 +85,11 @@ async def identity_schema() -> AsyncIterator[None]:
     Doing BOTH (not one-or-the-other) keeps isolation in the partial state too — e.g. a DB
     migrated only to 0004 where audit_log (migration 0005) is the sole missing table.
     """
+    if not await runtime_roles_present():
+        pytest.skip(
+            "Runtime DB roles missing — run `alembic upgrade head` then "
+            "`python -m scripts.provision_roles` before the DB suite."
+        )
     async with engine.begin() as connection:
         created_tables = await connection.run_sync(_missing_identity_tables)
         await connection.run_sync(Base.metadata.create_all, tables=created_tables)
@@ -113,7 +119,7 @@ async def db_session(identity_schema: None) -> AsyncIterator[AsyncSession]:
     Commits on exit so data persists for subsequent HTTP requests in the same test;
     rolls back on error. Repository/service tests also use this session directly.
     """
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         try:
             yield session
             await session.commit()

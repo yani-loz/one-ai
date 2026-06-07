@@ -10,6 +10,18 @@ from app.core.exceptions import InsecureConfigurationError
 
 _SECURE_JWT = "a-strong-random-secret-value-32-bytes-long!!"
 _SECURE_DB_PASSWORD = "a-strong-db-password"
+_SECURE_APP_PASSWORD = "a-strong-app-role-password"
+_SECURE_GLOBAL_PASSWORD = "a-strong-global-role-password"
+
+# The full set of non-default secrets a non-dev env must supply — the boot guard checks all four
+# (jwt + the three DB passwords). Spread into every "boots in prod/staging" test so that adding a
+# newly guarded secret is a one-line change here, not a sweep across call sites.
+_SECURE_SECRETS = {
+    "jwt_secret": _SECURE_JWT,
+    "postgres_password": _SECURE_DB_PASSWORD,
+    "oneai_app_password": _SECURE_APP_PASSWORD,
+    "oneai_global_password": _SECURE_GLOBAL_PASSWORD,
+}
 
 
 def test_database_url_uses_asyncpg_driver_and_parts() -> None:
@@ -24,10 +36,25 @@ def test_database_url_uses_asyncpg_driver_and_parts() -> None:
     assert settings.database_url == "postgresql+asyncpg://u:p@h:1/d"
 
 
-def test_is_production_true_for_production_env() -> None:
+def test_runtime_role_urls_use_app_and_global_credentials() -> None:
+    # The two runtime engines connect as the least-privilege roles, not the owner — each URL is
+    # assembled from its own user/password pair (app_env=local, so the dev defaults aren't guarded).
     settings = Settings(
-        app_env="production", jwt_secret=_SECURE_JWT, postgres_password=_SECURE_DB_PASSWORD
+        postgres_host="h",
+        postgres_port=1,
+        postgres_db="d",
+        app_db_user="appu",
+        oneai_app_password="appp",
+        global_db_user="globu",
+        oneai_global_password="globp",
     )
+
+    assert settings.tenant_database_url == "postgresql+asyncpg://appu:appp@h:1/d"
+    assert settings.global_database_url == "postgresql+asyncpg://globu:globp@h:1/d"
+
+
+def test_is_production_true_for_production_env() -> None:
+    settings = Settings(app_env="production", **_SECURE_SECRETS)
 
     assert settings.is_production is True
 
@@ -65,36 +92,46 @@ def test_requires_secure_secrets_false_only_for_dev_and_test() -> None:
 
 
 def test_requires_secure_secrets_true_for_staging_production_and_typos() -> None:
-    secure = {"jwt_secret": _SECURE_JWT, "postgres_password": _SECURE_DB_PASSWORD}
-    assert Settings(app_env="staging", **secure).requires_secure_secrets is True
-    assert Settings(app_env="production", **secure).requires_secure_secrets is True
+    assert Settings(app_env="staging", **_SECURE_SECRETS).requires_secure_secrets is True
+    assert Settings(app_env="production", **_SECURE_SECRETS).requires_secure_secrets is True
     # An unrecognized / typo'd env is treated as non-dev — fail closed, never exempt.
-    assert Settings(app_env="prod", **secure).requires_secure_secrets is True
-    assert Settings(app_env="developmnt", **secure).requires_secure_secrets is True
+    assert Settings(app_env="prod", **_SECURE_SECRETS).requires_secure_secrets is True
+    assert Settings(app_env="developmnt", **_SECURE_SECRETS).requires_secure_secrets is True
 
 
 def test_production_with_default_jwt_secret_refuses_to_boot() -> None:
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
         Settings(
             app_env="production",
-            jwt_secret="dev-only-insecure-secret-change-me-in-prod",
-            postgres_password=_SECURE_DB_PASSWORD,
+            **{**_SECURE_SECRETS, "jwt_secret": "dev-only-insecure-secret-change-me-in-prod"},
         )
 
 
 def test_production_with_default_postgres_password_refuses_to_boot() -> None:
     with pytest.raises(InsecureConfigurationError, match="POSTGRES_PASSWORD"):
+        Settings(app_env="production", **{**_SECURE_SECRETS, "postgres_password": "oneai"})
+
+
+def test_production_with_default_app_role_password_refuses_to_boot() -> None:
+    # The RLS role split added two guarded secrets — the app role's dev-default password must not
+    # reach a non-dev env (it would let the tenant engine connect with a public credential).
+    with pytest.raises(InsecureConfigurationError, match="ONEAI_APP_PASSWORD"):
         Settings(
             app_env="production",
-            jwt_secret=_SECURE_JWT,
-            postgres_password="oneai",
+            **{**_SECURE_SECRETS, "oneai_app_password": "dev-only-oneai-app-pw-change-me"},
+        )
+
+
+def test_production_with_default_global_role_password_refuses_to_boot() -> None:
+    with pytest.raises(InsecureConfigurationError, match="ONEAI_GLOBAL_PASSWORD"):
+        Settings(
+            app_env="production",
+            **{**_SECURE_SECRETS, "oneai_global_password": "dev-only-oneai-global-pw-change-me"},
         )
 
 
 def test_production_with_secure_secrets_boots() -> None:
-    settings = Settings(
-        app_env="production", jwt_secret=_SECURE_JWT, postgres_password=_SECURE_DB_PASSWORD
-    )
+    settings = Settings(app_env="production", **_SECURE_SECRETS)
 
     assert settings.jwt_secret == _SECURE_JWT
 
@@ -105,8 +142,7 @@ def test_staging_with_default_jwt_secret_refuses_to_boot() -> None:
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
         Settings(
             app_env="staging",
-            jwt_secret="dev-only-insecure-secret-change-me-in-prod",
-            postgres_password=_SECURE_DB_PASSWORD,
+            **{**_SECURE_SECRETS, "jwt_secret": "dev-only-insecure-secret-change-me-in-prod"},
         )
 
 
@@ -115,17 +151,14 @@ def test_unknown_env_with_default_jwt_secret_refuses_to_boot() -> None:
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
         Settings(
             app_env="prod",
-            jwt_secret="dev-only-insecure-secret-change-me-in-prod",
-            postgres_password=_SECURE_DB_PASSWORD,
+            **{**_SECURE_SECRETS, "jwt_secret": "dev-only-insecure-secret-change-me-in-prod"},
         )
 
 
 def test_staging_with_secure_secrets_boots() -> None:
     # Positive control: it's the insecure SECRET that gates the boot, not the env name —
     # staging with real secrets must start.
-    settings = Settings(
-        app_env="staging", jwt_secret=_SECURE_JWT, postgres_password=_SECURE_DB_PASSWORD
-    )
+    settings = Settings(app_env="staging", **_SECURE_SECRETS)
 
     assert settings.requires_secure_secrets is True
     assert settings.jwt_secret == _SECURE_JWT
@@ -135,27 +168,25 @@ def test_production_with_blank_jwt_secret_refuses_to_boot() -> None:
     # The blank-secret bypass (testing TC-SG-006): an empty key is NOT the dev default, but it
     # is not a valid HS256 key either — the strength floor must catch it, not let it slip through.
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
-        Settings(app_env="production", jwt_secret="", postgres_password=_SECURE_DB_PASSWORD)
+        Settings(app_env="production", **{**_SECURE_SECRETS, "jwt_secret": ""})
 
 
 def test_production_with_whitespace_only_jwt_secret_refuses_to_boot() -> None:
     # ' ' round-trips as a forgeable HS256 key in PyJWT (TC-SG-006); whitespace must strip to
     # zero length and be rejected, never counted toward the strength floor.
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
-        Settings(app_env="production", jwt_secret="   ", postgres_password=_SECURE_DB_PASSWORD)
+        Settings(app_env="production", **{**_SECURE_SECRETS, "jwt_secret": "   "})
 
 
 def test_production_with_short_jwt_secret_refuses_to_boot() -> None:
     # A 31-byte key is one byte under the RFC 7518 HS256 floor (32 bytes) -> rejected.
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
-        Settings(app_env="production", jwt_secret="x" * 31, postgres_password=_SECURE_DB_PASSWORD)
+        Settings(app_env="production", **{**_SECURE_SECRETS, "jwt_secret": "x" * 31})
 
 
 def test_production_with_exactly_32_byte_jwt_secret_boots() -> None:
     # Boundary: exactly the HS256 minimum (32 bytes) is acceptable and boots.
-    settings = Settings(
-        app_env="production", jwt_secret="x" * 32, postgres_password=_SECURE_DB_PASSWORD
-    )
+    settings = Settings(app_env="production", **{**_SECURE_SECRETS, "jwt_secret": "x" * 32})
 
     assert settings.jwt_secret == "x" * 32
 
@@ -176,8 +207,7 @@ def test_production_with_whitespace_padded_default_jwt_secret_refuses_to_boot() 
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
         Settings(
             app_env="production",
-            jwt_secret=" dev-only-insecure-secret-change-me-in-prod\n",
-            postgres_password=_SECURE_DB_PASSWORD,
+            **{**_SECURE_SECRETS, "jwt_secret": " dev-only-insecure-secret-change-me-in-prod\n"},
         )
 
 
@@ -186,9 +216,7 @@ def test_production_with_trailing_newline_secret_canonicalizes_and_boots() -> No
     # (common from a Docker/Vault secret mount): it strips to the clean value, boots, and stores the
     # canonical form so token signing uses exactly what was validated (no validate-vs-sign drift).
     settings = Settings(
-        app_env="production",
-        jwt_secret=_SECURE_JWT + "\n",
-        postgres_password=_SECURE_DB_PASSWORD,
+        app_env="production", **{**_SECURE_SECRETS, "jwt_secret": _SECURE_JWT + "\n"}
     )
 
     assert settings.jwt_secret == _SECURE_JWT
@@ -198,4 +226,4 @@ def test_staging_with_short_jwt_secret_refuses_to_boot() -> None:
     # Parity: the strength floor is a property of requires_secure_secrets, not of production alone —
     # staging must reject a sub-32-byte secret exactly as production does.
     with pytest.raises(InsecureConfigurationError, match="JWT_SECRET"):
-        Settings(app_env="staging", jwt_secret="x" * 31, postgres_password=_SECURE_DB_PASSWORD)
+        Settings(app_env="staging", **{**_SECURE_SECRETS, "jwt_secret": "x" * 31})

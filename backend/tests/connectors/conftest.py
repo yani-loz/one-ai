@@ -4,8 +4,9 @@ Role: DB-backed + override fixtures for the connectors test suite — schema lif
       and company-JWT helpers.
 Used by: every test under tests/connectors/ that touches the DB or the routes. The pure-unit
          tests (cipher, registry, imap connector) don't use these and run without a database.
-Depends on: app.core.database (engine/SessionLocal), app.connectors models/base/dependencies,
-            app.identity.security.tokens + principal (real JWT minting), app.main (the ASGI app).
+Depends on: app.core.database (engine/GlobalSessionLocal/runtime_roles_present),
+            app.connectors models/base/dependencies, app.identity.security.tokens + principal
+            (real JWT minting), app.main (the ASGI app).
 Key invariants:
   - Per-test isolation: the schema fixture creates the connector table if missing, then on
     teardown TRUNCATEs it (migrated DB) or DROPs it (fresh DB) — function-scoped, because asyncpg
@@ -35,7 +36,7 @@ from app.connectors.base.registry import ConnectorRegistry
 from app.connectors.dependencies import get_connector_registry
 from app.connectors.enums import ConnectorType
 from app.connectors.models.connector_connection import ConnectorConnection
-from app.core.database import SessionLocal, engine
+from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.identity.principal import Principal
 from app.identity.security.tokens import COMPANY_AUDIENCE, encode_access_token
 from app.main import app
@@ -54,6 +55,11 @@ def _missing_connector_tables(sync_connection: object) -> list[object]:
 @pytest_asyncio.fixture
 async def connector_schema() -> AsyncIterator[None]:
     """Give each test a clean connector schema, then reset it (truncate or drop)."""
+    if not await runtime_roles_present():
+        pytest.skip(
+            "Runtime DB roles missing — run `alembic upgrade head` then "
+            "`python -m scripts.provision_roles` before the DB suite."
+        )
     async with engine.begin() as connection:
         created = await connection.run_sync(_missing_connector_tables)
         await connection.run_sync(Base.metadata.create_all, tables=created)
@@ -72,7 +78,7 @@ async def connector_schema() -> AsyncIterator[None]:
 @pytest_asyncio.fixture
 async def db_session(connector_schema: None) -> AsyncIterator[AsyncSession]:
     """Yield a committed-on-success plain session for explicit test seeding."""
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         try:
             yield session
             await session.commit()

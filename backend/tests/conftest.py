@@ -14,21 +14,24 @@ from collections.abc import AsyncIterator
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import engine
+from app.core.database import engine, global_engine, tenant_engine
 from app.main import app
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _dispose_engine_between_tests() -> AsyncIterator[None]:
-    """Dispose the shared async engine after each test.
+    """Dispose ALL THREE async engines after each test.
 
     pytest-asyncio runs each test in its own event loop; asyncpg connections are
     bound to the loop that created them. Without disposal, a pooled connection
-    from one test is reused by the next test's loop and fails. Disposing keeps
-    every test's DB access on its own loop.
+    from one test is reused by the next test's loop and fails. Post the RLS role
+    split there are three engines (owner + tenant + global) — every one must be
+    disposed, or a test that touched the tenant/global pool leaks a connection
+    into the next test's loop.
     """
     yield
-    await engine.dispose()
+    for db_engine in (tenant_engine, global_engine, engine):
+        await db_engine.dispose()
 
 
 @pytest_asyncio.fixture

@@ -3,7 +3,7 @@ Role: Audit-trail writer + reader. Builds and appends audit_log rows (who/what/w
       where/why) and serves the platform read views. Holds the audit business logic (A5).
 Used by: AuthService / PlatformOrgService / PlatformAuthService (emit events on their own
          session); routes.platform_routes via get_audit_service (reads).
-Depends on: app.core.database (SessionLocal — the independent-write session),
+Depends on: app.core.database (GlobalSessionLocal — the independent-write session),
             app.core.request_context (IP + request id), repositories.audit_repository,
             schemas.audit_schemas, identity.enums (AuditActorType).
 Key invariants:
@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from app.core.database import SessionLocal
+from app.core.database import GlobalSessionLocal
 from app.core.request_context import REQUEST_ID_MAX_LENGTH, current_request_context
 from app.identity.enums import AuditActorType
 from app.identity.models.audit_log import AuditLog
@@ -101,7 +101,7 @@ class AuditService:
         bcrypt-DoS / pool-sizing items (docs/FIX_BEFORE_PROD.md).
         """
         try:
-            async with SessionLocal() as session:
+            async with GlobalSessionLocal() as session:
                 session.add(self._build_row(event))
                 await session.commit()
         except Exception:  # noqa: BLE001 — audit must never break the primary flow

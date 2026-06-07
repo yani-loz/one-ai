@@ -6,6 +6,14 @@
 > This doc is the durable plan; implement it as a focused, branch-isolated change — it is the
 > single most invasive change in the repo (DB roles + connection layer + CI + docker).
 
+> **STATUS — IMPLEMENTED + LIVE-VERIFIED (2026-06-07, pending commit/PR).** Landed as migration
+> `0009_enforce_rls` + `scripts/provision_roles.py` + the `database.py` three-engine split + the
+> `SessionLocal`→`GlobalSessionLocal` rename across all importers + docker/CI provisioning steps +
+> the `test_rls_invariants.py` FORCE assertion & live two-role isolation proof (with teeth) +
+> cross-org-write rejection. Verified on a throwaway DB: `oneai_app` isolates to one org,
+> `oneai_global` bypasses, a cross-org write is rejected with a row-level-security error, and the
+> full backend suite is green (**374 passed**, ruff clean). Residuals tracked in `FIX_BEFORE_PROD.md`.
+
 ## Two reframes the map surfaced
 1. **JWT_SECRET fail-closed is ALREADY built + tested.** `Settings._forbid_insecure_defaults_in_production`
    (`config.py`) raises a hard boot failure when `jwt_secret`/`postgres_password` are the dev default.

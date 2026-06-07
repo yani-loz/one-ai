@@ -25,6 +25,14 @@ from app.core.exceptions import InsecureConfigurationError
 _INSECURE_JWT_SECRET = "dev-only-insecure-secret-change-me-in-prod"
 _INSECURE_POSTGRES_PASSWORD = "oneai"
 
+# Dev-default passwords for the two least-privilege runtime DB roles (the RLS role split — see
+# app.core.database). Like the secrets above, every non-dev environment MUST override both, or the
+# model validator refuses to boot. Single-sourced: scripts.provision_roles sets each role's LOGIN
+# password to THIS value and the app connects with it — one env var per role (ONEAI_APP_PASSWORD /
+# ONEAI_GLOBAL_PASSWORD), so the connection password and the provisioned password cannot drift.
+_INSECURE_ONEAI_APP_PASSWORD = "dev-only-oneai-app-pw-change-me"
+_INSECURE_ONEAI_GLOBAL_PASSWORD = "dev-only-oneai-global-pw-change-me"
+
 # Minimum HS256 signing-key length. RFC 7518 §3.2: an HMAC key MUST be at least as long as
 # the hash output — 256 bits / 32 bytes for HS256. The boot guard rejects any non-dev JWT
 # secret below this (blank, whitespace-only, or short) even when it is NOT the literal dev
@@ -59,11 +67,24 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
 
     # — PostgreSQL (single source of truth for DB credentials) —
+    # postgres_user is the OWNER/superuser role. It runs Alembic/DDL and provisions the two
+    # runtime roles below — it does NOT serve HTTP. Runtime connections use app/global roles.
     postgres_user: str = "oneai"
     postgres_password: str = _INSECURE_POSTGRES_PASSWORD
     postgres_db: str = "oneai"
     postgres_host: str = "db"
     postgres_port: int = 5432
+
+    # — Least-privilege runtime DB roles (the RLS role split; see app.core.database) —
+    # The running app connects as these, never as the owner above:
+    #   oneai_app    — non-owner, NO BYPASSRLS -> tenant engine; RLS enforces on it.
+    #   oneai_global — non-owner, BYPASSRLS    -> global engine; cross/pre-org flows.
+    # Passwords are env-supplied (ONEAI_APP_PASSWORD / ONEAI_GLOBAL_PASSWORD); provision_roles
+    # sets each role's LOGIN password to the SAME value, so they never drift from the connection.
+    app_db_user: str = "oneai_app"
+    oneai_app_password: str = _INSECURE_ONEAI_APP_PASSWORD
+    global_db_user: str = "oneai_global"
+    oneai_global_password: str = _INSECURE_ONEAI_GLOBAL_PASSWORD
 
     # — Tenancy —
     # Fixed demo org used ONLY by the dev seed script (see SPEC §7). Tenant context
@@ -97,9 +118,39 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
-        """Async SQLAlchemy URL (asyncpg driver), assembled from the parts above."""
+        """Async OWNER URL (asyncpg) — superuser/owner. Alembic/DDL + provisioning + tests only.
+
+        The running app does NOT use this; runtime traffic flows through tenant_database_url /
+        global_database_url so DB-level RLS has a non-superuser role to enforce against.
+        """
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def tenant_database_url(self) -> str:
+        """Async TENANT URL — connects as the non-bypass `oneai_app` role.
+
+        This is the role RLS enforces against: it is neither superuser nor table owner, so the
+        ENABLE'd + FORCE'd org_isolation policies finally apply. Used by core.scoped_session.
+        """
+        return (
+            f"postgresql+asyncpg://{self.app_db_user}:{self.oneai_app_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def global_database_url(self) -> str:
+        """Async GLOBAL URL — connects as the BYPASSRLS `oneai_global` role.
+
+        For the legitimately cross-org / pre-org flows (login resolves a user before any org is
+        known; platform/erasure/audit span all orgs). Used by core.get_session.
+        """
+        return (
+            f"postgresql+asyncpg://{self.global_db_user}:{self.oneai_global_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
@@ -163,6 +214,10 @@ class Settings(BaseSettings):
             insecure.append(f"JWT_SECRET (blank or under {_MIN_JWT_SECRET_BYTES} bytes)")
         if self.postgres_password == _INSECURE_POSTGRES_PASSWORD:
             insecure.append("POSTGRES_PASSWORD (dev default)")
+        if self.oneai_app_password == _INSECURE_ONEAI_APP_PASSWORD:
+            insecure.append("ONEAI_APP_PASSWORD (dev default)")
+        if self.oneai_global_password == _INSECURE_ONEAI_GLOBAL_PASSWORD:
+            insecure.append("ONEAI_GLOBAL_PASSWORD (dev default)")
 
         if insecure:
             raise InsecureConfigurationError(

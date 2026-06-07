@@ -4,12 +4,14 @@ Used by: AuthService (login lookup), UserService (admin CRUD), PlatformAuthServi
          (create the org's first admin).
 Depends on: app.identity.models.user.
 Key invariants:
-  - EVERY method except get_by_email and add is ORG-SCOPED: it takes an org_id and
-    filters by it, so no query path can return or mutate another org's rows. This is
-    the application-layer half of tenant isolation (security.md).
-  - get_by_email is the ONE intentionally non-org-scoped read — used only by login,
-    where email is globally unique and the password gates access. It is named so this
-    is unmistakable.
+  - ORG-SCOPED methods take an org_id and filter by it, so no query path can return or
+    mutate another org's rows (the application-layer half of tenant isolation, security.md):
+    get_in_org, list_by_org, lock_active_admin_ids, delete_all_in_org.
+  - Intentionally NON-ORG-SCOPED reads (each safe by construction, and each flags it in its
+    own docstring): get_by_email (login; email is globally unique and the password gates
+    access), get_by_subject_id (server-validated subject id — refresh rotation, /auth/me,
+    support-decision attribution — never raw client input), and email_exists (global
+    uniqueness check; this makes a cross-org duplicate a 409 — the AUD-04 existence oracle).
   - add operates within a tenant-scoped session whose org GUC is already bound.
 """
 
@@ -45,12 +47,13 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def get_by_subject_id(self, user_id: UUID) -> User | None:
-        """Return the user with `user_id`, or None. NON-ORG-SCOPED — refresh path only.
+        """Return the user with `user_id`, or None. NON-ORG-SCOPED — server-validated subject only.
 
-        Used by token rotation, where the subject id comes from a server-issued,
-        already-validated refresh-token row (not from client input), so resolving the
-        user across orgs without an org filter is safe. All ADMIN-facing reads use the
-        org-scoped get_in_org instead.
+        Used by token rotation, /auth/me, and support-decision attribution, where the subject
+        id comes from a server-issued, already-validated source (a refresh-token row or a
+        signature+audience+expiry-verified access-token claim), never raw client input — so
+        resolving the user across orgs without an org filter is safe. All ADMIN-facing reads
+        use the org-scoped get_in_org instead.
         """
         result = await self._session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()

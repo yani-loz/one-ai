@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
-from app.core.database import SessionLocal, engine
+from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.person import Person
 
 # Email tables FK connector_connection + person, so those FK targets are in the create set too.
@@ -46,6 +47,11 @@ def _missing_email_tables(sync_connection: object) -> list[object]:
 @pytest_asyncio.fixture
 async def email_schema() -> AsyncIterator[None]:
     """Give each test a clean email schema (+ FK targets), then reset it."""
+    if not await runtime_roles_present():
+        pytest.skip(
+            "Runtime DB roles missing — run `alembic upgrade head` then "
+            "`python -m scripts.provision_roles` before the DB suite."
+        )
     async with engine.begin() as connection:
         created = await connection.run_sync(_missing_email_tables)
         await connection.run_sync(Base.metadata.create_all, tables=created)
@@ -64,7 +70,7 @@ async def email_schema() -> AsyncIterator[None]:
 @pytest_asyncio.fixture
 async def db_session(email_schema: None) -> AsyncIterator[AsyncSession]:
     """Yield a committed-on-success plain session for direct email-repository tests."""
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         try:
             yield session
             await session.commit()

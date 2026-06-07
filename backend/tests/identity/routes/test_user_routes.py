@@ -192,6 +192,53 @@ async def test_member_creating_user_returns_403(
     assert response.status_code == 403
 
 
+async def test_member_patching_user_returns_403(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The role gate on the DESTRUCTIVE paths: a member must not change roles.
+    _org_a, _org_b, _admin_a, member_a, _user_b = await _seed_two_orgs(db_session)
+    headers = bearer(company_token(member_a.id, member_a.org_id, UserRole.member))
+
+    response = await client.patch(
+        f"/users/{member_a.id}", headers=headers, json={"role": "company_admin"}
+    )
+
+    assert response.status_code == 403
+
+
+async def test_member_deleting_user_returns_403(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The role gate on the DESTRUCTIVE paths: a member must not deactivate users.
+    _org_a, _org_b, _admin_a, member_a, _user_b = await _seed_two_orgs(db_session)
+    headers = bearer(company_token(member_a.id, member_a.org_id, UserRole.member))
+
+    response = await client.delete(f"/users/{member_a.id}", headers=headers)
+
+    assert response.status_code == 403
+
+
+async def test_patch_reactivates_user_returns_200(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The reactivate transition end-to-end through the HTTP gate (service-tested separately):
+    # deactivate, then PATCH {is_active: true} -> 200 + active again, visible in a follow-up GET.
+    org_a, _org_b, admin_a, member_a, _user_b = await _seed_two_orgs(db_session)
+    headers = _admin_a_headers(admin_a, org_a)
+    deactivated = await client.delete(f"/users/{member_a.id}", headers=headers)
+    assert deactivated.status_code == 204
+
+    response = await client.patch(
+        f"/users/{member_a.id}", headers=headers, json={"is_active": True}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is True
+    listing = await client.get("/users", headers=headers)
+    member_row = next(r for r in listing.json() if r["id"] == str(member_a.id))
+    assert member_row["is_active"] is True
+
+
 async def test_create_user_overlong_password_returns_422(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

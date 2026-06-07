@@ -5,7 +5,7 @@ Role: DEV-ONLY idempotent seed for the Identity module — inserts the demo
 Used by: developers/CI demo setup. Run as a module from `backend/`:
          `docker compose exec backend uv run python -m scripts.seed_identity`
          (or `uv run python -m scripts.seed_identity` inside the backend container).
-Depends on: app.core.config (settings), app.core.database (SessionLocal,
+Depends on: app.core.config (settings), app.core.database (GlobalSessionLocal,
             scoped_session, engine), app.identity models, repositories, and
             security.password.hash_password.
 Key invariants:
@@ -28,7 +28,7 @@ import asyncio
 from dataclasses import dataclass
 
 from app.core.config import get_settings
-from app.core.database import SessionLocal, engine, scoped_session
+from app.core.database import GlobalSessionLocal, engine, scoped_session
 from app.identity.enums import UserRole
 from app.identity.models.organization import Organization
 from app.identity.models.platform_admin import PlatformAdmin
@@ -123,7 +123,7 @@ def _refuse_in_production() -> None:
 
 async def _seed_platform_admin() -> None:
     """Create the platform admin on a plain session (idempotent, matched by email)."""
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         platform_admins = PlatformAdminRepository(session)
         if await platform_admins.get_by_email(_DEMO_PLATFORM_ADMIN.email) is None:
             session.add(
@@ -146,7 +146,7 @@ async def _seed_company(company: _DemoCompany) -> None:
     tenant-scoped session bound to the org's GUC (UserRepository.add's contract). The
     org is matched by slug, each user by globally-unique email.
     """
-    async with SessionLocal() as session:
+    async with GlobalSessionLocal() as session:
         organizations = OrganizationRepository(session)
         existing = await organizations.get_by_slug(company.slug)
         if existing is None:

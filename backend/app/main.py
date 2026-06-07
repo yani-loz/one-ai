@@ -24,7 +24,7 @@ from sqlalchemy.exc import DataError
 from app.api.routes.health import router as health_router
 from app.connectors import connectors_router, register_connector_exception_handlers
 from app.core.config import get_settings
-from app.core.database import engine
+from app.core.database import engine, global_engine, tenant_engine
 from app.core.middleware import MaxBodySizeMiddleware
 from app.core.request_context import RequestContextMiddleware
 from app.identity import identity_router, register_identity_exception_handlers
@@ -32,9 +32,14 @@ from app.identity import identity_router, register_identity_exception_handlers
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: dispose the DB engine cleanly on shutdown."""
+    """Application lifespan: dispose all DB engines cleanly on shutdown.
+
+    Runtime traffic uses tenant_engine + global_engine (the RLS role split); the owner `engine`
+    is idle in-process (DDL/provisioning paths only) but is disposed too for symmetry.
+    """
     yield
-    await engine.dispose()
+    for db_engine in (tenant_engine, global_engine, engine):
+        await db_engine.dispose()
 
 
 async def _handle_data_error(_request: Request, _exc: Exception) -> JSONResponse:

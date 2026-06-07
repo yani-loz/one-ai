@@ -10,7 +10,12 @@ Key invariants:
     session (user.* events) must still be able to INSERT here (see migration 0005 +
     docs/FIX_BEFORE_PROD.md).
   - NO foreign keys to organizations/users: a row must SURVIVE deletion/rename of the actor
-    or org (durable attribution via the denormalized actor_email) — PC-04-AC7 + PC-06 erasure.
+    or org — PC-04-AC7 + PC-06 erasure. Durable NAMED attribution via the denormalized
+    actor_email is populated for AUTH events (login/refresh, where the email IS the subject);
+    admin-action governance rows (user.*, platform_*, support_*) carry actor_id only and leave
+    actor_email NULL, because the Principal that drives them carries no email. For tenant-user
+    actors this also matches the content-blind rule that withholds the target's email, so a name
+    is intentionally not resolvable from these rows after the actor is erased.
   - actor_type is pinned to the AuditActorType enum by a DB CHECK (ck_audit_log_actor_type).
   - APPEND-ONLY against DML: a BEFORE UPDATE OR DELETE trigger raises, so no UPDATE/DELETE
     succeeds even under the current superuser app role (unlike RLS, which a superuser

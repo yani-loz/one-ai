@@ -91,6 +91,27 @@ async def test_delete_connection_other_org_raises_not_found(db_session: AsyncSes
         await service.delete_connection(org_b, connection.id)
 
 
+async def test_disable_then_enable_toggles_disabled_at(db_session: AsyncSession) -> None:
+    service = _service(db_session, ConnectorRegistry())
+    org = uuid4()
+    connection = await service.create_connection(org, _request())
+
+    disabled = await service.disable_connection(org, connection.id)
+    assert disabled.disabled_at is not None
+
+    enabled = await service.enable_connection(org, connection.id)
+    assert enabled.disabled_at is None
+
+
+async def test_disable_connection_other_org_raises_not_found(db_session: AsyncSession) -> None:
+    service = _service(db_session, ConnectorRegistry())
+    org_a, org_b = uuid4(), uuid4()
+    connection = await service.create_connection(org_a, _request())
+
+    with pytest.raises(ConnectionNotFoundError):
+        await service.disable_connection(org_b, connection.id)
+
+
 async def test_test_connection_isolates_unexpected_connector_error(
     db_session: AsyncSession,
 ) -> None:

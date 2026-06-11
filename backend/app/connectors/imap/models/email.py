@@ -9,9 +9,11 @@ Depends on: app.common.base_model (Base + mixins), SQLAlchemy + postgresql diale
 Key invariants:
   - TENANT-SCOPED (org_id NOT NULL + indexed). RLS policy defined in the migration (inert until the
     least-privilege role lands — the RLS engine-flip).
-  - ONE ROW PER LOGICAL EMAIL: dedup on a NON-NULL `dedup_key` (= Message-ID, else a content hash),
-    UNIQUE(org_id, connection_id, dedup_key). Folders are NOT stored. `body_text` is the decoded
-    extraction (NOT cleaned — cleaning is a later stage). Raw RFC822 bytes are NOT kept.
+  - ONE ROW PER LOGICAL EMAIL: dedup on a NON-NULL `dedup_key` = a CONTENT IDENTITY (a hash of
+    Message-ID + From/Subject/Date + body, else raw-byte hash; see email_parser._dedup_key) —
+    folder-stable (one email seen in N IMAP folders dedups to ONE row) yet injective enough that two
+    distinct emails never collide. UNIQUE(org_id, connection_id, dedup_key). Folders are NOT stored.
+    `body_text` is the decoded extraction (NOT cleaned). Raw bytes are NOT kept.
   - `connection_id` → connector_connection ON DELETE CASCADE = delete-a-connection purges its email
     (DB-enforced). from_person_id / recipient person_id → person ON DELETE SET NULL (resolver
     reassigns on merges). The shared person/company graph is NEVER cascade-deleted.
@@ -61,8 +63,8 @@ class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    # Non-null dedup key (= Message-ID, else a content hash) — the real uniqueness anchor, since a
-    # plain UNIQUE on the nullable message_id would treat NULLs as distinct and never dedup.
+    # Content-identity dedup key: hash of Message-ID + From/Subject/Date + body, else raw-byte hash
+    # (folder-stable yet injective; never the bare Message-ID). See email_parser._dedup_key.
     dedup_key: Mapped[str] = mapped_column(String(998), nullable=False)
     message_id: Mapped[str | None] = mapped_column(String(998), index=True)
     in_reply_to: Mapped[str | None] = mapped_column(String(998))

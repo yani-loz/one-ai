@@ -92,6 +92,22 @@ def is_automated_sender(from_address: str | None, headers: dict[str, str | list[
     return _has_any_header(headers, ("list-id", "list-unsubscribe"))
 
 
+def is_automated_origin(from_address: str | None, headers: dict[str, str | list[str]]) -> bool:
+    """True if the SENDER ITSELF is automated — the person-hood gate (DQ-C01), not the bulk flag.
+
+    Uses only sender-IDENTITY signals: an automation local-part, or an `Auto-Submitted` header other
+    than 'no' (RFC 3834 — the message was machine-generated). It deliberately does NOT consult the
+    list/bulk routing headers (`List-*`, `Precedence: list`) that is_automated_sender does — those
+    also tag a REAL human's mail that merely traveled through a mailing list, and dropping that
+    human's Person is mail-loss. So a colleague emailing an internal `team@` list still becomes a
+    Person, while a `noreply@`/auto-generated sender does not.
+    """
+    if _has_automated_localpart(from_address):
+        return True
+    auto_submitted = _first_header_value(headers, "auto-submitted")
+    return bool(auto_submitted and auto_submitted.strip().lower() != "no")
+
+
 def _has_automated_localpart(from_address: str | None) -> bool:
     normalized = normalize_for_compare(from_address)
     if not normalized or "@" not in normalized:

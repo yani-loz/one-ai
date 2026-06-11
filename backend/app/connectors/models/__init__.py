@@ -13,5 +13,7 @@ Key invariants:
 from __future__ import annotations
 
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
+from app.connectors.models.connector_sync_run import ConnectorSyncRun
 
-__all__ = ["ConnectorConnection"]
+__all__ = ["ConnectorConnection", "ConnectorSyncCursor", "ConnectorSyncRun"]

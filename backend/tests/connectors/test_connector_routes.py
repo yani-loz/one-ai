@@ -120,6 +120,43 @@ async def test_delete_connection_returns_204_then_404(client: AsyncClient) -> No
     assert get_response.status_code == 404
 
 
+async def test_disable_then_enable_round_trip(client: AsyncClient) -> None:
+    token = company_token(uuid4(), uuid4())
+    connection_id = (
+        await client.post("/connectors", json=_payload(), headers=bearer(token))
+    ).json()["id"]
+
+    disabled = await client.post(f"/connectors/{connection_id}/disable", headers=bearer(token))
+    enabled = await client.post(f"/connectors/{connection_id}/enable", headers=bearer(token))
+
+    assert disabled.status_code == 200
+    assert disabled.json()["is_enabled"] is False and disabled.json()["disabled_at"] is not None
+    assert enabled.status_code == 200
+    assert enabled.json()["is_enabled"] is True and enabled.json()["disabled_at"] is None
+
+
+async def test_cannot_disable_another_orgs_connection_returns_404(client: AsyncClient) -> None:
+    org_a = company_token(uuid4(), uuid4())
+    connection_id = (
+        await client.post("/connectors", json=_payload(), headers=bearer(org_a))
+    ).json()["id"]
+    org_b = company_token(uuid4(), uuid4())
+
+    disable_b = await client.post(f"/connectors/{connection_id}/disable", headers=bearer(org_b))
+    enable_b = await client.post(f"/connectors/{connection_id}/enable", headers=bearer(org_b))
+
+    assert disable_b.status_code == 404 and enable_b.status_code == 404
+    assert "sales@example.com" not in disable_b.text  # no B-visible leak of A's data
+
+
+async def test_member_cannot_disable_connection_returns_403(client: AsyncClient) -> None:
+    token = company_token(uuid4(), uuid4(), role="member")
+
+    response = await client.post(f"/connectors/{uuid4()}/disable", headers=bearer(token))
+
+    assert response.status_code == 403
+
+
 async def test_cannot_read_another_orgs_connection_returns_404(client: AsyncClient) -> None:
     org_a = company_token(uuid4(), uuid4())
     created = await client.post("/connectors", json=_payload(), headers=bearer(org_a))

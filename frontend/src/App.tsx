@@ -16,6 +16,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { AdminConsolePage, AdminRoute } from "./admin";
+import { ConnectorsPage } from "./connect";
 import { HomePage } from "./HomePage";
 import { LoginPage, ProtectedRoute, useAuth } from "./identity";
 import { OrganizationDetailPage, PlatformConsolePage, PlatformRoute } from "./platform";
@@ -78,6 +79,16 @@ export function App(): React.JSX.Element {
               <AnimatedScreen>
                 <AdminRoute>
                   <AdminConsolePage />
+                </AdminRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/connectors"
+            element={
+              <AnimatedScreen>
+                <AdminRoute>
+                  <ConnectorsPage />
                 </AdminRoute>
               </AnimatedScreen>
             }

@@ -52,9 +52,17 @@ class ConnectionResponse(BaseModel):
     port: int
     use_ssl: bool
     status: str
+    is_enabled: bool
+    disabled_at: datetime | None
     last_checked_at: datetime | None
     last_error: str | None
     created_at: datetime
+    # Live sync snapshot (so the list carries the N/M the UI shows without a second call).
+    sync_status: str
+    synced_count: int
+    total_count: int | None
+    last_synced_at: datetime | None
+    last_sync_error: str | None
 
     @classmethod
     def from_model(cls, connection: ConnectorConnection) -> ConnectionResponse:
@@ -71,7 +79,43 @@ class ConnectionResponse(BaseModel):
             port=int(config.get("port", 0)),  # type: ignore[arg-type]
             use_ssl=bool(config.get("use_ssl", True)),
             status=connection.status,
+            is_enabled=connection.disabled_at is None,
+            disabled_at=connection.disabled_at,
             last_checked_at=connection.last_checked_at,
             last_error=connection.last_error,
             created_at=connection.created_at,
+            sync_status=connection.sync_status,
+            synced_count=connection.synced_count,
+            total_count=connection.total_count,
+            last_synced_at=connection.last_synced_at,
+            last_sync_error=connection.last_sync_error,
+        )
+
+
+class SyncStatusResponse(BaseModel):
+    """A connection's live sync progress — the N/M the UI polls. NO secret, NO email content."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    connection_id: UUID
+    sync_status: str  # idle | running | error
+    run_id: UUID | None
+    started_at: datetime | None
+    last_synced_at: datetime | None
+    synced_count: int
+    total_count: int | None
+    last_sync_error: str | None
+
+    @classmethod
+    def from_model(cls, connection: ConnectorConnection) -> SyncStatusResponse:
+        """Build the progress view from the connection's sync_* columns."""
+        return cls(
+            connection_id=connection.id,
+            sync_status=connection.sync_status,
+            run_id=connection.sync_run_id,
+            started_at=connection.sync_started_at,
+            last_synced_at=connection.last_synced_at,
+            synced_count=connection.synced_count,
+            total_count=connection.total_count,
+            last_sync_error=connection.last_sync_error,
         )

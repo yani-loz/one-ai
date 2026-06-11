@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.entities.models.person import Person, PersonAlias, PersonEmail
@@ -71,6 +71,24 @@ class PersonRepository:
         self._session.add(alias)
         await self._session.flush()
         return alias
+
+    async def backfill_display_name(
+        self, org_id: UUID, person_id: UUID, display_name: str
+    ) -> None:
+        """Set display_name ONLY if currently NULL/empty — first non-empty name wins (DQ-K04).
+
+        A no-op once a person already has a name (a later sighting never overwrites a good name),
+        so a person first seen as a bare address is repaired when a named sighting arrives.
+        """
+        await self._session.execute(
+            update(Person)
+            .where(
+                Person.id == person_id,
+                Person.org_id == org_id,
+                or_(Person.display_name.is_(None), Person.display_name == ""),
+            )
+            .values(display_name=display_name)
+        )
 
     async def extend_seen_window(self, org_id: UUID, person_id: UUID, seen_at: datetime) -> None:
         """Widen [first_seen_at, last_seen_at] to include `seen_at` — order-independent (LEAST/

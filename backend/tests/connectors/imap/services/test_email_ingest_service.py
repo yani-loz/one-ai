@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,6 +144,7 @@ async def test_ingest_role_sender_stores_message_with_null_from_person(
     db_session: AsyncSession,
 ) -> None:
     # A role mailbox (info@) is not a person: the message stores, but from_person_id stays NULL.
+    # DQ-D01: the role sender's domain (globex.com) is still observed as a company, though.
     org = uuid4()
     connection = await seed_connection(db_session, org)
     service = EmailIngestService(db_session, connection)
@@ -156,6 +158,7 @@ async def test_ingest_role_sender_stores_message_with_null_from_person(
     ).scalar_one()
     assert message.from_person_id is None  # info@ minted no person
     assert await _count(db_session, Person, org) == 1  # only the recipient owner@acme
+    assert await _count(db_session, Company, org) == 2  # globex (role sender, D01) + acme
 
 
 async def test_ingest_binary_attachment_records_null_text(db_session: AsyncSession) -> None:
@@ -194,7 +197,7 @@ async def test_ingest_malformed_attachments_do_not_drop_email(db_session: AsyncS
         b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
         b'--B\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename="a.csv"'
         b"\r\n\r\nx,y\x00z\r\n"
-        b'--B\r\nContent-Type: ' + giant + b'\r\nContent-Disposition: attachment; filename="b"'
+        b"--B\r\nContent-Type: " + giant + b'\r\nContent-Disposition: attachment; filename="b"'
         b"\r\n\r\nZ\r\n--B--\r\n"
     )
 
@@ -202,8 +205,81 @@ async def test_ingest_malformed_attachments_do_not_drop_email(db_session: AsyncS
 
     assert outcome is IngestOutcome.STORED  # neither malformed attachment dropped the email
     attachments = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalars().all()
+        (await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org)))
+        .scalars()
+        .all()
+    )
     assert len(attachments) == 2
     assert all(len(a.content_type) <= 255 for a in attachments)
     assert all("\x00" not in (a.extracted_text or "") for a in attachments)
+
+
+async def test_ingest_recursion_failure_stores_a_flagged_stub_not_dropped(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Audit C01: a RecursionError in the strict parse must NOT drop the email. parse_email degrades
+    # to a flagged stub and the ingest service STORES it (parse_status='failed') — queryable, not
+    # a silent drop. (Guards the never-lose-mail insert path the parser unit test can't reach.)
+    import app.connectors.imap.parsing.email_parser as parser_mod
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(parser_mod, "_parse_email_strict", _boom)
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    raw = _eml("From: a@globex.com\nTo: owner@acme.com\nMessage-ID: <deep@x>")
+
+    outcome = await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    assert outcome is IngestOutcome.STORED  # stored, never silently dropped
+    message = (
+        await db_session.execute(select(EmailMessage).where(EmailMessage.org_id == org))
+    ).scalar_one()
+    assert message.parse_status == "failed"
+    assert message.dedup_key.startswith("sha256:")
+    assert message.from_person_id is None  # degraded stub ran no resolver
+    assert (
+        await _count(db_session, Person, org) == 0
+    )  # no entity-graph rows from a content-less stub
+
+
+async def test_ingest_human_on_mailing_list_still_creates_from_person(
+    db_session: AsyncSession,
+) -> None:
+    # DQ-C01 fix: a real human posting to a list (List-Id/Precedence on the distributed copy) is NOT
+    # a machine — the From-person must still be created (the over-broad is_automated gate would have
+    # nulled from_person_id, silently dropping the colleague).
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    raw = _eml(
+        "From: Boyan <boyan@globex.com>\nTo: team@acme.com\n"
+        "List-Id: team.acme.com\nPrecedence: list\nMessage-ID: <list@x>"
+    )
+
+    await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    message = (
+        await db_session.execute(select(EmailMessage).where(EmailMessage.org_id == org))
+    ).scalar_one()
+    assert message.is_automated is True  # the message IS list mail...
+    assert message.from_person_id is not None  # ...but the human sender is still a person
+
+
+async def test_ingest_auto_generated_sender_makes_no_from_person(db_session: AsyncSession) -> None:
+    # DQ-C01: a machine sender (Auto-Submitted: auto-generated, non-role localpart) mints no
+    # from-person, yet its domain is still observed as a company (DQ-D01).
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    raw = _eml(
+        "From: alerts@globex.com\nTo: owner@acme.com\n"
+        "Auto-Submitted: auto-generated\nMessage-ID: <auto@x>"
+    )
+
+    await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    message = (
+        await db_session.execute(select(EmailMessage).where(EmailMessage.org_id == org))
+    ).scalar_one()
+    assert message.from_person_id is None  # machine sender → no person
+    assert await _count(db_session, Company, org) == 2  # globex (auto sender) + acme (recipient)

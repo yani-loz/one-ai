@@ -56,9 +56,16 @@ class PersonEmail(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
 
 
 class PersonAlias(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
-    """An alternate display name seen for a person (helps later name-based disambiguation)."""
+    """An alternate display name seen for a person (helps later name-based disambiguation).
+
+    UNIQUE(org_id, person_id, alias): the resolver records an alias on every sighting, so the
+    constraint dedups a name seen N times to ONE row (race-safe via INSERT + catch — DQ-K04).
+    """
 
     __tablename__ = "person_alias"
+    __table_args__ = (
+        UniqueConstraint("org_id", "person_id", "alias", name="uq_person_alias_identity"),
+    )
 
     person_id: Mapped[UUID] = mapped_column(
         postgresql.UUID(as_uuid=True),

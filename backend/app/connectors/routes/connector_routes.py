@@ -18,12 +18,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from app.connectors.dependencies import get_connector_service
+from app.connectors.dependencies import get_connector_service, get_sync_service
 from app.connectors.schemas.connector_schemas import (
     ConnectionResponse,
     CreateConnectionRequest,
+    SyncStatusResponse,
 )
 from app.connectors.services.connector_service import ConnectorService
+from app.connectors.sync.sync_service import SyncService
 from app.identity.dependencies import require_company_admin
 from app.identity.principal import Principal
 
@@ -71,6 +73,57 @@ async def test_connection(
     """Verify a stored connection (connect + authenticate) and return its updated status."""
     connection = await service.test_connection(principal.org_id, connection_id)
     return ConnectionResponse.from_model(connection)
+
+
+@router.post("/{connection_id}/disable", response_model=ConnectionResponse)
+async def disable_connection(
+    connection_id: UUID,
+    principal: Principal = Depends(require_company_admin),
+    service: ConnectorService = Depends(get_connector_service),
+) -> ConnectionResponse:
+    """Disable a connection (reversible) — stops sync + revokes AI access (404 if not theirs)."""
+    connection = await service.disable_connection(principal.org_id, connection_id)
+    return ConnectionResponse.from_model(connection)
+
+
+@router.post("/{connection_id}/enable", response_model=ConnectionResponse)
+async def enable_connection(
+    connection_id: UUID,
+    principal: Principal = Depends(require_company_admin),
+    service: ConnectorService = Depends(get_connector_service),
+) -> ConnectionResponse:
+    """Re-enable a disabled connection (404 if it isn't theirs)."""
+    connection = await service.enable_connection(principal.org_id, connection_id)
+    return ConnectionResponse.from_model(connection)
+
+
+@router.post(
+    "/{connection_id}/sync",
+    response_model=SyncStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_sync(
+    connection_id: UUID,
+    principal: Principal = Depends(require_company_admin),
+    service: SyncService = Depends(get_sync_service),
+) -> SyncStatusResponse:
+    """Trigger an incremental sync (202): claims the single-runner slot, returns the live status.
+
+    409 if a sync is already running or the connection is disabled; 404 if it isn't the caller's.
+    """
+    connection = await service.start_sync(principal.org_id, connection_id)
+    return SyncStatusResponse.from_model(connection)
+
+
+@router.get("/{connection_id}/sync", response_model=SyncStatusResponse)
+async def get_sync_status(
+    connection_id: UUID,
+    principal: Principal = Depends(require_company_admin),
+    service: SyncService = Depends(get_sync_service),
+) -> SyncStatusResponse:
+    """Poll a connection's live sync progress (the N/M the UI shows); 404 if not the caller's."""
+    connection = await service.get_sync_status(principal.org_id, connection_id)
+    return SyncStatusResponse.from_model(connection)
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)

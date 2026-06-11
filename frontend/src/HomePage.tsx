@@ -120,12 +120,20 @@ export function HomePage(): React.JSX.Element {
         </div>
 
         {user?.role === "company_admin" && (
-          <Link
-            to="/admin"
-            className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-teal to-brand-blue px-8 py-3 font-semibold text-white transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_10px_25px_-5px_rgba(13,148,136,0.3)] active:scale-[0.98]"
-          >
-            Manage organisation
-          </Link>
+          <>
+            <Link
+              to="/connectors"
+              className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-teal to-brand-blue px-8 py-3 font-semibold text-white transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_10px_25px_-5px_rgba(13,148,136,0.3)] active:scale-[0.98]"
+            >
+              Connect your sources
+            </Link>
+            <Link
+              to="/admin"
+              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/50 bg-white/50 px-8 py-3 font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]"
+            >
+              Manage organisation
+            </Link>
+          </>
         )}
 
         <button

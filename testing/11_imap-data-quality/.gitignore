@@ -1,0 +1,4 @@
+# Raw harness output — contains UNMASKED real addresses from the dev corpus (the auditor's own
+# mailbox). The consolidated audit (docs/audits/) masks external personal local-parts; this raw
+# dump does not, so keep it local.
+_evidence.txt

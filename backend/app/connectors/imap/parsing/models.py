@@ -8,9 +8,11 @@ Depends on: stdlib only (dataclasses, datetime).
 Key invariants:
   - These objects carry NO org_id / connection_id — those are tenancy/source context the runner
     supplies when it maps a ParsedEmail to ORM rows. The parser is content-only and source-agnostic.
-  - `dedup_key` is ALWAYS set: the Message-ID when present, else a sha256 of the RAW rfc822 bytes
-    (never of derived body_text — derived text changes across library versions and would break the
-    idempotent upsert). It is the email's stable logical identity for `ON CONFLICT DO NOTHING`.
+  - `dedup_key` is ALWAYS a sha256 of the RAW rfc822 bytes — never the attacker-influenceable
+    Message-ID (which would let a planted decoy suppress a genuine email reusing the id), and never
+    derived body_text (which shifts across library versions). It is the email's stable content
+    identity for `ON CONFLICT DO NOTHING`; identical wire bytes collide (idempotent), distinct
+    messages differ (the Message-ID is inside the hashed bytes).
   - `ParsedAttachment.payload` is TRANSIENT raw bytes for the extractor; it is dropped after text
     extraction and is NEVER persisted (lean-attachments decision, design §4).
 """
@@ -71,6 +73,9 @@ class ParsedEmail:
     attachments: list[ParsedAttachment]
     direction: str | None
     is_automated: bool
+    # Sender-IDENTITY automation (automation local-part / Auto-Submitted) — the person-hood gate
+    # (DQ-C01); distinct from `is_automated`, which also counts list/bulk routing of a human's mail.
+    is_automated_origin: bool
     is_reply: bool
     has_attachments: bool
     word_count: int

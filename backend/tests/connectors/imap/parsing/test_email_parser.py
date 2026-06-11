@@ -1,15 +1,20 @@
 """
 Role: Unit tests for the RFC822 email parser — body extraction (plain/html/alternative), address +
-      header decoding, derived flags wiring, dedup_key (Message-ID vs raw-bytes hash), and the
-      never-raises robustness contract on malformed input.
+      header decoding, derived flags wiring, the content-identity dedup_key, and the never-raises
+      robustness contract on malformed AND pathological input.
 Used by: pytest (tests/connectors/imap/parsing). Pure — no DB, no network.
 Depends on: app.connectors.imap.parsing.email_parser. Builds raw .eml bytes inline per test.
 Key invariants tested:
-  - dedup_key falls back to sha256:<hash of RAW bytes> and is STABLE across repeated parses.
-  - The parser never raises on garbage input (returns a best-effort ParsedEmail).
+  - dedup_key is a content identity (hash of Message-ID + From/Subject/Date + body, else raw-byte
+    hash): STABLE across parses, MATCHES across folder copies (differing trace headers), and DIFFERS
+    for two distinct emails — even ones reusing a Message-ID (folder-stable yet injective).
+  - parse_email NEVER raises — garbage degrades to a best-effort parse; a pathological deep
+    multipart degrades to parse_status='failed' (stored, not dropped).
 """
 
 from __future__ import annotations
+
+import pytest
 
 from app.connectors.imap.parsing.email_parser import parse_email
 
@@ -17,8 +22,12 @@ MAILBOX = "me@oneai.com"
 
 
 def _eml(headers: str, body: str) -> bytes:
-    """Assemble raw RFC822 bytes from a header block + body (CRLF line endings, blank separator)."""
-    return (headers.strip() + "\r\n\r\n" + body).replace("\n", "\r\n").encode("utf-8")
+    """Assemble raw RFC822 bytes from a header block + body (CRLF line endings, blank separator).
+
+    Uses a bare-LF blank separator before the single `\\n`→`\\r\\n` pass so the header/body boundary
+    becomes a CLEAN `\\r\\n\\r\\n` (not the `\\r\\r\\n` a literal CRLF yields under the replace).
+    """
+    return (headers.strip() + "\n\n" + body).replace("\n", "\r\n").encode("utf-8")
 
 
 def test_parse_plain_text_extracts_body_and_message_id() -> None:
@@ -31,7 +40,7 @@ def test_parse_plain_text_extracts_body_and_message_id() -> None:
     parsed = parse_email(raw, MAILBOX)
 
     assert parsed.message_id == "m1@acme.com"
-    assert parsed.dedup_key == "m1@acme.com"
+    assert parsed.dedup_key.startswith("sha256:")  # dedup is content-hashed, never the Message-ID
     assert parsed.body_text == "Hello there.\nLine two."
     assert parsed.word_count == 4
 
@@ -138,7 +147,7 @@ def test_parse_attachment_captures_metadata_and_hash() -> None:
         b"From: a@x.com\r\nTo: me@oneai.com\r\nSubject: A\r\nMessage-ID: <m10@x>\r\n"
         b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
         b"--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee attached.\r\n"
-        b"--B\r\nContent-Type: text/csv; name=\"data.csv\"\r\n"
+        b'--B\r\nContent-Type: text/csv; name="data.csv"\r\n'
         b'Content-Disposition: attachment; filename="data.csv"\r\n\r\n'
         b"a,b\r\n1,2\r\n"
         b"--B--\r\n"
@@ -239,3 +248,99 @@ def test_parse_naive_date_pinned_to_utc() -> None:
 
     assert no_tz.sent_at is not None and no_tz.sent_at.tzinfo == UTC
     assert minus_zero.sent_at is not None and minus_zero.sent_at.utcoffset().total_seconds() == 0
+
+
+def test_parse_reused_message_id_different_content_gets_distinct_dedup_keys() -> None:
+    # Dedup poisoning (audit C02): a decoy planting <reused@x> must NOT let a later, genuinely
+    # different email reusing that id collapse onto it — distinct content ⇒ distinct dedup_key.
+    decoy = _eml("From: a@x\nTo: me@oneai.com\nMessage-ID: <reused@x>", "hello, benign")
+    genuine = _eml("From: a@x\nTo: me@oneai.com\nMessage-ID: <reused@x>", "WIRE THE 2M NOW")
+
+    decoy_key = parse_email(decoy, MAILBOX).dedup_key
+    genuine_key = parse_email(genuine, MAILBOX).dedup_key
+
+    assert decoy_key != genuine_key
+    assert decoy_key.startswith("sha256:") and genuine_key.startswith("sha256:")
+    # Idempotent: identical wire bytes still collide (re-fetch).
+    assert parse_email(decoy, MAILBOX).dedup_key == decoy_key
+
+
+def test_parse_same_email_across_folders_dedups_despite_trace_headers() -> None:
+    # Audit B05: two IMAP-folder copies of ONE email differ only by prepended trace headers
+    # (Received/X-Folder); the content-identity key (Message-ID + body hash) must MATCH so they
+    # dedup to one row — raw-byte keying stored them twice (~40% duplication on the real corpus).
+    base = "From: a@x\nTo: me@oneai.com\nSubject: Q3\nMessage-ID: <same@x>"
+    inbox = _eml("Received: from mta1 by host1\n" + base, "the quarterly numbers")
+    archive = _eml(
+        "Received: from mta2 by host2\nX-Folder: Archive\n" + base, "the quarterly numbers"
+    )
+
+    assert parse_email(inbox, MAILBOX).dedup_key == parse_email(archive, MAILBOX).dedup_key
+
+    # ...yet a DIFFERENT body reusing the same Message-ID still gets a distinct key (poison-safe).
+    poison = _eml("Received: from mta3\n" + base, "WIRE 2M NOW")
+    assert parse_email(poison, MAILBOX).dedup_key != parse_email(inbox, MAILBOX).dedup_key
+
+
+def test_parse_reused_message_id_same_body_different_headers_stays_distinct() -> None:
+    # Audit B05 over-dedup guard: an appliance sender reusing a Message-ID + an identical templated
+    # body, varying only Subject/Date per event, must get DISTINCT keys — folding the folder-stable
+    # logical headers into the key stops the recurrences from being silently deduped away (lost).
+    base = "From: monitor@corp\nTo: me@oneai.com\nMessage-ID: <const@appliance>"
+    event1 = _eml(
+        base + "\nSubject: ALERT 09:00\nDate: Mon, 02 Jun 2025 09:00:00 +0000", "Backup failed"
+    )
+    event2 = _eml(
+        base + "\nSubject: ALERT 10:00\nDate: Mon, 02 Jun 2025 10:00:00 +0000", "Backup failed"
+    )
+
+    assert parse_email(event1, MAILBOX).dedup_key != parse_email(event2, MAILBOX).dedup_key
+
+
+def test_parse_pathological_recursion_degrades_not_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Audit C01: a ~300-deep multipart raises RecursionError in the strict parse; parse_email MUST
+    # catch it and return a degraded parse_status='failed' stub (stored, never dropped), not raise.
+    import app.connectors.imap.parsing.email_parser as parser_mod
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(parser_mod, "_parse_email_strict", _boom)
+    raw = _eml("From: a@x\nTo: me@oneai.com\nMessage-ID: <deep@x>", "body")
+
+    parsed = parse_email(raw, MAILBOX)  # must not raise
+
+    assert parsed.parse_status == "failed"
+    assert parsed.dedup_key.startswith("sha256:")  # stable content key so the stub is idempotent
+    assert parsed.message_id is None and parsed.body_text == ""
+
+
+def test_parse_non_recursion_failure_propagates_for_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Only a DETERMINISTIC RecursionError degrades-and-stores; any OTHER (maybe transient) failure
+    # must PROPAGATE so the runner retries it next run — never frozen as a permanent empty stub.
+    import app.connectors.imap.parsing.email_parser as parser_mod
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise ValueError("a transient-ish parse blip")
+
+    monkeypatch.setattr(parser_mod, "_parse_email_strict", _boom)
+
+    with pytest.raises(ValueError):
+        parse_email(_eml("From: a@x\nMessage-ID: <x@x>", "b"), MAILBOX)
+
+
+def test_parse_genuinely_deep_multipart_never_raises() -> None:
+    # End-to-end on real bytes: a deeply nested multipart must not escape as an exception, whether
+    # it parses or degrades. Built deep enough to stress the parser; assert only that none flies.
+    payload = b"Content-Type: text/plain\r\n\r\nhi\r\n"
+    for index in range(400):
+        boundary = f"b{index}".encode()
+        payload = (
+            b'Content-Type: multipart/mixed; boundary="' + boundary + b'"\r\n\r\n'
+            b"--" + boundary + b"\r\n" + payload + b"\r\n--" + boundary + b"--\r\n"
+        )
+    raw = b"From: a@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <nested@x>\r\n" + payload
+
+    parsed = parse_email(raw, MAILBOX)  # never raises (parsed or degraded)
+
+    assert parsed.dedup_key.startswith("sha256:")

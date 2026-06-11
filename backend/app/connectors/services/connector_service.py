@@ -105,6 +105,23 @@ class ConnectorService:
         connection = await self.get_connection(org_id, connection_id)
         await self._connections.delete(connection)
 
+    async def disable_connection(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
+        """Disable a connection (reversible) — stops sync + revokes AI access (design §8).
+
+        Idempotent: re-disabling keeps the original disabled_at. Returns the updated row; raises
+        ConnectionNotFoundError (-> 404) when the connection isn't the caller's.
+        """
+        connection = await self.get_connection(org_id, connection_id)
+        if connection.disabled_at is None:
+            connection.disabled_at = datetime.now(UTC)
+        return connection
+
+    async def enable_connection(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
+        """Re-enable a disabled connection (clears disabled_at). 404 if it isn't the caller's."""
+        connection = await self.get_connection(org_id, connection_id)
+        connection.disabled_at = None
+        return connection
+
     async def test_connection(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
         """Verify a stored connection and persist the outcome (status/last_checked_at/last_error).
 

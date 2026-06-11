@@ -18,9 +18,10 @@ Key invariants:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 
 from app.connectors.base.connector import BaseConnector, ConnectionCheck
+from app.connectors.base.incremental_fetch import FetchBatch, FolderCursor
 from app.connectors.enums import ConnectorType
 from app.connectors.imap.client import (
     DefaultImapClient,
@@ -29,26 +30,45 @@ from app.connectors.imap.client import (
     ImapConnectionError,
 )
 from app.connectors.imap.config import ImapConnectionParams, imap_params_from_config
+from app.connectors.imap.sync.imap_fetcher import ImapIncrementalFetcher, SessionOpener
 
 
 class ImapConnector(BaseConnector):
-    """Verifies connectivity + authentication for one IMAP mailbox (point 1)."""
+    """IMAP mailbox connector — verifies a login (point 1) AND fetches incrementally (SyncRunner).
+
+    Implements SupportsIncrementalFetch (count_pending / fetch_incremental) so the runner can pull
+    mail via the Protocol + the registry, without importing this module.
+    """
 
     def __init__(
         self,
         params: ImapConnectionParams,
         secret: str,
         client: ImapClient | None = None,
+        session_opener: SessionOpener | None = None,
     ) -> None:
-        """Hold the connection params + decrypted secret; default to the real IMAP client."""
+        """Hold the params + decrypted secret; default to the real client + session opener."""
         self._params = params
         self._secret = secret
         self._client = client or DefaultImapClient()
+        self._session_opener = session_opener
 
     @property
     def connector_type(self) -> ConnectorType:
         """This connector handles IMAP mailboxes."""
         return ConnectorType.imap
+
+    def _fetcher(self) -> ImapIncrementalFetcher:
+        """Build a fresh incremental fetcher (each opens + closes its own IMAP session)."""
+        return ImapIncrementalFetcher(self._params, self._secret, self._session_opener)
+
+    async def count_pending(self, cursors: Mapping[str, FolderCursor]) -> int:
+        """SupportsIncrementalFetch: count NEW messages across folders since the cursors."""
+        return await self._fetcher().count_pending(cursors)
+
+    def fetch_incremental(self, cursors: Mapping[str, FolderCursor]) -> AsyncIterator[FetchBatch]:
+        """SupportsIncrementalFetch: stream byte-bounded batches of NEW mail since the cursors."""
+        return self._fetcher().fetch_incremental(cursors)
 
     async def verify_connection(self) -> ConnectionCheck:
         """Attempt a login round-trip; report the outcome without raising or leaking the secret."""

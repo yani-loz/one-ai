@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.connectors.base.incremental_fetch import SupportsIncrementalFetch
 from app.connectors.enums import ConnectorType
 from app.connectors.imap.client import ImapAuthError, ImapConnectionError
 from app.connectors.imap.config import ImapConnectionParams
@@ -67,3 +68,14 @@ def test_build_imap_connector_returns_an_imap_connector() -> None:
     )
 
     assert connector.connector_type is ConnectorType.imap
+
+
+def test_built_imap_connector_satisfies_the_incremental_fetch_protocol() -> None:
+    # The runner gates real syncs on isinstance(connector, SupportsIncrementalFetch): if this ever
+    # breaks, every production sync silently finalizes as "does not support sync". This guards the
+    # one wiring check the runner's fake-connector tests deliberately paper over.
+    connector = build_imap_connector(
+        {"host": "h", "port": 993, "use_ssl": True, "username": "u@x"}, "s"
+    )
+
+    assert isinstance(connector, SupportsIncrementalFetch)

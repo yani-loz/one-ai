@@ -7,8 +7,10 @@ Depends on: app.common.base_model (Base, UUIDPrimaryKeyMixin, TenantMixin, Times
 Key invariants:
   - TENANT-SCOPED (TenantMixin org_id NOT NULL + indexed): a connection always belongs to one
     org; the company side reads it org-scoped (a company_admin sees ONLY their org's
-    connections). RLS policy is DEFINED (migration 0007) but inert until the least-privilege DB
-    role lands — the active control is the app-layer org_id filter (see docs/FIX_BEFORE_PROD).
+    connections). RLS is ENFORCED (migration 0009): the tenant engine runs as a non-bypass role
+    against the org_isolation policy; the app-layer org_id filter is the second layer.
+  - `disabled_at` is the reversible admin disable (design §8): NULL = active; set = disabled
+    (sync stops; AI retrieval excludes it once that path enforces it). Orthogonal to `status`.
   - THE SECRET IS NEVER STORED IN PLAINTEXT: the credential lives only in `secret_ciphertext`
     (AES-256-GCM, see security.credential_cipher); `secret_key_version` records which app key
     encrypted it (for later rotation). `config` (JSONB) holds ONLY non-secret params
@@ -22,8 +24,17 @@ Key invariants:
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, SmallInteger, String, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Integer,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +53,10 @@ class ConnectorConnection(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin
         CheckConstraint(
             "status IN ('configured', 'connected', 'error')",
             name="ck_connector_connection_status",
+        ),
+        CheckConstraint(
+            "sync_status IN ('idle', 'running', 'error')",
+            name="ck_connector_connection_sync_status",
         ),
         UniqueConstraint(
             "org_id", "connector_type", "username", name="uq_connector_connection_identity"
@@ -69,3 +84,19 @@ class ConnectorConnection(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Sanitized failure message from the last verification — never a secret or raw vendor error.
     last_error: Mapped[str | None] = mapped_column(String(500))
+    # Reversible admin disable (NULL = active). Orthogonal to `status` (health): a disabled
+    # connection keeps its last verification state, and enable just clears this back to NULL.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── SyncRunner state — the single-runner CLAIM + heartbeat + progress on the row the UI loads.
+    # sync_status (idle|running|error) is orthogonal to `status` (health) and `disabled_at`.
+    # sync_run_id is the FENCING TOKEN: every heartbeat/progress/finalize UPDATE the runner issues
+    # is conditional on it, so a reclaimed (stale) run's late writes hit 0 rows and abort.
+    sync_status: Mapped[str] = mapped_column(String(10), nullable=False, server_default="idle")
+    sync_run_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True))
+    sync_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    synced_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_count: Mapped[int | None] = mapped_column(Integer)
+    last_sync_error: Mapped[str | None] = mapped_column(String(500))

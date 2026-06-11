@@ -26,8 +26,12 @@ from app.connectors.base.registry import ConnectorRegistry, build_default_regist
 from app.connectors.repositories.connector_connection_repository import (
     ConnectorConnectionRepository,
 )
+from app.connectors.repositories.connector_sync_run_repository import ConnectorSyncRunRepository
 from app.connectors.security.credential_cipher import CredentialCipher
 from app.connectors.services.connector_service import ConnectorService
+from app.connectors.sync.connector_sync_runner import ConnectorSyncRunner
+from app.connectors.sync.sync_service import SyncService
+from app.connectors.sync.sync_task_registry import SyncTaskSpawner, spawn_sync_task
 from app.core.config import get_settings
 from app.identity.dependencies import get_tenant_session
 
@@ -57,4 +61,36 @@ def get_connector_service(
         connections=ConnectorConnectionRepository(session),
         cipher=cipher,
         registry=registry,
+    )
+
+
+def get_sync_task_spawner() -> SyncTaskSpawner:
+    """Provide the background-task spawner (a separate provider so tests override it to capture)."""
+    return spawn_sync_task
+
+
+def get_sync_service(
+    session: AsyncSession = Depends(get_tenant_session),
+    registry: ConnectorRegistry = Depends(get_connector_registry),
+    spawn: SyncTaskSpawner = Depends(get_sync_task_spawner),
+) -> SyncService:
+    """Provide SyncService on the caller's TENANT-scoped session.
+
+    The runner it spawns opens its OWN tenant session (it outlives this request), so it carries
+    only the process-wide registry + the (stateless) cipher — never this request's session. The
+    cipher is built here and fails closed (503) on a weak key in any non-dev env, like the
+    connector service. get_sync_task_spawner is a separate provider so a test can swap the spawn
+    for a capture (no real background task) the same way it swaps the registry.
+    """
+    settings = get_settings()
+    cipher = CredentialCipher(
+        settings.connector_secret_key, require_secure=settings.requires_secure_secrets
+    )
+    runner = ConnectorSyncRunner(cipher, registry)
+    return SyncService(
+        session=session,
+        connections=ConnectorConnectionRepository(session),
+        runs=ConnectorSyncRunRepository(session),
+        runner=runner,
+        spawn=spawn,
     )

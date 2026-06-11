@@ -49,6 +49,18 @@ class DuplicateConnectionError(ConnectorError):
     """A connection for this (org, connector_type, username) already exists (-> 409)."""
 
 
+class SyncAlreadyRunningError(ConnectorError):
+    """A sync is already running for this connection and its claim is still fresh (-> 409).
+
+    The single-runner claim (claim_for_sync) failed because a live run holds it; a crashed run
+    whose heartbeat went stale would have been reclaimable, so this means a genuinely active sync.
+    """
+
+
+class ConnectorDisabledError(ConnectorError):
+    """The connection is disabled (admin paused it) and cannot be synced until enabled (-> 409)."""
+
+
 # — Internal (not HTTP-mapped) —
 class ConnectorSecretError(ConnectorError):
     """A stored credential could not be decrypted (corrupt blob or wrong/rotated key).

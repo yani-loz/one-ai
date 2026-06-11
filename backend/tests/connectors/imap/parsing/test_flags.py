@@ -11,6 +11,7 @@ import pytest
 
 from app.connectors.imap.parsing.flags import (
     derive_direction,
+    is_automated_origin,
     is_automated_sender,
     is_reply_email,
 )
@@ -75,3 +76,19 @@ def test_is_automated_sender_bulk_precedence() -> None:
 def test_is_automated_sender_list_headers() -> None:
     assert is_automated_sender("a@x.com", {"List-Unsubscribe": "<mailto:u@x>"}) is True
     assert is_automated_sender("a@x.com", {"List-Id": "news.x.com"}) is True
+
+
+def test_is_automated_origin_fires_on_sender_identity_only() -> None:
+    # Person-hood gate (DQ-C01): an automation local-part or Auto-Submitted: auto-* IS automated.
+    assert is_automated_origin("noreply@x.com", {}) is True
+    assert is_automated_origin("a@x.com", {"Auto-Submitted": "auto-generated"}) is True
+    assert is_automated_origin("a@x.com", {"Auto-Submitted": "no"}) is False
+    assert is_automated_origin("boyan@acme.com", {}) is False
+
+
+def test_is_automated_origin_ignores_list_routing_so_human_on_list_stays_a_person() -> None:
+    # The fix: List-*/Precedence tag a HUMAN's mail traveling through a mailing list — those must
+    # NOT suppress the sender's person-hood (is_automated_sender True here; origin does NOT).
+    list_headers = {"List-Id": "team.acme.com", "Precedence": "list"}
+    assert is_automated_sender("boyan@acme.com", list_headers) is True  # message IS list/bulk
+    assert is_automated_origin("boyan@acme.com", list_headers) is False  # sender is human

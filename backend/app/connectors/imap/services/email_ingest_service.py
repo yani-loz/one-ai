@@ -83,8 +83,16 @@ class EmailIngestService:
 
         from_person_id = None
         if parsed.from_address:
+            # DQ-C01: an automated SENDER IDENTITY (noreply@/auto-generated) is not a person — its
+            # domain is still observed as a company, but from_person_id stays NULL. Gated on
+            # is_automated_origin, NOT is_automated: a real human emailing a mailing list still
+            # becomes a person (their mail carries List-*, but the sender is human).
             from_person_id = await self._resolver.resolve_participant(
-                org_id, parsed.from_address, parsed.from_name, parsed.received_at
+                org_id,
+                parsed.from_address,
+                parsed.from_name,
+                parsed.received_at,
+                allow_person=not parsed.is_automated_origin,
             )
 
         message = await self._emails.insert(
@@ -128,11 +136,19 @@ class EmailIngestService:
             parse_status=parsed.parse_status,
         )
 
+    # reply_to / sender are routing headers, not real recipients — they must not mint people
+    # (audit DQ-C02). Their domain is still observed as a company; only person-hood is suppressed.
+    _NON_PERSON_RECIPIENT_KINDS = frozenset({"reply_to", "sender"})
+
     async def _store_recipients(self, org_id: UUID, email_id: UUID, parsed: ParsedEmail) -> None:
-        """Insert each recipient, resolving its address to a person (None for role/invalid)."""
+        """Insert each recipient, resolving real recipients to a person (None for role/routing)."""
         for recipient in parsed.recipients:
             person_id = await self._resolver.resolve_participant(
-                org_id, recipient.address, recipient.name, parsed.received_at
+                org_id,
+                recipient.address,
+                recipient.name,
+                parsed.received_at,
+                allow_person=recipient.kind not in self._NON_PERSON_RECIPIENT_KINDS,
             )
             await self._emails.add_recipient(
                 EmailRecipient(

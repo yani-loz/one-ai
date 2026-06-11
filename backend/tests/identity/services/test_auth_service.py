@@ -151,17 +151,19 @@ async def test_login_unknown_email_still_runs_bcrypt_against_dummy_hash(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Constant-time guard: an unknown email must still pay the bcrypt cost (against the
-    # dummy hash) so it is indistinguishable from a real login by response time.
+    # dummy hash) so it is indistinguishable from a real login by response time. Spying
+    # on verify_password_async also PINS the call site to the off-loop helper — the sync
+    # form would block the event loop for every tenant (~300ms of bcrypt CPU).
     import app.identity.services.auth_service as auth_module
 
     verified_hashes: list[str] = []
-    real_verify = auth_module.verify_password
+    real_verify_async = auth_module.verify_password_async
 
-    def _spy(raw_password: str, password_hash: str) -> bool:
+    async def _spy(raw_password: str, password_hash: str) -> bool:
         verified_hashes.append(password_hash)
-        return real_verify(raw_password, password_hash)
+        return await real_verify_async(raw_password, password_hash)
 
-    monkeypatch.setattr(auth_module, "verify_password", _spy)
+    monkeypatch.setattr(auth_module, "verify_password_async", _spy)
     service = _auth_service(db_session)
 
     with pytest.raises(InvalidCredentialsError):

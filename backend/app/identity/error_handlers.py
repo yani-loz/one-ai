@@ -22,6 +22,7 @@ from app.identity.exceptions import (
     DuplicateOrganizationError,
     DuplicateUserError,
     ErasureConfirmationError,
+    ErasureNotConfiguredError,
     IdentityError,
     InvalidCredentialsError,
     InvalidGrantTransitionError,
@@ -56,6 +57,8 @@ _STATUS_BY_EXCEPTION: dict[type[IdentityError], int] = {
     LastAdminError: status.HTTP_409_CONFLICT,
     InvalidGrantTransitionError: status.HTTP_409_CONFLICT,
     LegalHoldError: status.HTTP_409_CONFLICT,
+    # A wiring error (no erasure hooks registered), not a client error — fail closed loudly.
+    ErasureNotConfiguredError: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 
 

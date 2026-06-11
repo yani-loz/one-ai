@@ -12,8 +12,14 @@
  *   - 409 = this org already connected this mailbox; 401/403 → onSessionExpired (parent logs out);
  *     503 = server connector key mis-set. The password is write-only and never echoed back.
  *   - Host/port auto-fill from the email's domain UNTIL the user edits the server fields by hand.
+ *   - While a submit is in flight EVERY close path (backdrop, ✕, Escape) is inert and the ✕ is
+ *     visually disabled — closing mid-flight would hide a connection that was created server-side
+ *     (a re-submit then 409s). If the parent force-closes mid-flight anyway, a late resolution is
+ *     dropped (no ghost result panel) but `onConnected` still fires whenever the create reached
+ *     the server, so the list shows the connection. Closing after a created-but-test-failed
+ *     submit also fires `onConnected` for the same reason.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { AuthRequestError } from "../identity";
@@ -85,7 +91,25 @@ export function AddMailboxDrawer({
   const reduceMotion = useReducedMotion();
   const containerRef = useDialogA11y<HTMLElement>(open, handleClose);
 
+  // Bumped whenever the drawer's content is reset or force-closed; an in-flight submit captures
+  // the value at start and drops its (now stale) resolution if it no longer matches.
+  const submitEpochRef = useRef(0);
+  // True once createConnection succeeded in the CURRENT drawer session — closing the error form
+  // after a created-but-failed-test submit must still fire onConnected (the mailbox exists).
+  const connectionCreatedRef = useRef(false);
+
+  useEffect(() => {
+    if (open) return;
+    // The parent closed the drawer without handleClose (e.g. logging out). Invalidate any
+    // in-flight submit so its late resolution cannot ghost the result panel on reopen.
+    submitEpochRef.current += 1;
+    connectionCreatedRef.current = false;
+    setSubmitting(false);
+  }, [open]);
+
   function resetForm(): void {
+    submitEpochRef.current += 1; // invalidate any in-flight submit
+    connectionCreatedRef.current = false;
     setEmail("");
     setDisplayName("");
     setPassword("");
@@ -100,7 +124,11 @@ export function AddMailboxDrawer({
   }
 
   function handleClose(): void {
-    const created = result !== null;
+    // Mid-submit the outcome is unknown — block every close path (backdrop, ✕ and Escape all
+    // route here) so a connection created server-side can't be silently hidden (re-submit 409s).
+    if (submitting) return;
+    // A created-but-test-failed connection also exists server-side — refresh the list for it too.
+    const created = result !== null || connectionCreatedRef.current;
     resetForm();
     if (created) onConnected();
     onClose();
@@ -119,9 +147,11 @@ export function AddMailboxDrawer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    const epoch = submitEpochRef.current;
     setSubmitting(true);
     setErrorMessage(null);
     const username = email.trim().toLowerCase();
+    let createdServerSide = false;
     try {
       const created = await createConnection({
         connector_type: "imap",
@@ -132,9 +162,27 @@ export function AddMailboxDrawer({
         username,
         password,
       });
+      createdServerSide = true;
+      if (epoch !== submitEpochRef.current) {
+        // Force-closed mid-flight. The connection exists server-side — refresh the list so it is
+        // visible (a re-submit would 409), but never resurrect the result panel.
+        onConnected();
+        return;
+      }
+      connectionCreatedRef.current = true;
       // Live-test right after save so the result panel shows the real verification outcome.
-      setResult(await testConnection(created.id));
+      const tested = await testConnection(created.id);
+      if (epoch !== submitEpochRef.current) {
+        onConnected();
+        return;
+      }
+      setResult(tested);
     } catch (error) {
+      if (epoch !== submitEpochRef.current) {
+        // Stale failure — the form is gone. Still refresh if the create itself reached the server.
+        if (createdServerSide) onConnected();
+        return;
+      }
       if (error instanceof AuthRequestError && (error.status === 401 || error.status === 403)) {
         onSessionExpired();
         return;
@@ -142,7 +190,7 @@ export function AddMailboxDrawer({
       const status = error instanceof AuthRequestError ? error.status : 0;
       setErrorMessage(messageFor(status));
     } finally {
-      setSubmitting(false);
+      if (epoch === submitEpochRef.current) setSubmitting(false);
     }
   }
 
@@ -180,8 +228,9 @@ export function AddMailboxDrawer({
               <button
                 type="button"
                 onClick={handleClose}
+                disabled={submitting}
                 aria-label="Close"
-                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red"
+                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-muted"
               >
                 ✕
               </button>
@@ -339,6 +388,14 @@ function ConnectResult({
   onDone: () => void;
 }): React.JSX.Element {
   const connected = connection.status === "connected";
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    // The drawer swaps the form out for this panel while staying open, so the shared focus trap
+    // (keyed on `open`) does not re-fire and focus falls to <body> when the submit button
+    // unmounts. Pull it to the status line so Escape/Tab keep working inside the dialog and a
+    // screen reader announces the outcome (same pattern as admin/CreateUserSuccess.tsx).
+    statusRef.current?.focus();
+  }, []);
   return (
     <div className="animate-fade-in space-y-4">
       <div
@@ -348,7 +405,11 @@ function ConnectResult({
             : "border-brand-red/30 bg-brand-red/10"
         }`}
       >
-        <p className={`font-semibold ${connected ? "text-brand-teal" : "text-brand-red"}`}>
+        <p
+          ref={statusRef}
+          tabIndex={-1}
+          className={`font-semibold outline-none ${connected ? "text-brand-teal" : "text-brand-red"}`}
+        >
           {connected ? "✓ Connected" : "Sign-in failed"}
         </p>
         <p className="mt-1 text-sm text-text-secondary">

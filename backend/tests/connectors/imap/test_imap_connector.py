@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.connectors.base.incremental_fetch import SupportsIncrementalFetch
 from app.connectors.enums import ConnectorType
-from app.connectors.imap.client import ImapAuthError, ImapConnectionError
+from app.connectors.imap.client import ImapAuthError, ImapConnectionError, ImapTlsUnavailableError
 from app.connectors.imap.config import ImapConnectionParams
 from app.connectors.imap.connector import ImapConnector, build_imap_connector
 
@@ -46,6 +46,16 @@ async def test_verify_connection_connection_error_returns_not_ok() -> None:
 
     assert check.ok is False
     assert "reach" in check.message
+
+
+async def test_verify_connection_tls_unavailable_returns_not_ok() -> None:
+    # ImapTlsUnavailableError subclasses ImapConnectionError, so a refused-cleartext verify maps
+    # to a failed check on the credential-test endpoint — never an unhandled 500.
+    connector = ImapConnector(_PARAMS, "pw", client=_FakeClient(ImapTlsUnavailableError("x")))
+
+    check = await connector.verify_connection()
+
+    assert check.ok is False
 
 
 async def test_verify_connection_message_never_contains_the_secret() -> None:

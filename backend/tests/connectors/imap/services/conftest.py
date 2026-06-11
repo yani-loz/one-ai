@@ -26,6 +26,7 @@ from app.connectors.models.connector_connection import ConnectorConnection
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person, PersonAlias, PersonEmail
+from tests.conftest import register_org
 
 # Parents before children (create order); TRUNCATE ... CASCADE handles FK order on teardown.
 _INGEST_TABLES = [
@@ -87,7 +88,11 @@ async def db_session(ingest_schema: None) -> AsyncIterator[AsyncSession]:
 async def seed_connection(
     session: AsyncSession, org_id: UUID, mailbox: str = "owner@acme.com"
 ) -> ConnectorConnection:
-    """Insert a minimal connector_connection (opaque ciphertext) so emails can FK it."""
+    """Insert a minimal connector_connection (opaque ciphertext) so emails can FK it.
+
+    Registers the org row first (idempotent) — 0014's org-root FK rejects phantom tenants.
+    """
+    await register_org(session, org_id)
     connection = ConnectorConnection(
         org_id=org_id,
         connector_type="imap",

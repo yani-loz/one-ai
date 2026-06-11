@@ -1,11 +1,13 @@
 """
 Role: Tests for SyncService — the trigger/observe orchestration: start_sync CLAIMS + opens the
-      ledger + commits + spawns (the claim is committed before the spawn), rejects a disabled or
-      already-running connection, and — the NON-NEGOTIABLE — neither start_sync nor get_sync_status
-      ever acts on another org's connection (cross-org → 404).
+      ledger + audits + commits + spawns (the claim is committed before the spawn), rejects a
+      disabled or already-running connection, records sync.started with the triggering actor
+      (or 'system' when none — report H-5), and — the NON-NEGOTIABLE — neither start_sync nor
+      get_sync_status ever acts on another org's connection (cross-org → 404).
 Used by: pytest (tests/connectors/sync). Real DB via the sync conftest (3-table schema).
-Depends on: SyncService + the connection/run repositories + the sync conftest. The spawn seam is
-            faked so the background runner never actually runs in a service unit test.
+Depends on: SyncService + the connection/run repositories + the sync conftest + the identity
+            audit model/repo/service + Principal. The spawn seam is faked so the background
+            runner never actually runs in a service unit test.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Coroutine
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -33,6 +35,10 @@ from app.connectors.repositories.connector_sync_run_repository import ConnectorS
 from app.connectors.security.credential_cipher import CredentialCipher
 from app.connectors.sync.connector_sync_runner import ConnectorSyncRunner
 from app.connectors.sync.sync_service import SyncService
+from app.identity.models.audit_log import AuditLog
+from app.identity.principal import Principal
+from app.identity.repositories.audit_repository import AuditRepository
+from app.identity.services.audit_service import AuditService
 from tests.connectors.sync.conftest import seed_connection
 
 
@@ -57,8 +63,26 @@ def _service(session: AsyncSession, spawn: _CapturingSpawn) -> SyncService:
         connections=ConnectorConnectionRepository(session),
         runs=ConnectorSyncRunRepository(session),
         runner=runner,
+        audit=AuditService(AuditRepository(session)),
         spawn=spawn,
     )
+
+
+def _actor(org_id: UUID) -> Principal:
+    """The company_admin triggering the sync (subject_id lands on the sync.started row)."""
+    return Principal(
+        subject_id=uuid4(), org_id=org_id, role="company_admin", subject_type="user"
+    )
+
+
+async def _audit_rows(session: AsyncSession, org_id: UUID, action: str) -> list[AuditLog]:
+    """Read back one org's audit rows for `action` (org-scoped: the shared table accumulates)."""
+    result = await session.execute(
+        select(AuditLog)
+        .where(AuditLog.org_id == org_id, AuditLog.action == action)
+        .order_by(AuditLog.occurred_at.desc(), AuditLog.id.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def test_start_sync_claims_opens_ledger_and_spawns(db_session: AsyncSession) -> None:
@@ -115,6 +139,53 @@ async def test_start_sync_cross_tenant_returns_not_found(db_session: AsyncSessio
         await _service(db_session, spawn).start_sync(org_b, connection.id)
 
     assert spawn.labels == []
+
+
+async def test_start_sync_writes_sync_started_audit_row_with_actor(
+    db_session: AsyncSession,
+) -> None:
+    # H-5: a claimed run is never unlogged — sync.started rides the claim commit, carrying the
+    # triggering principal and the run id (ids only — content-blind by construction).
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    actor = _actor(org)
+
+    result = await _service(db_session, _CapturingSpawn()).start_sync(
+        org, connection.id, actor=actor
+    )
+
+    rows = await _audit_rows(db_session, org, "sync.started")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.actor_type == "user"
+    assert row.actor_id == actor.subject_id
+    assert row.entity_type == "connector_connection"
+    assert row.entity_id == connection.id
+    assert row.details == {"run_id": str(result.sync_run_id)}
+
+
+async def test_start_sync_without_actor_records_system_actor(db_session: AsyncSession) -> None:
+    # A scheduled/background trigger has no principal — the row must still land, as 'system'.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+
+    await _service(db_session, _CapturingSpawn()).start_sync(org, connection.id)
+
+    rows = await _audit_rows(db_session, org, "sync.started")
+    assert len(rows) == 1
+    assert rows[0].actor_type == "system"
+    assert rows[0].actor_id is None
+
+
+async def test_start_sync_rejected_disabled_writes_no_audit_row(db_session: AsyncSession) -> None:
+    # A rejected trigger is not a started sync — no phantom sync.started row may appear.
+    org = uuid4()
+    connection = await seed_connection(db_session, org, disabled=True)
+
+    with pytest.raises(ConnectorDisabledError):
+        await _service(db_session, _CapturingSpawn()).start_sync(org, connection.id, _actor(org))
+
+    assert await _audit_rows(db_session, org, "sync.started") == []
 
 
 async def test_get_sync_status_returns_the_progress_row(db_session: AsyncSession) -> None:

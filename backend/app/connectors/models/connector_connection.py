@@ -17,6 +17,9 @@ Key invariants:
     (host/port/use_ssl) — never the password. `last_error` holds only sanitized messages.
   - `connector_type`, `auth_method`, and `status` are pinned by DB CHECKs to the enum values
     (app.connectors.enums); a (org_id, connector_type, username) is unique per org.
+  - 0014 guards: org_id FKs organizations(id) (no phantom tenants), and UNIQUE (org_id, id)
+    anchors the composite child FKs (email_message / sync run / sync cursor reference
+    (org_id, connection_id) so a child's org_id can never diverge from its connection's).
   - created_at IS the configured-at time; status starts 'configured' and moves to
     'connected'/'error' on each verification (last_checked_at / last_error updated with it).
 """
@@ -29,6 +32,7 @@ from uuid import UUID
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKeyConstraint,
     Integer,
     SmallInteger,
     String,
@@ -60,6 +64,11 @@ class ConnectorConnection(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin
         ),
         UniqueConstraint(
             "org_id", "connector_type", "username", name="uq_connector_connection_identity"
+        ),
+        # 0014 composite-FK anchor: children FK (org_id, id) so their org_id can never diverge.
+        UniqueConstraint("org_id", "id", name="uq_connector_connection_org_row"),
+        ForeignKeyConstraint(
+            ["org_id"], ["organizations.id"], name="fk_connector_connection_org_id"
         ),
     )
 

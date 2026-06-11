@@ -17,8 +17,13 @@
  *     copy and share). `onCreated` fires when that panel is dismissed, so the list refreshes
  *     after the admin has the credentials — admin-set passwords are an MVP shortcut tracked in
  *     FIX_BEFORE_PROD (a real invite / first-login reset replaces this).
+ *   - While a submit is in flight EVERY close path (backdrop, ✕, Escape) is inert and the ✕ is
+ *     visually disabled — closing mid-flight would wipe the password state and ghost a blank
+ *     hand-off. If the parent force-closes the drawer mid-flight anyway, the late resolution is
+ *     dropped (no ghost panel); a late SUCCESS still fires `onCreated` so the list shows the
+ *     user that now exists server-side.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { AuthRequestError } from "../identity";
@@ -93,7 +98,20 @@ export function CreateUserDrawer({
   // handleClose is a hoisted function declaration below, so the hook can reference it here.
   const containerRef = useDialogA11y<HTMLElement>(open, handleClose);
 
+  // Bumped whenever the drawer's content is reset or force-closed; an in-flight submit captures
+  // the value at start and drops its (now stale) resolution if it no longer matches.
+  const submitEpochRef = useRef(0);
+
+  useEffect(() => {
+    if (open) return;
+    // The parent closed the drawer without handleClose (e.g. logging out). Invalidate any
+    // in-flight submit so its late resolution cannot ghost the hand-off panel on reopen.
+    submitEpochRef.current += 1;
+    setSubmitting(false);
+  }, [open]);
+
   function resetForm(): void {
+    submitEpochRef.current += 1; // invalidate any in-flight submit
     setEmail("");
     setFullName("");
     setRole("member");
@@ -105,6 +123,9 @@ export function CreateUserDrawer({
   }
 
   function handleClose(): void {
+    // Mid-submit the outcome is unknown — block every close path (backdrop, ✕ and Escape all
+    // route here) so the one-time password can't be wiped while the create may still succeed.
+    if (submitting) return;
     // Closing AFTER a successful create still refreshes the list (a user was created), even if
     // the admin dismisses via backdrop / X rather than the hand-off panel's "Done".
     const created = result !== null;
@@ -115,6 +136,7 @@ export function CreateUserDrawer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    const epoch = submitEpochRef.current;
     setSubmitting(true);
     setErrorMessage(null);
     try {
@@ -124,8 +146,15 @@ export function CreateUserDrawer({
         role,
         password,
       });
+      if (epoch !== submitEpochRef.current) {
+        // The parent force-closed the drawer mid-flight. The user exists server-side, so refresh
+        // the list — but never resurrect the hand-off panel (its password state is gone).
+        onCreated();
+        return;
+      }
       setResult(created); // swap to the credential hand-off; password stays for the copy field
     } catch (error) {
+      if (epoch !== submitEpochRef.current) return; // stale failure — the form is gone
       // A lapsed session (401) or a role downgraded mid-session (403) → let the parent log
       // out and the guard redirect (a company_admin never legitimately gets 403 here).
       if (error instanceof AuthRequestError && (error.status === 401 || error.status === 403)) {
@@ -141,7 +170,7 @@ export function CreateUserDrawer({
           : "Couldn't create the user — check the details, and that the API is running.",
       );
     } finally {
-      setSubmitting(false);
+      if (epoch === submitEpochRef.current) setSubmitting(false);
     }
   }
 
@@ -177,8 +206,9 @@ export function CreateUserDrawer({
               <button
                 type="button"
                 onClick={handleClose}
+                disabled={submitting}
                 aria-label="Close"
-                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red"
+                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-muted"
               >
                 ✕
               </button>

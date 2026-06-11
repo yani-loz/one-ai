@@ -11,7 +11,9 @@ Depends on: app.core.config (settings), app.core.database (GlobalSessionLocal,
 Key invariants:
   - DEV ONLY. These accounts are public backdoors (listed in docs/FIX_BEFORE_PROD.md)
     and MUST be removed before any production deploy — see that checklist. The script
-    refuses to run when app_env == 'production'.
+    refuses to run in ANY environment that requires secure secrets (everything except
+    app_env 'local' | 'test' — the same predicate as the config boot guard), so
+    staging or a typo'd app_env cannot be seeded with VCS-published credentials.
   - Idempotent: each entity is checked independently (org by slug, users + platform
     admin by email) and SKIPPED if it already exists. A partial prior run still
     completes on re-run, and adding a new company here only seeds the new rows.
@@ -107,17 +109,20 @@ def _demo_companies() -> tuple[_DemoCompany, ...]:
     )
 
 
-def _refuse_in_production() -> None:
-    """Abort if running in a production environment — these are public backdoor creds.
+def _refuse_in_secure_env() -> None:
+    """Abort in any environment that requires secure secrets — these are public backdoor creds.
 
-    The demo accounts are listed in docs/FIX_BEFORE_PROD.md and must never reach a
-    real tenant; this is a hard guard, not a warning.
+    Gates on the SAME predicate as the config secret guard (Settings.requires_secure_secrets):
+    only app_env 'local' | 'test' may seed. Staging, production, AND any unrecognized/typo'd
+    app_env all refuse, fail-closed — the demo accounts are listed in docs/FIX_BEFORE_PROD.md
+    and must never reach a real tenant; this is a hard guard, not a warning.
     """
-    if get_settings().is_production:
+    settings = get_settings()
+    if settings.requires_secure_secrets:
         raise SystemExit(
-            "Refusing to seed demo identity data: app_env is 'production'. "
-            "These DEV-ONLY accounts must never be created in production "
-            "(see docs/FIX_BEFORE_PROD.md)."
+            f"Refusing to seed demo identity data: app_env={settings.app_env!r} requires "
+            "secure secrets. These DEV-ONLY accounts may only be created when app_env is "
+            "'local' or 'test' (see docs/FIX_BEFORE_PROD.md)."
         )
 
 
@@ -189,7 +194,7 @@ async def seed_identity() -> None:
     so a partial prior run is completed on the next invocation. Prints a summary of
     emails + roles only — never raw passwords or hashes.
     """
-    _refuse_in_production()
+    _refuse_in_secure_env()
     companies = _demo_companies()
 
     print("Seeding DEV-ONLY demo identity data (see docs/FIX_BEFORE_PROD.md):")

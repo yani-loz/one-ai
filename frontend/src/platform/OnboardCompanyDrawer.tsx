@@ -11,8 +11,13 @@
  *   - A 409 (duplicate slug / admin email) maps to a specific message; any other failure
  *     maps to a generic connectivity message (never a misleading "already exists").
  *   - Closing after a successful onboard still refreshes the list (a company was created).
+ *   - While a submit is in flight EVERY close path (backdrop, ✕, Escape) is inert and the ✕
+ *     is visually disabled — closing mid-flight would wipe the password state and ghost a
+ *     blank hand-off. If the parent force-closes the drawer mid-flight anyway, the late
+ *     resolution is dropped (no ghost panel); a late SUCCESS still fires `onOnboarded` so
+ *     the list shows the company that now exists server-side.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { AuthRequestError } from "../identity";
@@ -90,7 +95,20 @@ export function OnboardCompanyDrawer({
   // handleClose is a hoisted function declaration below, so the hook can reference it here.
   const containerRef = useDialogA11y<HTMLElement>(open, handleClose);
 
+  // Bumped whenever the drawer's content is reset or force-closed; an in-flight submit captures
+  // the value at start and drops its (now stale) resolution if it no longer matches.
+  const submitEpochRef = useRef(0);
+
+  useEffect(() => {
+    if (open) return;
+    // The parent closed the drawer without handleClose (e.g. logging out). Invalidate any
+    // in-flight submit so its late resolution cannot ghost the hand-off panel on reopen.
+    submitEpochRef.current += 1;
+    setSubmitting(false);
+  }, [open]);
+
   function resetForm(): void {
+    submitEpochRef.current += 1; // invalidate any in-flight submit
     setOrgName("");
     setOrgSlug("");
     setSlugEdited(false);
@@ -108,6 +126,9 @@ export function OnboardCompanyDrawer({
   }
 
   function handleClose(): void {
+    // Mid-submit the outcome is unknown — block every close path (backdrop, ✕ and Escape all
+    // route here) so the one-time password can't be wiped while the onboard may still succeed.
+    if (submitting) return;
     const wasOnboarded = result !== null;
     resetForm();
     if (wasOnboarded) onOnboarded();
@@ -116,6 +137,7 @@ export function OnboardCompanyDrawer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    const epoch = submitEpochRef.current;
     setSubmitting(true);
     setErrorMessage(null);
     try {
@@ -126,8 +148,15 @@ export function OnboardCompanyDrawer({
         admin_email: adminEmail.trim().toLowerCase(),
         admin_password: adminPassword,
       });
+      if (epoch !== submitEpochRef.current) {
+        // The parent force-closed the drawer mid-flight. The company exists server-side, so
+        // refresh the list — but never resurrect the hand-off panel (its password state is gone).
+        onOnboarded();
+        return;
+      }
       setResult(onboarded);
     } catch (error) {
+      if (epoch !== submitEpochRef.current) return; // stale failure — the form is gone
       // A lapsed platform session (401) is handled like the list does — log out and let
       // the route guard redirect, rather than showing a misleading connectivity message.
       if (error instanceof AuthRequestError && error.status === 401) {
@@ -141,7 +170,7 @@ export function OnboardCompanyDrawer({
           : "Couldn't complete onboarding — check the details, and that the API is running.",
       );
     } finally {
-      setSubmitting(false);
+      if (epoch === submitEpochRef.current) setSubmitting(false);
     }
   }
 
@@ -178,8 +207,9 @@ export function OnboardCompanyDrawer({
               <button
                 type="button"
                 onClick={handleClose}
+                disabled={submitting}
                 aria-label="Close"
-                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red"
+                className="rounded-lg px-2 py-1 text-text-muted transition-colors duration-200 hover:text-brand-red disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-muted"
               >
                 ✕
               </button>

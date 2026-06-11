@@ -20,6 +20,9 @@
  *     other out (TC-FE-009). Platform refresh is in-memory (single-tab) and needs no lock.
  *   - `authorizedFetch` retries a 401 at most ONCE, and never tries to refresh the
  *     /auth/refresh or /auth/login calls themselves (no infinite loop).
+ *   - Every authorized request is TIME-BOUNDED (30s AbortSignal.timeout unless the caller
+ *     passes its own signal): drawers block closing mid-submit, so an unsettled fetch on a
+ *     blackholed network must never wedge the UI until the browser's own timeout.
  *   - A failed refresh clears the session — compare-and-clear: UNLESS another tab already
  *     rotated the token — so callers fall back to /login.
  */
@@ -298,6 +301,12 @@ export async function authorizedFetch(url: string, init: RequestInit = {}): Prom
   return sendWithBearer(url, init, refreshedAccessToken);
 }
 
+// Bounded request time for every authorized call: drawers block closing while a submit is
+// in flight, so an unsettled fetch on a blackholed network would leave them undismissable
+// until the browser's own (minutes-long) network timeout. 30s covers the 15s server-side
+// IMAP verify with headroom; a caller-supplied init.signal always wins.
+const REQUEST_TIMEOUT_MS = 30_000;
+
 async function sendWithBearer(
   url: string,
   init: RequestInit,
@@ -308,5 +317,6 @@ async function sendWithBearer(
   if (bearer !== null && bearer !== undefined) {
     headers.set("Authorization", `Bearer ${bearer}`);
   }
-  return fetch(url, { ...init, headers });
+  const signal = init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  return fetch(url, { ...init, headers, signal });
 }

@@ -6,7 +6,8 @@ Used by: routes.connector_routes (POST/GET /connectors/{id}/sync); built in conn
          on the caller's TENANT-scoped session.
 Depends on: ConnectorConnectionRepository (claim + status), ConnectorSyncRunRepository (ledger),
             ConnectorSyncRunner (the background task), sync_task_registry.spawn_sync_task, the
-            connector exceptions.
+            connector exceptions, identity.services.audit_service (AuditService — sync.started)
+            + identity.Principal/AuditActorType.
 Key invariants:
   - CROSS-TENANT ISOLATION: every method takes org_id (from the verified JWT) and loads via
     get_in_org(id, org_id); another org's connection resolves to ConnectionNotFoundError (-> 404),
@@ -18,6 +19,11 @@ Key invariants:
   - SINGLE RUNNER: claim_for_sync is the atomic gate (a fresh live run -> SyncAlreadyRunningError);
     a disabled connection is rejected up front (ConnectorDisabledError) for a clear message rather
     than relying on the claim's disabled-guard returning a generic conflict.
+  - AUDITED START (report H-5): a successful claim records a `sync.started` audit row on the SAME
+    session, INSIDE the claim commit — the claim can never succeed unlogged. The actor is the
+    triggering Principal when available (the route), else actor_type='system' (a future scheduled
+    sync). Content-blind: connection/run ids only — never the credential or mail content. The
+    matching `sync.finished` row is the runner's (it owns finalize).
 """
 
 from __future__ import annotations
@@ -38,6 +44,11 @@ from app.connectors.repositories.connector_connection_repository import (
 from app.connectors.repositories.connector_sync_run_repository import ConnectorSyncRunRepository
 from app.connectors.sync.connector_sync_runner import STALE_SECONDS, ConnectorSyncRunner
 from app.connectors.sync.sync_task_registry import SyncTaskSpawner, spawn_sync_task
+from app.identity.enums import AuditActorType
+from app.identity.principal import Principal
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
+
+_ENTITY_CONNECTION = "connector_connection"
 
 
 class SyncService:
@@ -49,20 +60,28 @@ class SyncService:
         connections: ConnectorConnectionRepository,
         runs: ConnectorSyncRunRepository,
         runner: ConnectorSyncRunner,
+        audit: AuditService,
         *,
         spawn: SyncTaskSpawner = spawn_sync_task,
         stale_seconds: int = STALE_SECONDS,
     ) -> None:
-        """Wire the session (for the claim commit), repositories, runner, and the task spawner."""
+        """Wire the session (for the claim commit), repositories, runner, audit, and spawner."""
         self._session = session
         self._connections = connections
         self._runs = runs
         self._runner = runner
+        self._audit = audit
         self._spawn = spawn
         self._stale_seconds = stale_seconds
 
-    async def start_sync(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
-        """Claim the sync slot, open the ledger, commit, and spawn the runner. Returns the row.
+    async def start_sync(
+        self, org_id: UUID, connection_id: UUID, actor: Principal | None = None
+    ) -> ConnectorConnection:
+        """Claim the sync slot, open the ledger, audit, commit, and spawn the runner.
+
+        Records a `sync.started` audit row inside the claim commit (same transaction — a
+        claimed run is never unlogged). `actor` is the triggering Principal where one exists
+        (the route); None means a system-triggered sync (actor_type='system'). Returns the row.
 
         Raises:
             ConnectionNotFoundError: the connection isn't the caller's org (-> 404).
@@ -84,6 +103,22 @@ class SyncService:
         await self._runs.start_run(org_id, connection_id, run_id)
         # Stamp any prior still-'running' ledger row (a crashed run we just reclaimed) 'abandoned'.
         await self._runs.mark_stale_running_abandoned(org_id, connection_id, keep_run_id=run_id)
+        # Content-blind sync.started, riding the claim commit below (never a credential/content).
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.SYNC_STARTED,
+                actor_type=(
+                    AuditActorType(actor.subject_type)
+                    if actor is not None
+                    else AuditActorType.system
+                ),
+                actor_id=actor.subject_id if actor is not None else None,
+                org_id=org_id,
+                entity_type=_ENTITY_CONNECTION,
+                entity_id=connection_id,
+                details={"run_id": str(run_id)},
+            )
+        )
 
         # Commit the claim BEFORE spawning: the runner's separate session must see it (invariant).
         await self._session.commit()

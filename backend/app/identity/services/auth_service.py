@@ -8,7 +8,8 @@ Depends on: user/organization/refresh-token repositories, security.password,
 Key invariants:
   - Login verifies the bcrypt password and that the account is active; any failure
     raises InvalidCredentialsError with a GENERIC message (no user enumeration, no
-    "wrong password" vs "no such user" distinction).
+    "wrong password" vs "no such user" distinction). The bcrypt verify runs OFF the
+    event loop (verify_password_async) — ~300ms of CPU must never stall other tenants.
   - Tokens carry aud='company' / subject_type='user'. Refresh is single-use rotation.
   - Runs on a PLAIN session (login has no token yet, so no tenant scope) — email is
     globally unique and the password gates access.
@@ -30,7 +31,7 @@ from app.identity.principal import Principal
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.schemas.auth_schemas import AuthenticatedUserResponse, TokenPairResponse
-from app.identity.security.password import DUMMY_PASSWORD_HASH, verify_password
+from app.identity.security.password import DUMMY_PASSWORD_HASH, verify_password_async
 from app.identity.security.tokens import COMPANY_AUDIENCE
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 from app.identity.services.token_issuer import TokenIssuer
@@ -70,9 +71,11 @@ class AuthService:
         user = await self._users.get_by_email(email)
         # Always run bcrypt — against the user's hash, or a dummy when no account
         # matched — so unknown/inactive accounts cost the same as a real login and
-        # cannot be enumerated by response time.
+        # cannot be enumerated by response time. The verify is offloaded to a worker
+        # thread (verify_password_async): the dummy path pays the SAME awaited bcrypt
+        # cost, so the timing-equalizer semantics are preserved off-loop.
         password_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
-        password_ok = verify_password(password, password_hash)
+        password_ok = await verify_password_async(password, password_hash)
         if user is None or not user.is_active or not password_ok:
             # Failed login is recorded on an INDEPENDENT session: this path raises, so a
             # same-session row would be rolled back. actor_id is null; actor_email is the

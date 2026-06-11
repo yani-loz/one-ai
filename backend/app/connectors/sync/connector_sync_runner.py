@@ -6,7 +6,9 @@ Role: ConnectorSyncRunner — the background task that performs ONE sync. On its
 Used by: SyncService.start_sync (spawns run() as a background task AFTER committing the claim +
          the run-ledger row).
 Depends on: core.database.scoped_session, the connection/cursor/run repositories, the email ingest
-            service, the incremental-fetch contract + planner, the credential cipher + registry.
+            service, the incremental-fetch contract + planner, the credential cipher + registry,
+            identity.services.audit_service (AuditService — the sync.finished trail) +
+            identity.enums.AuditActorType.
 Key invariants:
   - SESSION/RLS: opens its OWN scoped_session(org_id) (NOT a request session); the after_begin
     listener re-binds app.current_org_id on every per-batch transaction. org/connection/run ids are
@@ -23,6 +25,11 @@ Key invariants:
     stores via dedup); it must be drained operationally, never silently dropped.
   - PER-EMAIL ISOLATION: each ingest runs in a SAVEPOINT — a dedup collision or a poison email rolls
     back only that one email and the outer batch transaction stays usable.
+  - AUDITED FINISH (report H-5): every WON finalize records a `sync.finished` audit row on the same
+    session/commit as the finalize (status + counts + duration; actor_type='system' — a background
+    task has no human actor). A crashed run's row still lands because _finalize_failure re-runs the
+    finalize on a FRESH session. A LOST fence emits nothing — the rightful owner logs its own
+    finish. Content-blind: ids/status/counts only — never the credential or any mail content.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -57,8 +65,13 @@ from app.connectors.repositories.connector_sync_cursor_repository import (
 from app.connectors.repositories.connector_sync_run_repository import ConnectorSyncRunRepository
 from app.connectors.security.credential_cipher import CredentialCipher
 from app.core.database import scoped_session
+from app.identity.enums import AuditActorType
+from app.identity.repositories.audit_repository import AuditRepository
+from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 logger = logging.getLogger(__name__)
+
+_ENTITY_CONNECTION = "connector_connection"
 
 HEARTBEAT_SECONDS = 30
 # The claim's staleness window — must be >> HEARTBEAT_SECONDS and a single batch's wall-time.
@@ -159,15 +172,21 @@ class ConnectorSyncRunner:
 
     async def run(self, org_id: UUID, connection_id: UUID, run_id: UUID) -> None:
         """Background entry point — drive one sync to completion; NEVER raises (already 202'd)."""
+        started_monotonic = time.monotonic()  # duration baseline for the sync.finished audit row
         try:
             async with scoped_session(org_id) as session:
-                await self._sync(session, org_id, connection_id, run_id)
+                await self._sync(session, org_id, connection_id, run_id, started_monotonic)
         except Exception:
             logger.exception("Sync run %s (connection %s) failed", run_id, connection_id)
-            await self._finalize_failure(org_id, connection_id, run_id)
+            await self._finalize_failure(org_id, connection_id, run_id, started_monotonic)
 
     async def _sync(
-        self, session: AsyncSession, org_id: UUID, connection_id: UUID, run_id: UUID
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        connection_id: UUID,
+        run_id: UUID,
+        started_monotonic: float,
     ) -> None:
         """Load the connection, stream + ingest every pending message, then finalize."""
         connections = ConnectorConnectionRepository(session)
@@ -189,6 +208,7 @@ class ConnectorSyncRunner:
                 ok=False,
                 error="This connector does not support sync.",
                 counts=_Counts(),
+                started_monotonic=started_monotonic,
             )
             return
 
@@ -203,6 +223,14 @@ class ConnectorSyncRunner:
 
         ticker = asyncio.create_task(self._heartbeat_loop(org_id, connection_id, run_id))
         try:
+            # count_pending enumerates IMAP folders over the network (potentially MINUTES). End
+            # the read-only transaction the loads above opened FIRST, so no idle-in-transaction
+            # connection is pinned across it (managed PG kills those via
+            # idle_in_transaction_session_timeout). Reads only so far — nothing to lose; the
+            # claim was committed by SyncService before this task spawned, and the fence stays
+            # intact: set_total below autobegins a FRESH transaction (the after_begin listener
+            # re-binds the tenant GUC) and is still conditional on sync_run_id.
+            await session.commit()
             total = await connector.count_pending(fetch_cursors)
             if not await connections.set_total(org_id, connection_id, run_id, total):
                 await session.rollback()  # claim already lost before we started
@@ -245,6 +273,7 @@ class ConnectorSyncRunner:
             ok=True,
             error=None,
             counts=counts,
+            started_monotonic=started_monotonic,
         )
 
     async def _ingest_batch(
@@ -366,8 +395,15 @@ class ConnectorSyncRunner:
         ok: bool,
         error: str | None,
         counts: _Counts,
+        started_monotonic: float,
     ) -> None:
-        """Fenced finalize: connection → idle/error, ledger → done/failed. Rollback if stolen."""
+        """Fenced finalize: connection → idle/error, ledger → done/failed, audited. Rollback if
+        stolen.
+
+        A WON finalize also records the `sync.finished` audit row on this same session, so it
+        commits atomically with the outcome (status + counts + duration; content-blind). A lost
+        fence records nothing — the rightful owner finalizes (and audits) the run itself.
+        """
         status = "idle" if ok else "error"
         won = await connections.finalize_sync(
             org_id, connection_id, run_id, status=status, error=error
@@ -375,19 +411,40 @@ class ConnectorSyncRunner:
         if not won:
             await session.rollback()  # claim stolen at the very end — the new run owns the row
             return
+        run_status = "succeeded" if ok else "failed"
         await runs.finalize(
             org_id,
             run_id,
-            status="succeeded" if ok else "failed",
+            status=run_status,
             seen=counts.seen,
             stored=counts.stored,
             skipped=counts.skipped,
             failed=counts.failed,
             error=error,
         )
+        await AuditService(AuditRepository(session)).record(
+            AuditEvent(
+                action=AuditAction.SYNC_FINISHED,
+                actor_type=AuditActorType.system,  # background task — no human actor to attribute
+                org_id=org_id,
+                entity_type=_ENTITY_CONNECTION,
+                entity_id=connection_id,
+                details={
+                    "run_id": str(run_id),
+                    "status": run_status,
+                    "messages_seen": counts.seen,
+                    "messages_stored": counts.stored,
+                    "messages_skipped": counts.skipped,
+                    "messages_failed": counts.failed,
+                    "duration_seconds": round(time.monotonic() - started_monotonic, 3),
+                },
+            )
+        )
         await session.commit()
 
-    async def _finalize_failure(self, org_id: UUID, connection_id: UUID, run_id: UUID) -> None:
+    async def _finalize_failure(
+        self, org_id: UUID, connection_id: UUID, run_id: UUID, started_monotonic: float
+    ) -> None:
         """Best-effort error finalize on a FRESH session (the run's session may be unusable)."""
         try:
             async with scoped_session(org_id) as session:
@@ -403,6 +460,7 @@ class ConnectorSyncRunner:
                     ok=False,
                     error="Sync failed unexpectedly.",
                     counts=_Counts(),
+                    started_monotonic=started_monotonic,
                 )
         except Exception:
             logger.exception("Could not finalize the failed sync run %s", run_id)

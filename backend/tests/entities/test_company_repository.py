@@ -10,17 +10,16 @@ Key invariants tested:
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.entities.models.company import Company, CompanyDomain
 from app.entities.repositories.company_repository import CompanyRepository
+from tests.conftest import seed_org
 
 
 async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> None:
     repo = CompanyRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     company = await repo.insert(Company(org_id=org_a, name="Globex"))
 
     assert await repo.get_in_org(company.id, org_b) is None
@@ -29,7 +28,7 @@ async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> No
 
 async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> None:
     repo = CompanyRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     await repo.insert(Company(org_id=org_a, name="Globex"))
 
     assert await repo.list_for_org(org_b) == []
@@ -38,7 +37,7 @@ async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> Non
 
 async def test_get_company_id_by_domain_is_org_scoped(db_session: AsyncSession) -> None:
     repo = CompanyRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     company = await repo.insert(Company(org_id=org_a, name="Globex"))
     await repo.add_domain(
         CompanyDomain(org_id=org_a, company_id=company.id, domain="globex.com", source="imap")
@@ -50,7 +49,7 @@ async def test_get_company_id_by_domain_is_org_scoped(db_session: AsyncSession) 
 
 async def test_same_domain_in_two_orgs_are_distinct_companies(db_session: AsyncSession) -> None:
     repo = CompanyRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     company_a = await repo.insert(Company(org_id=org_a, name="Globex A"))
     company_b = await repo.insert(Company(org_id=org_b, name="Globex B"))
 

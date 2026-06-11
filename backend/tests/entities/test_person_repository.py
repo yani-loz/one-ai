@@ -11,17 +11,16 @@ Key invariants tested:
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.entities.models.person import Person, PersonEmail
 from app.entities.repositories.person_repository import PersonRepository
+from tests.conftest import seed_org
 
 
 async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> None:
     repo = PersonRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     person = await repo.insert(Person(org_id=org_a, display_name="Boyan"))
 
     assert await repo.get_in_org(person.id, org_b) is None
@@ -30,7 +29,7 @@ async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> No
 
 async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> None:
     repo = PersonRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     await repo.insert(Person(org_id=org_a, display_name="Boyan"))
 
     assert await repo.list_for_org(org_b) == []
@@ -39,7 +38,7 @@ async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> Non
 
 async def test_get_person_id_by_email_is_org_scoped(db_session: AsyncSession) -> None:
     repo = PersonRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     person = await repo.insert(Person(org_id=org_a, display_name="Boyan"))
     await repo.add_email(
         PersonEmail(org_id=org_a, person_id=person.id, email="boyan@example.com", source="imap")
@@ -51,7 +50,7 @@ async def test_get_person_id_by_email_is_org_scoped(db_session: AsyncSession) ->
 
 async def test_same_email_in_two_orgs_are_distinct_people(db_session: AsyncSession) -> None:
     repo = PersonRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     person_a = await repo.insert(Person(org_id=org_a))
     person_b = await repo.insert(Person(org_id=org_b))
 

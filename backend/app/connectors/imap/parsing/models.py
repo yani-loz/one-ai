@@ -8,11 +8,16 @@ Depends on: stdlib only (dataclasses, datetime).
 Key invariants:
   - These objects carry NO org_id / connection_id — those are tenancy/source context the runner
     supplies when it maps a ParsedEmail to ORM rows. The parser is content-only and source-agnostic.
-  - `dedup_key` is ALWAYS a sha256 of the RAW rfc822 bytes — never the attacker-influenceable
-    Message-ID (which would let a planted decoy suppress a genuine email reusing the id), and never
-    derived body_text (which shifts across library versions). It is the email's stable content
-    identity for `ON CONFLICT DO NOTHING`; identical wire bytes collide (idempotent), distinct
-    messages differ (the Message-ID is inside the hashed bytes).
+  - `dedup_key` is the email's CONTENT IDENTITY for `ON CONFLICT DO NOTHING`, computed by
+    email_parser._dedup_key: with a usable Message-ID, a sha256 over the normalized Message-ID +
+    the decoded From/Subject/Date headers + the decoded body text + the sorted attachment content
+    hashes; otherwise a sha256 of the raw rfc822 bytes. NEVER the bare attacker-influenceable
+    Message-ID (a planted decoy forging another email's id still differs in decoded content →
+    distinct key, so it cannot suppress the genuine email). DECODED content — not raw bytes — is
+    hashed because Outlook regenerates MIME boundaries inside each folder copy's serialization
+    (audit H-1: raw-byte keying stored ~40% duplicate rows); decoding makes the key
+    folder-independent. Changing the key recipe invalidates previously-stored keys (re-fetches
+    duplicate, never lose) — accepted pre-production.
   - `ParsedAttachment.payload` is TRANSIENT raw bytes for the extractor; it is dropped after text
     extraction and is NEVER persisted (lean-attachments decision, design §4).
 """

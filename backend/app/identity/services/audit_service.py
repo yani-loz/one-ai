@@ -2,7 +2,9 @@
 Role: Audit-trail writer + reader. Builds and appends audit_log rows (who/what/when/
       where/why) and serves the platform read views. Holds the audit business logic (A5).
 Used by: AuthService / PlatformOrgService / PlatformAuthService (emit events on their own
-         session); routes.platform_routes via get_audit_service (reads).
+         session); the connectors domain (ConnectorService / SyncService / ConnectorSyncRunner
+         emit connector.*/sync.* lifecycle events on their tenant sessions);
+         routes.platform_routes via get_audit_service (reads).
 Depends on: app.core.database (GlobalSessionLocal — the independent-write session),
             app.core.request_context (IP + request id), repositories.audit_repository,
             schemas.audit_schemas, identity.enums (AuditActorType).
@@ -38,7 +40,7 @@ _logger = logging.getLogger(__name__)
 
 
 class AuditAction:
-    """Canonical action names (dotted namespace) emitted by the platform/auth flows."""
+    """Canonical action names (dotted namespace) emitted by the platform/auth/connector flows."""
 
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILURE = "auth.login.failure"
@@ -60,6 +62,12 @@ class AuditAction:
     SUPPORT_DENIED = "support.denied"
     SUPPORT_REVOKED = "support.revoked"
     ORG_ERASED = "org.erased"
+    CONNECTOR_CREATED = "connector.created"
+    CONNECTOR_DISABLED = "connector.disabled"
+    CONNECTOR_ENABLED = "connector.enabled"
+    CONNECTOR_DELETED = "connector.deleted"
+    SYNC_STARTED = "sync.started"
+    SYNC_FINISHED = "sync.finished"
 
 
 @dataclass(frozen=True, slots=True)

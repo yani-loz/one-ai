@@ -1,8 +1,10 @@
 /**
  * Tests for the add-user drawer — submit stays disabled until the form mirrors the backend
  * bounds; a successful create posts the payload and refreshes; a 409 shows the email-taken
- * message; a 401 raises onSessionExpired. Global fetch is mocked at the boundary; localStorage
- * is cleared so a 401 has no refresh token to rotate and surfaces cleanly.
+ * message; a 401 raises onSessionExpired; every close path is inert while a submit is in
+ * flight; a late resolution after a parent force-close refreshes the list without ghosting
+ * the hand-off panel. Global fetch is mocked at the boundary; localStorage is cleared so a
+ * 401 has no refresh token to rotate and surfaces cleanly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -169,6 +171,102 @@ describe("CreateUserDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add user/ }));
 
     await waitFor(() => expect(onSessionExpired).toHaveBeenCalledTimes(1));
+  });
+
+  it("test_close_paths_ignored_while_submitting_then_handoff_still_appears", async () => {
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    let resolveCreate!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () => new Promise<Response>((resolve) => (resolveCreate = resolve)),
+      ) as unknown as typeof fetch,
+    );
+    render(
+      <CreateUserDrawer open onClose={onClose} onCreated={onCreated} onSessionExpired={noop} />,
+    );
+    fillValidForm();
+    fireEvent.click(screen.getByRole("button", { name: /Add user/ }));
+
+    // Mid-submit: the ✕ is disabled and every close path (✕, backdrop, Escape) is inert —
+    // closing here would wipe the one-time password while the create may still succeed.
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    expect(closeButton).toBeDisabled();
+    fireEvent.click(closeButton);
+    fireEvent.click(screen.getByRole("dialog").previousElementSibling as Element); // backdrop
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    resolveCreate({
+      ok: true,
+      status: 201,
+      json: () =>
+        Promise.resolve({
+          id: "u-9",
+          email: "anna@acme.de",
+          full_name: "Anna Schmidt",
+          role: "member",
+          is_active: true,
+          org_id: "org-1",
+          created_at: "2026-06-01T10:00:00Z",
+        }),
+    } as Response);
+
+    // The hand-off appears (no wiped state) and closing works again, still refreshing the list.
+    expect(await screen.findByText("anna@acme.de")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("test_late_success_after_parent_force_close_refreshes_without_ghost_panel", async () => {
+    const onCreated = vi.fn();
+    let resolveCreate!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () => new Promise<Response>((resolve) => (resolveCreate = resolve)),
+      ) as unknown as typeof fetch,
+    );
+    const view = render(
+      <CreateUserDrawer open onClose={noop} onCreated={onCreated} onSessionExpired={noop} />,
+    );
+    fillValidForm();
+    fireEvent.click(screen.getByRole("button", { name: /Add user/ }));
+
+    // The parent force-closes the drawer (e.g. logging out) while the POST is in flight, then
+    // the create resolves late. The user exists server-side → the list must refresh…
+    view.rerender(
+      <CreateUserDrawer
+        open={false}
+        onClose={noop}
+        onCreated={onCreated}
+        onSessionExpired={noop}
+      />,
+    );
+    resolveCreate({
+      ok: true,
+      status: 201,
+      json: () =>
+        Promise.resolve({
+          id: "u-9",
+          email: "anna@acme.de",
+          full_name: "Anna Schmidt",
+          role: "member",
+          is_active: true,
+          org_id: "org-1",
+          created_at: "2026-06-01T10:00:00Z",
+        }),
+    } as Response);
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+
+    // …but reopening must show a fresh form, never a ghost hand-off with a blank password.
+    view.rerender(
+      <CreateUserDrawer open onClose={noop} onCreated={onCreated} onSessionExpired={noop} />,
+    );
+    expect(screen.queryByText("User added")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Add a user" })).toBeInTheDocument();
   });
 
   it("test_forbidden_role_change_calls_on_session_expired", async () => {

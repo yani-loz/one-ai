@@ -10,6 +10,9 @@ Key invariants:
   - POST /connectors/{id}/test returns 200 with the connection's verification outcome (status +
     last_error) — a failed verification is a successful query reporting a negative result.
   - Responses are metadata only (ConnectionResponse) — no secret ever leaves here.
+  - ACTOR PLUMBING (report H-5): the verified principal is passed into every lifecycle mutation
+    (create/disable/enable/delete/sync-start) so the service layer records WHO acted on the
+    connector.*/sync.started audit rows — the caller's identity is never discarded here.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ async def create_connection(
     service: ConnectorService = Depends(get_connector_service),
 ) -> ConnectionResponse:
     """Configure a new connector connection for the caller's org (credential encrypted)."""
-    connection = await service.create_connection(principal.org_id, payload)
+    connection = await service.create_connection(principal.org_id, payload, actor=principal)
     return ConnectionResponse.from_model(connection)
 
 
@@ -82,7 +85,7 @@ async def disable_connection(
     service: ConnectorService = Depends(get_connector_service),
 ) -> ConnectionResponse:
     """Disable a connection (reversible) — stops sync + revokes AI access (404 if not theirs)."""
-    connection = await service.disable_connection(principal.org_id, connection_id)
+    connection = await service.disable_connection(principal.org_id, connection_id, actor=principal)
     return ConnectionResponse.from_model(connection)
 
 
@@ -93,7 +96,7 @@ async def enable_connection(
     service: ConnectorService = Depends(get_connector_service),
 ) -> ConnectionResponse:
     """Re-enable a disabled connection (404 if it isn't theirs)."""
-    connection = await service.enable_connection(principal.org_id, connection_id)
+    connection = await service.enable_connection(principal.org_id, connection_id, actor=principal)
     return ConnectionResponse.from_model(connection)
 
 
@@ -111,7 +114,7 @@ async def start_sync(
 
     409 if a sync is already running or the connection is disabled; 404 if it isn't the caller's.
     """
-    connection = await service.start_sync(principal.org_id, connection_id)
+    connection = await service.start_sync(principal.org_id, connection_id, actor=principal)
     return SyncStatusResponse.from_model(connection)
 
 
@@ -133,4 +136,4 @@ async def delete_connection(
     service: ConnectorService = Depends(get_connector_service),
 ) -> None:
     """Delete one of the caller's connections (404 if it isn't theirs)."""
-    await service.delete_connection(principal.org_id, connection_id)
+    await service.delete_connection(principal.org_id, connection_id, actor=principal)

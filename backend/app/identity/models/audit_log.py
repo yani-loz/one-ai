@@ -5,10 +5,14 @@ Used by: AuditRepository (insert + reads); registered on Base.metadata via model
 Depends on: app.common.base_model (Base, UUIDPrimaryKeyMixin); sqlalchemy.
 Key invariants:
   - NOT tenant-scoped: platform/compliance data spanning all orgs (no TenantMixin, no
-    org_id NOT NULL). Each row TAGS an affected org_id (nullable) for per-org filtering,
-    and the table is deliberately NOT placed under any RLS policy — a future tenant-scoped
-    session (user.* events) must still be able to INSERT here (see migration 0005 +
-    docs/FIX_BEFORE_PROD.md).
+    org_id NOT NULL). Each row TAGS an affected org_id (nullable) for per-org filtering.
+    Since migration 0013 the table IS under RLS — ENABLE + FORCE with the standard
+    org_isolation policy (USING + WITH CHECK against the GUC app.current_org_id) — and the
+    tenant role oneai_app holds INSERT + policy-scoped SELECT only (UPDATE/DELETE revoked
+    at the privilege layer). Tenant-session writers (user.* / support.* events) still
+    INSERT fine: they stamp org_id from RLS-scoped rows, so it always equals the GUC.
+    org_id-NULL platform events (auth/platform/org lifecycle) are written on the BYPASSRLS
+    global engine, which RLS leaves untouched (see 0013 + docs/FIX_BEFORE_PROD.md).
   - NO foreign keys to organizations/users: a row must SURVIVE deletion/rename of the actor
     or org — PC-04-AC7 + PC-06 erasure. Durable NAMED attribution via the denormalized
     actor_email is populated for AUTH events (login/refresh, where the email IS the subject);
@@ -18,11 +22,13 @@ Key invariants:
     is intentionally not resolvable from these rows after the actor is erased.
   - actor_type is pinned to the AuditActorType enum by a DB CHECK (ck_audit_log_actor_type).
   - APPEND-ONLY against DML: a BEFORE UPDATE OR DELETE trigger raises, so no UPDATE/DELETE
-    succeeds even under the current superuser app role (unlike RLS, which a superuser
-    bypasses). This is append-only enforcement, NOT true immutability — a superuser can
-    still DISABLE TRIGGER; full immutability lands with the least-privilege DB role. The
-    trigger is created by migration 0005 and (for create_all in tests) by the after_create
-    DDL event below, so both schema paths enforce it.
+    succeeds under ANY runtime role — including the BYPASSRLS global role, which keeps
+    table-level UPDATE/DELETE privileges precisely because the trigger (not a grant) is the
+    enforcement there; the tenant role additionally lost those privileges in 0013. This is
+    append-only enforcement, NOT true immutability — the superuser DDL role `oneai` (never
+    serving a request) can still DISABLE TRIGGER. The trigger is created by migration 0005
+    and (for create_all in tests) by the after_create DDL event below, so both schema paths
+    enforce it.
   - The `details` payload NEVER carries a secret (password/hash/token) or tenant content
     (PC-04-AC4) — the AuditService writer controls every field.
 """

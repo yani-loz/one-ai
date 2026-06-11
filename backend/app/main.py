@@ -3,9 +3,13 @@ Role: FastAPI application factory + composition root. Wires middleware, routers,
       domain exception handlers.
 Used by: uvicorn (app.main:app); tests import the ASGI app.
 Depends on: app.core.config, app.core.database, app.core.middleware,
-            app.api.routes.*, app.identity.
+            app.api.routes.*, app.identity, app.common.erasure_hooks + the
+            connectors/entities erasure repositories (hook registration).
 Key invariants:
-  - The ONLY place routers, middleware, and exception handlers are registered.
+  - The ONLY place routers, middleware, exception handlers, AND GDPR erasure hooks are
+    registered. Feature modules join org erasure here, explicitly (no import side effects):
+    identity must never import connectors/entities, so the composition root wires their
+    erasure hooks onto app.common.erasure_hooks (CA-CONN-01 / CA-CONN-03).
   - CORS origins come from settings, never hardcoded.
   - main.py may import app.identity (it is the composition root, not core) — the
     strict rule is that app.core must never import app.identity.
@@ -22,11 +26,14 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DataError
 
 from app.api.routes.health import router as health_router
+from app.common.erasure_hooks import register_erasure_hook
 from app.connectors import connectors_router, register_connector_exception_handlers
+from app.connectors.repositories.connector_erasure_repository import erase_connector_data_for_org
 from app.core.config import get_settings
 from app.core.database import engine, global_engine, tenant_engine
 from app.core.middleware import MaxBodySizeMiddleware
 from app.core.request_context import RequestContextMiddleware
+from app.entities.repositories.entity_erasure_repository import erase_entity_graph_for_org
 from app.identity import identity_router, register_identity_exception_handlers
 
 
@@ -74,6 +81,12 @@ def create_app() -> FastAPI:
     register_identity_exception_handlers(app)
     register_connector_exception_handlers(app)
     app.add_exception_handler(DataError, _handle_data_error)
+    # GDPR org-erasure hooks (CA-CONN-01 / CA-CONN-03): feature modules join the erasure path
+    # HERE, explicitly — identity must not import connectors/entities. Connectors first (its
+    # email rows reference the entity graph via SET-NULL FKs), then the entity graph.
+    # Registration is name-keyed + idempotent, so repeated create_app() calls don't stack hooks.
+    register_erasure_hook("connectors", erase_connector_data_for_org)
+    register_erasure_hook("entities", erase_entity_graph_for_org)
     return app
 
 

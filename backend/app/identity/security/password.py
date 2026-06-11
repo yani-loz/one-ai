@@ -1,7 +1,7 @@
 """
 Role: Password hashing + verification (bcrypt) for the identity domain.
 Used by: AuthService / PlatformAuthService (login verify), UserService and
-         PlatformAuthService (hash on user/org creation).
+         PlatformAuthService (hash on user/org creation), ErasureService (sudo re-auth).
 Depends on: bcrypt (external). Leaf module otherwise.
 Key invariants:
   - Hashing is bcrypt only (security.md mandate). A stored hash is opaque; the raw
@@ -13,9 +13,14 @@ Key invariants:
   - bcrypt 5.x RAISES ValueError on inputs >72 bytes (it does NOT truncate). Code that
     HASHES must bound length first — the request schemas enforce <=72 bytes via
     BcryptPassword; verify_password swallows that ValueError as False, so login is safe.
+  - ASYNC CALLERS MUST use verify_password_async / hash_password_async: bcrypt at
+    rounds=12 costs ~300ms of pure CPU, and the sync forms block the event loop for
+    every tenant on the instance. The sync forms exist for scripts/tests only.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import bcrypt
 
@@ -52,6 +57,24 @@ def verify_password(raw_password: str, password_hash: str) -> bool:
         return bcrypt.checkpw(raw_password.encode("utf-8"), password_hash.encode("utf-8"))
     except ValueError:
         return False
+
+
+async def hash_password_async(raw_password: str) -> str:
+    """Hash `raw_password` on a worker thread so the event loop stays free.
+
+    Contract: identical to hash_password (same precondition: <=72 UTF-8 bytes);
+    the ~300ms bcrypt cost runs via asyncio.to_thread instead of blocking the loop.
+    """
+    return await asyncio.to_thread(hash_password, raw_password)
+
+
+async def verify_password_async(raw_password: str, password_hash: str) -> bool:
+    """Verify `raw_password` on a worker thread so the event loop stays free.
+
+    Contract: identical to verify_password (False on mismatch or malformed input);
+    the ~300ms bcrypt cost runs via asyncio.to_thread instead of blocking the loop.
+    """
+    return await asyncio.to_thread(verify_password, raw_password, password_hash)
 
 
 # A fixed bcrypt hash (standard work factor), computed once at import. Callers verify a

@@ -11,6 +11,10 @@ Key invariants:
   - `last_error` is a SANITIZED message (type + safe text) — NEVER str(exc), which would echo a
     subject/body fragment.
   - run_id matches connector_connection.sync_run_id for the active run (the fencing token).
+  - 0014 ledger guards: org_id FKs organizations(id); the connection FK is the COMPOSITE
+    (org_id, connection_id) form (tenant-coherent, CASCADE preserved); UNIQUE (org_id, run_id)
+    backs the fencing token; CHECKs (migration-only, not compared by autogenerate) pin
+    time-order, terminal-finished, and non-negative counts.
 """
 
 from __future__ import annotations
@@ -18,7 +22,15 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,11 +46,21 @@ class ConnectorSyncRun(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
             "status IN ('running', 'succeeded', 'failed', 'abandoned')",
             name="ck_connector_sync_run_status",
         ),
+        # 0014: the fencing token is unique per org — a run_id can never be reused/forged.
+        UniqueConstraint("org_id", "run_id", name="uq_sync_run_fencing"),
+        ForeignKeyConstraint(
+            ["org_id"], ["organizations.id"], name="fk_connector_sync_run_org_id"
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "connection_id"],
+            ["connector_connection.org_id", "connector_connection.id"],
+            ondelete="CASCADE",
+            name="fk_connector_sync_run_connection_id_org",
+        ),
     )
 
     connection_id: Mapped[UUID] = mapped_column(
         postgresql.UUID(as_uuid=True),
-        ForeignKey("connector_connection.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

@@ -8,6 +8,9 @@ Key invariants:
   - Uses the SAME async driver as the app (asyncpg); no second sync driver needed.
   - target_metadata = Base.metadata so autogenerate sees every imported model.
     Import new model modules here as domains are added.
+  - The DB URL is %-escaped (%%) before set_main_option — ConfigParser interpolation
+    would otherwise crash on a rotated password containing '%'. Readers interpolate it
+    back, so the engine always connects with the literal URL.
 """
 
 from __future__ import annotations
@@ -33,7 +36,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Inject the runtime DB URL (single source of truth: app settings).
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# `%` MUST be escaped as `%%`: set_main_option stores into a ConfigParser, whose `%`
+# interpolation would otherwise crash on a password containing `%` before any migration
+# runs. Both readers below — get_main_option (offline) and get_section (online engine) —
+# interpolate on read, restoring the literal `%` for the actual connection URL.
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

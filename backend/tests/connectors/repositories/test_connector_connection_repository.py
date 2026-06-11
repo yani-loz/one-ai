@@ -11,7 +11,7 @@ Key invariants tested:
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.repositories.connector_connection_repository import (
     ConnectorConnectionRepository,
 )
+from tests.conftest import seed_org
 
 
 def _build_connection(org_id: UUID, username: str = "sales@example.com") -> ConnectorConnection:
@@ -38,7 +39,7 @@ def _build_connection(org_id: UUID, username: str = "sales@example.com") -> Conn
 
 async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> None:
     repo = ConnectorConnectionRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     connection = await repo.insert(_build_connection(org_a))
 
     assert await repo.get_in_org(connection.id, org_b) is None
@@ -47,7 +48,7 @@ async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> No
 
 async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> None:
     repo = ConnectorConnectionRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     await repo.insert(_build_connection(org_a, "a@example.com"))
 
     assert await repo.list_for_org(org_b) == []
@@ -56,7 +57,7 @@ async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> Non
 
 async def test_exists_is_org_scoped(db_session: AsyncSession) -> None:
     repo = ConnectorConnectionRepository(db_session)
-    org_a, org_b = uuid4(), uuid4()
+    org_a, org_b = await seed_org(), await seed_org()
     await repo.insert(_build_connection(org_a, "shared@example.com"))
 
     assert await repo.exists(org_a, "imap", "shared@example.com") is True

@@ -5,11 +5,17 @@ Used by: routes.platform_routes; constructed in identity.dependencies on a PLAIN
          (non-tenant) session — the platform spans all orgs.
 Depends on: platform-admin/organization/user/refresh-token repositories,
             security.password, security.tokens, token_issuer + token_rotator,
-            identity.schemas, identity.principal, identity.exceptions, identity.enums.
+            services.audit_service, identity.schemas, identity.principal,
+            identity.exceptions, identity.enums.
 Key invariants:
   - Platform login verifies the bcrypt password + active flag; failure -> generic
     InvalidCredentialsError (no enumeration). Tokens carry aud='platform' /
     subject_type='platform_admin' — rejected on company endpoints by audience.
+    bcrypt (verify + hash) runs OFF the event loop via the async password helpers.
+  - AUDITED like the company domain (PC-04a): login success / refresh / logout are
+    recorded same-transaction (actor_type='platform_admin'); a FAILED login is recorded
+    on an independent committed session so the row survives the request rollback. Who
+    enters the platform console is never unlogged.
   - A platform admin's Principal has org_id=None (global scope, not an org row).
   - onboard_organization creates the org + its first company_admin ATOMICALLY in one
     session/transaction; a duplicate slug or admin email aborts before any write
@@ -44,8 +50,8 @@ from app.identity.schemas.platform_schemas import (
 from app.identity.schemas.user_schemas import UserResponse
 from app.identity.security.password import (
     DUMMY_PASSWORD_HASH,
-    hash_password,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
 from app.identity.security.tokens import PLATFORM_AUDIENCE
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
@@ -78,6 +84,10 @@ class PlatformAuthService:
     async def login(self, email: str, password: str) -> tuple[str, str]:
         """Authenticate a platform admin; return a fresh (access, refresh) pair.
 
+        Contract: mirrors the company audit wiring (PC-04a) — success is recorded
+        same-transaction (with the issued refresh token); a failure is recorded on an
+        independent committed session before the generic error is raised.
+
         Raises:
             InvalidCredentialsError: unknown email, wrong password, or inactive
                 account — one generic error to prevent enumeration.
@@ -85,9 +95,23 @@ class PlatformAuthService:
         admin = await self._platform_admins.get_by_email(email)
         # Always run bcrypt (real hash or dummy) so an unknown/inactive admin email is
         # indistinguishable from a real one by response time (no enumeration oracle).
+        # Offloaded to a worker thread (verify_password_async); the dummy path pays the
+        # SAME awaited bcrypt cost, so the timing equalizer survives the offload.
         password_hash = admin.password_hash if admin is not None else DUMMY_PASSWORD_HASH
-        password_ok = verify_password(password, password_hash)
+        password_ok = await verify_password_async(password, password_hash)
         if admin is None or not admin.is_active or not password_ok:
+            # Failed platform login is recorded on an INDEPENDENT session (this path
+            # raises, so a same-session row would roll back). actor_email is the attempted
+            # email — internal log only, never surfaced to the generic 401, so it adds no
+            # enumeration oracle. Mirrors AuthService.login exactly.
+            await self._audit.record_independently(
+                AuditEvent(
+                    action=AuditAction.LOGIN_FAILURE,
+                    actor_type=AuditActorType.platform_admin,
+                    actor_email=email,
+                    details={"reason": "invalid_credentials"},
+                )
+            )
             raise InvalidCredentialsError("Invalid email or password.")
 
         principal = Principal(
@@ -96,12 +120,26 @@ class PlatformAuthService:
             role=_PLATFORM_SUBJECT_TYPE,
             subject_type=_PLATFORM_SUBJECT_TYPE,
         )
-        return await self._token_issuer.issue_pair(
+        access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, PLATFORM_AUDIENCE, _PLATFORM_SUBJECT_TYPE
         )
+        # Success rides the REQUEST session: it commits atomically with the issued refresh
+        # token, so who entered the platform console can never be silently unlogged.
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.LOGIN_SUCCESS,
+                actor_type=AuditActorType.platform_admin,
+                actor_id=admin.id,
+                actor_email=admin.email,
+            )
+        )
+        return access_token, refresh_token
 
     async def refresh(self, raw_refresh_token: str) -> tuple[str, str]:
         """Rotate a platform refresh token: revoke the old, issue a new pair.
+
+        The rotation and its `auth.refresh` audit row commit together (same session),
+        mirroring the company pattern.
 
         Raises:
             RefreshTokenInvalidError: token unknown/revoked/expired (-> 401).
@@ -118,13 +156,30 @@ class PlatformAuthService:
             role=_PLATFORM_SUBJECT_TYPE,
             subject_type=_PLATFORM_SUBJECT_TYPE,
         )
-        return await self._token_issuer.issue_pair(
+        access_token, refresh_token = await self._token_issuer.issue_pair(
             principal, PLATFORM_AUDIENCE, _PLATFORM_SUBJECT_TYPE
         )
+        # Same-session: the rotation (old revoked + new issued) and its audit row commit
+        # together — mirrors AuthService.refresh.
+        await self._audit.record(
+            AuditEvent(
+                action=AuditAction.REFRESH,
+                actor_type=AuditActorType.platform_admin,
+                actor_id=admin.id,
+                actor_email=admin.email,
+            )
+        )
+        return access_token, refresh_token
 
     async def logout(self, raw_refresh_token: str) -> None:
-        """Revoke the presented platform refresh token (idempotent)."""
+        """Revoke the presented platform refresh token (idempotent), audited same-tx."""
         await self._token_rotator.revoke(raw_refresh_token)
+        # Mirrors AuthService.logout: the opaque token is not resolved to a subject here,
+        # so the actor is unattributed (PC-04a item (c) tracks enriching it); the event +
+        # IP are still recorded. Same session — logout returns 204 and commits.
+        await self._audit.record(
+            AuditEvent(action=AuditAction.LOGOUT, actor_type=AuditActorType.platform_admin)
+        )
 
     async def build_admin_view_by_id(self, admin_id: UUID) -> PlatformAdminResponse:
         """Build the /platform/me view for the verified admin id from the access token.
@@ -169,13 +224,16 @@ class PlatformAuthService:
             raise DuplicateOrganizationError(
                 "An organization with this slug already exists."
             ) from exc
+        # Hash on a worker thread (hash_password_async) — bcrypt's ~300ms of CPU must not
+        # stall the event loop for every other tenant while an org is onboarded.
+        admin_password_hash = await hash_password_async(payload.admin_password)
         try:
             admin = await self._users.add(
                 User(
                     org_id=organization.id,
                     email=payload.admin_email,
                     full_name=payload.admin_full_name,
-                    password_hash=hash_password(payload.admin_password),
+                    password_hash=admin_password_hash,
                     role=UserRole.company_admin.value,
                 )
             )

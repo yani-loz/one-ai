@@ -71,7 +71,10 @@ afterEach(() => {
 });
 
 describe("LoginPage", () => {
-  it("test_login_renders_form_and_dev_credentials_panel", async () => {
+  it("test_login_renders_form_and_dev_credentials_panel_in_dev_build", async () => {
+    // The panel is gated on import.meta.env.DEV, which is true under vitest — so it must
+    // render here. The production (DEV=false) branch is enforced by Vite's static
+    // replacement + dead-code elimination and is not reachable from a vitest run.
     renderApp();
 
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();

@@ -14,10 +14,13 @@ Key invariants:
   - Returns a plain IngestOutcome enum, NEVER a live ORM row (a row read after the caller's commit
     could lazy-load on a closed greenlet). The CALLER owns the transaction + commit.
   - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4).
+  - parse_email (pure CPU: RFC822 parse, base64 decode, sha256, html2text) runs on a WORKER
+    thread (asyncio.to_thread) so a large email never stalls the event loop mid-sync.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -76,7 +79,9 @@ class EmailIngestService:
         """
         org_id = self._org_id
         connection_id = self._connection_id
-        parsed = parse_email(raw_bytes, self._mailbox, internal_date)
+        # parse_email is a documented PURE function — safe and worthwhile to offload: it is the
+        # ingest's CPU hot spot and would otherwise block the loop inside the background sync.
+        parsed = await asyncio.to_thread(parse_email, raw_bytes, self._mailbox, internal_date)
 
         if await self._emails.exists(org_id, connection_id, parsed.dedup_key):
             return IngestOutcome.SKIPPED

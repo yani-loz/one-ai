@@ -4,13 +4,16 @@ app + DB + JWTs.
 
 The compliance substance leads: LEGAL-HOLD-BEATS-ERASURE (409, nothing deleted), then a full
 erasure deletes users + tokens, scrubs the support-grant decider email, RETAINS the append-only
-audit_log (honest certificate), offboards the org. Plus the slug-confirmation guard, audience
-confinement, and the export shape. Orgs here are freshly seeded + truncated per test, so the
-demo/globex orgs are never erased. Requires Postgres (identity_schema fixture).
+audit_log (honest certificate), offboards the org. Plus the slug-confirmation guard, the
+deactivated-admin sudo re-auth rejection (403), audience confinement, and the export shape.
+The cross-tenant containment test across the Connect + entity-graph erasure hooks lives in
+test_erasure_cross_tenant.py (file-size split). Orgs here are freshly seeded + truncated per
+test, so the demo/globex orgs are never erased. Requires Postgres (identity_schema fixture).
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from httpx import AsyncClient
@@ -83,14 +86,18 @@ async def test_legal_hold_blocks_erasure_and_deletes_nothing(
     await client.post(  # a refresh token to prove it survives
         "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
     )
+    # 0014 ck_support_grant_lifecycle: 'approved' requires decided_at + decided_by + expires_at
+    # (the shape the real _stamp_decision write path produces).
     grant = SupportGrant(
         org_id=org.id,
         requested_by_admin_id=platform_admin.id,
         requested_by_email="staff-acme@ethera.example",
         reason="prior visit",
         status="approved",
+        decided_at=datetime.now(UTC),
         decided_by_user_id=user.id,
         decided_by_email="admin@acme.example",
+        expires_at=datetime.now(UTC) + timedelta(hours=8),
     )
     db_session.add(grant)
     await db_session.commit()
@@ -154,14 +161,17 @@ async def test_erase_scrubs_support_grant_decider_email(
 ) -> None:
     # The approving company_admin's email (a tenant subject) is scrubbed from support_grant.
     org, user, platform_admin = await _seed(db_session)
+    # 0014 ck_support_grant_lifecycle: 'approved' requires decided_at + decided_by + expires_at.
     grant = SupportGrant(
         org_id=org.id,
         requested_by_admin_id=platform_admin.id,
         requested_by_email="staff-acme@ethera.example",  # Ethera staff — must be KEPT
         reason="prior support visit",
         status="approved",
+        decided_at=datetime.now(UTC),
         decided_by_user_id=user.id,
         decided_by_email="admin@acme.example",  # tenant subject — must be SCRUBBED
+        expires_at=datetime.now(UTC) + timedelta(hours=8),
     )
     db_session.add(grant)
     await db_session.commit()
@@ -352,3 +362,24 @@ async def test_erase_missing_reason_returns_422(
     )
 
     assert response.status_code == 422
+
+
+async def test_erase_deactivated_admin_returns_403_and_deletes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # A deactivated platform admin still holding a valid token fails the sudo re-auth with the
+    # SAME generic 403 as a wrong password (never a hint that the account state was the cause).
+    org, _user, _active_admin = await _seed(db_session)
+    deactivated = await seed_platform_admin(
+        db_session, email="gone-acme@ethera.example", full_name="Gone", is_active=False
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        f"/platform/orgs/{org.id}/erase",
+        json=_erase_body("acme"),  # the CORRECT password — deactivation alone must reject
+        headers=_platform_headers(deactivated.id),
+    )
+
+    assert response.status_code == 403
+    assert await _count(db_session, "SELECT count(*) FROM users WHERE org_id=:o", org.id) == 1

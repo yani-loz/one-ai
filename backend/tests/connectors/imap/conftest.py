@@ -25,6 +25,7 @@ from app.connectors.imap.models.email import EmailAttachment, EmailMessage, Emai
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.person import Person
+from tests.conftest import register_org
 
 # Email tables FK connector_connection + person, so those FK targets are in the create set too.
 _EMAIL_SCHEMA_TABLES = [
@@ -82,7 +83,11 @@ async def db_session(email_schema: None) -> AsyncIterator[AsyncSession]:
 async def seed_connection(
     session: AsyncSession, org_id: UUID, username: str = "mailbox@example.com"
 ) -> ConnectorConnection:
-    """Insert a minimal connector_connection (ciphertext is opaque here) so emails can FK it."""
+    """Insert a minimal connector_connection (ciphertext is opaque here) so emails can FK it.
+
+    Registers the org row first (idempotent) — 0014's org-root FK rejects phantom tenants.
+    """
+    await register_org(session, org_id)
     connection = ConnectorConnection(
         org_id=org_id,
         connector_type="imap",

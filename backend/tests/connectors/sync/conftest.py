@@ -24,6 +24,7 @@ from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
 from app.connectors.models.connector_sync_run import ConnectorSyncRun
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
+from tests.conftest import register_org
 
 _SYNC_TABLES = [
     ConnectorConnection.__table__,
@@ -77,9 +78,13 @@ async def db_session(sync_schema: None) -> AsyncIterator[AsyncSession]:
 async def seed_connection(
     session: AsyncSession, org_id: UUID, *, mailbox: str = "owner@acme.com", disabled: bool = False
 ) -> ConnectorConnection:
-    """Insert a minimal connector_connection (sync_* take their idle server defaults)."""
+    """Insert a minimal connector_connection (sync_* take their idle server defaults).
+
+    Registers the org row first (idempotent) — 0014's org-root FK rejects phantom tenants.
+    """
     from datetime import UTC, datetime
 
+    await register_org(session, org_id)
     connection = ConnectorConnection(
         org_id=org_id,
         connector_type="imap",

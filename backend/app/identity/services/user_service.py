@@ -39,7 +39,7 @@ from app.identity.schemas.user_schemas import (
     UserResponse,
     UserUpdateRequest,
 )
-from app.identity.security.password import hash_password
+from app.identity.security.password import hash_password_async
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 _ENTITY_USER = "user"
@@ -63,9 +63,11 @@ class UserService:
     ) -> UserResponse:
         """Create a user in the caller's org from a validated payload.
 
-        Contract: hashes the password (bcrypt), forces org_id to the caller's org,
-        persists, and records a `user.create` audit row on the SAME session (so the user
-        and its audit row commit together). Returns the created user view.
+        Contract: hashes the password (bcrypt, on a worker thread via
+        hash_password_async so the event loop stays free), forces org_id to the
+        caller's org, persists, and records a `user.create` audit row on the SAME
+        session (so the user and its audit row commit together). Returns the created
+        user view.
 
         Raises:
             DuplicateUserError: the email already belongs to a user (-> 409).
@@ -77,7 +79,7 @@ class UserService:
             org_id=org_id,
             email=payload.email,
             full_name=payload.full_name,
-            password_hash=hash_password(payload.password),
+            password_hash=await hash_password_async(payload.password),
             role=payload.role.value,
         )
         try:

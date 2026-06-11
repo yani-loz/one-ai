@@ -1,15 +1,16 @@
 """
-Role: Unit tests for the RFC822 email parser — body extraction (plain/html/alternative), address +
-      header decoding, derived flags wiring, the content-identity dedup_key, and the never-raises
-      robustness contract on malformed AND pathological input.
+Role: Unit tests for the RFC822 email parser — body extraction (plain/html/alternative), the
+      strict charset-fallback decode chain (audit M-5), address + header decoding, within-message
+      recipient dedup (M-6), body C0 sanitization (L-6), addr-spec gating of from_address (L-7),
+      attachment filename hygiene (L-8), derived-flags wiring, and the never-raises robustness
+      contract. Dedup-key behavior lives in test_email_parser_dedup.py (split for the A2 size cap).
 Used by: pytest (tests/connectors/imap/parsing). Pure — no DB, no network.
 Depends on: app.connectors.imap.parsing.email_parser. Builds raw .eml bytes inline per test.
 Key invariants tested:
-  - dedup_key is a content identity (hash of Message-ID + From/Subject/Date + body, else raw-byte
-    hash): STABLE across parses, MATCHES across folder copies (differing trace headers), and DIFFERS
-    for two distinct emails — even ones reusing a Message-ID (folder-stable yet injective).
   - parse_email NEVER raises — garbage degrades to a best-effort parse; a pathological deep
     multipart degrades to parse_status='failed' (stored, not dropped).
+  - Body decode walks declared charset → cp1252 → windows-1251 STRICTLY before errors='replace',
+    so mislabeled charsets recover real text instead of storing U+FFFD.
 """
 
 from __future__ import annotations
@@ -142,6 +143,24 @@ def test_parse_collects_to_cc_bcc_reply_to_recipients() -> None:
     ]
 
 
+def test_parse_duplicate_recipients_within_message_deduped_keeps_first() -> None:
+    # Audit M-6: clients repeat one mailbox inside a header (199 redundant edges stored). Dedup is
+    # per (kind, case-folded address): the FIRST occurrence keeps its display name and spelling;
+    # the same address under a DIFFERENT kind is a distinct role and stays.
+    raw = _eml(
+        "From: a@x.com\nTo: Ann Smith <ann@x.com>, ann@x.com, ANN@X.COM, bob@x.com\n"
+        "Cc: ann@x.com\nMessage-ID: <m-dup@x>",
+        "b",
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    to_rows = [(r.address, r.name) for r in parsed.recipients if r.kind == "to"]
+    cc_rows = [(r.address, r.name) for r in parsed.recipients if r.kind == "cc"]
+    assert to_rows == [("ann@x.com", "Ann Smith"), ("bob@x.com", None)]
+    assert cc_rows == [("ann@x.com", None)]
+
+
 def test_parse_attachment_captures_metadata_and_hash() -> None:
     raw = (
         b"From: a@x.com\r\nTo: me@oneai.com\r\nSubject: A\r\nMessage-ID: <m10@x>\r\n"
@@ -165,15 +184,22 @@ def test_parse_attachment_captures_metadata_and_hash() -> None:
     assert attachment.payload  # transient bytes present for the extractor
 
 
-def test_parse_without_message_id_uses_stable_raw_hash_dedup_key() -> None:
-    raw = _eml("From: a@x.com\nTo: me@oneai.com\nSubject: NoID", "no message id here")
+def test_parse_attachment_empty_filename_coalesced_to_none() -> None:
+    # Audit L-8: `filename=""` must store None — one absent-value encoding, never '' vs NULL split.
+    raw = (
+        b"From: a@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <m-ef@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee attached.\r\n"
+        b"--B\r\nContent-Type: application/octet-stream\r\n"
+        b'Content-Disposition: attachment; filename=""\r\n\r\n'
+        b"DATA\r\n"
+        b"--B--\r\n"
+    )
 
-    first = parse_email(raw, MAILBOX)
-    second = parse_email(raw, MAILBOX)
+    parsed = parse_email(raw, MAILBOX)
 
-    assert first.message_id is None
-    assert first.dedup_key.startswith("sha256:")
-    assert first.dedup_key == second.dedup_key  # deterministic across repeated parses
+    assert len(parsed.attachments) == 1
+    assert parsed.attachments[0].filename is None
 
 
 def test_parse_received_at_prefers_supplied_internal_date() -> None:
@@ -187,8 +213,9 @@ def test_parse_received_at_prefers_supplied_internal_date() -> None:
     assert parsed.received_at == internal
 
 
-def test_parse_bad_charset_does_not_raise_and_returns_body() -> None:
-    # Declares utf-8 but the body has invalid utf-8 bytes — must decode with replacement, not crash.
+def test_parse_declared_utf8_invalid_bytes_recovered_via_cp1252_fallback() -> None:
+    # Declares utf-8 but the body has invalid utf-8 bytes — the strict chain falls through to a
+    # cp1252 decode, recovering real characters instead of storing U+FFFD (and never raising).
     raw = (
         b"From: a@x.com\r\nTo: me@oneai.com\r\nSubject: Bad\r\nMessage-ID: <m11@x>\r\n"
         b"Content-Type: text/plain; charset=utf-8\r\n\r\nvalid \xff\xfe bytes"
@@ -196,7 +223,61 @@ def test_parse_bad_charset_does_not_raise_and_returns_body() -> None:
 
     parsed = parse_email(raw, MAILBOX)
 
-    assert "valid" in parsed.body_text  # replacement chars allowed, no exception
+    assert "valid" in parsed.body_text
+    assert "�" not in parsed.body_text  # recovered, not replaced
+
+
+def test_parse_gb2312_mislabeled_cp1252_byte_recovered_as_euro_sign() -> None:
+    # Audit M-5's exact corpus case: Outlook declares gb2312 but the body carries the cp1252 euro
+    # byte 0x80 (sender-side mislabeling). gb2312 strict fails → cp1252 strict recovers '€'.
+    raw = (
+        b"From: kambourov@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <m-gb@x>\r\n"
+        b"Content-Type: text/plain; charset=gb2312\r\n\r\nprice is \x80100"
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.body_text == "price is €100"
+
+
+def test_parse_mislabeled_cyrillic_recovered_via_windows1251_fallback() -> None:
+    # Cyrillic bytes behind a wrong utf-8 label, including 0x90 (undefined in cp1252) — the chain
+    # must reach windows-1251 and recover the text losslessly.
+    raw = (
+        b"From: a@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <m-cyr@x>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n\x90 \xcf\xf0\xe8\xe2\xe5\xf2"
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert "Привет" in parsed.body_text
+    assert "�" not in parsed.body_text
+
+
+def test_parse_unknown_charset_decodes_without_raising() -> None:
+    # An unregistered charset name (LookupError) must fall through the chain, not crash the parse.
+    raw = (
+        b"From: a@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <m-unk@x>\r\n"
+        b"Content-Type: text/plain; charset=x-no-such-charset\r\n\r\nplain ascii survives"
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.body_text == "plain ascii survives"
+
+
+def test_parse_undecodable_bytes_degrade_to_replacement_chars() -> None:
+    # The robustness floor: bytes no candidate decodes strictly (0x90 kills cp1252, 0x98 kills
+    # windows-1251, both kill utf-8) still parse — degraded to U+FFFD, never an exception.
+    raw = (
+        b"From: a@x.com\r\nTo: me@oneai.com\r\nMessage-ID: <m-und@x>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\nx \x90\x98 y"
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.body_text.startswith("x ") and parsed.body_text.endswith(" y")
+    assert "�" in parsed.body_text
 
 
 def test_parse_garbage_input_returns_best_effort_email() -> None:
@@ -208,16 +289,6 @@ def test_parse_garbage_input_returns_best_effort_email() -> None:
     assert parsed.from_address is None
     assert parsed.message_id is None
     assert parsed.body_text == "this is not a valid email at all"
-
-
-def test_parse_message_id_with_internal_whitespace_preserved_no_collision() -> None:
-    # policy.default would truncate at the first space; we read the raw header so the full id
-    # survives and two distinct malformed ids do NOT collide into one dedup_key (silent data loss).
-    legit = parse_email(_eml("From: a@x\nMessage-ID: <victim@host>", "b"), MAILBOX)
-    malformed = parse_email(_eml("From: a@x\nMessage-ID: <victim@host extra>", "b"), MAILBOX)
-
-    assert legit.dedup_key != malformed.dedup_key
-    assert "victim@host" == legit.message_id
 
 
 def test_parse_strips_nul_bytes_from_body_and_headers() -> None:
@@ -232,12 +303,56 @@ def test_parse_strips_nul_bytes_from_body_and_headers() -> None:
     assert all("\x00" not in str(v) for v in parsed.headers.values())
 
 
-def test_parse_overlong_address_capped_to_column_width() -> None:
-    raw = _eml(f"From: {'x' * 400}@host.com\nMessage-ID: <o@x>", "b")
+def test_parse_strips_c0_control_chars_from_body_keeps_tab_and_newline() -> None:
+    # Audit L-6: BEL/VT-class C0 chars survived into 19 stored bodies. They must be stripped from
+    # body_text while tab and newline (legitimate layout) survive.
+    raw = (
+        b"From: a@x.com\r\nMessage-ID: <m-ctl@x>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"a\x07b\x0bc\td\ne"
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.body_text == "abc\td\ne"
+
+
+def test_parse_overlong_address_capped_to_column_width_keeps_addr_spec() -> None:
+    # Cap to the 320-char column, and the capped value must still be addr-spec shaped to be kept.
+    raw = _eml(f"From: {'x' * 200}@{'y' * 195}.com\nMessage-ID: <o@x>", "b")
 
     parsed = parse_email(raw, MAILBOX)
 
     assert parsed.from_address is not None and len(parsed.from_address) == 320
+    assert "@" in parsed.from_address
+
+
+def test_parse_overlong_localpart_truncation_without_at_sign_stores_none() -> None:
+    # When the 320-char cap cuts the '@' off entirely, the capped value is no longer addr-spec
+    # shaped — store None (audit L-7's shape contract), never a 320-char garbage token.
+    raw = _eml(f"From: {'x' * 400}@host.com\nMessage-ID: <o2@x>", "b")
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.from_address is None
+
+
+def test_parse_from_without_addr_spec_stores_null_from_address() -> None:
+    # Audit L-7: Exchange NDRs put a bare display token in From; getaddresses surfaces it in the
+    # ADDRESS slot. It must NOT be stored as from_address — but the raw token still reaches the
+    # .flags classifiers (→ automated) and survives verbatim in the stored headers.
+    raw = _eml(
+        "From: System Administrator\nTo: me@oneai.com\n"
+        "Subject: Undeliverable: status update\nMessage-ID: <m-ndr@x>",
+        "Your message did not reach the recipient.",
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.from_address is None
+    assert parsed.is_automated is True  # the raw token reached the flags classifier
+    # The token survives in the stored headers (policy.default re-quotes the bare display token).
+    assert "System Administrator" in str(parsed.headers["From"])
 
 
 def test_parse_naive_date_pinned_to_utc() -> None:
@@ -248,53 +363,6 @@ def test_parse_naive_date_pinned_to_utc() -> None:
 
     assert no_tz.sent_at is not None and no_tz.sent_at.tzinfo == UTC
     assert minus_zero.sent_at is not None and minus_zero.sent_at.utcoffset().total_seconds() == 0
-
-
-def test_parse_reused_message_id_different_content_gets_distinct_dedup_keys() -> None:
-    # Dedup poisoning (audit C02): a decoy planting <reused@x> must NOT let a later, genuinely
-    # different email reusing that id collapse onto it — distinct content ⇒ distinct dedup_key.
-    decoy = _eml("From: a@x\nTo: me@oneai.com\nMessage-ID: <reused@x>", "hello, benign")
-    genuine = _eml("From: a@x\nTo: me@oneai.com\nMessage-ID: <reused@x>", "WIRE THE 2M NOW")
-
-    decoy_key = parse_email(decoy, MAILBOX).dedup_key
-    genuine_key = parse_email(genuine, MAILBOX).dedup_key
-
-    assert decoy_key != genuine_key
-    assert decoy_key.startswith("sha256:") and genuine_key.startswith("sha256:")
-    # Idempotent: identical wire bytes still collide (re-fetch).
-    assert parse_email(decoy, MAILBOX).dedup_key == decoy_key
-
-
-def test_parse_same_email_across_folders_dedups_despite_trace_headers() -> None:
-    # Audit B05: two IMAP-folder copies of ONE email differ only by prepended trace headers
-    # (Received/X-Folder); the content-identity key (Message-ID + body hash) must MATCH so they
-    # dedup to one row — raw-byte keying stored them twice (~40% duplication on the real corpus).
-    base = "From: a@x\nTo: me@oneai.com\nSubject: Q3\nMessage-ID: <same@x>"
-    inbox = _eml("Received: from mta1 by host1\n" + base, "the quarterly numbers")
-    archive = _eml(
-        "Received: from mta2 by host2\nX-Folder: Archive\n" + base, "the quarterly numbers"
-    )
-
-    assert parse_email(inbox, MAILBOX).dedup_key == parse_email(archive, MAILBOX).dedup_key
-
-    # ...yet a DIFFERENT body reusing the same Message-ID still gets a distinct key (poison-safe).
-    poison = _eml("Received: from mta3\n" + base, "WIRE 2M NOW")
-    assert parse_email(poison, MAILBOX).dedup_key != parse_email(inbox, MAILBOX).dedup_key
-
-
-def test_parse_reused_message_id_same_body_different_headers_stays_distinct() -> None:
-    # Audit B05 over-dedup guard: an appliance sender reusing a Message-ID + an identical templated
-    # body, varying only Subject/Date per event, must get DISTINCT keys — folding the folder-stable
-    # logical headers into the key stops the recurrences from being silently deduped away (lost).
-    base = "From: monitor@corp\nTo: me@oneai.com\nMessage-ID: <const@appliance>"
-    event1 = _eml(
-        base + "\nSubject: ALERT 09:00\nDate: Mon, 02 Jun 2025 09:00:00 +0000", "Backup failed"
-    )
-    event2 = _eml(
-        base + "\nSubject: ALERT 10:00\nDate: Mon, 02 Jun 2025 10:00:00 +0000", "Backup failed"
-    )
-
-    assert parse_email(event1, MAILBOX).dedup_key != parse_email(event2, MAILBOX).dedup_key
 
 
 def test_parse_pathological_recursion_degrades_not_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,7 +379,7 @@ def test_parse_pathological_recursion_degrades_not_raises(monkeypatch: pytest.Mo
     parsed = parse_email(raw, MAILBOX)  # must not raise
 
     assert parsed.parse_status == "failed"
-    assert parsed.dedup_key.startswith("sha256:")  # stable content key so the stub is idempotent
+    assert parsed.dedup_key.startswith("sha256:")  # stable raw-byte key so the stub is idempotent
     assert parsed.message_id is None and parsed.body_text == ""
 
 

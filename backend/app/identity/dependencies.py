@@ -2,7 +2,8 @@
 Role: FastAPI dependency wiring for the identity module — JWT verification, role
       gates, the tenant-session seam, and service providers.
 Used by: routes.auth_routes / user_routes / platform_routes.
-Depends on: app.core.database (get_session, scoped_session), security.tokens,
+Depends on: app.core.database (get_session, scoped_session), app.common.erasure_hooks
+            (the registry injected into ErasureService), security.tokens,
             identity repositories/services, identity.principal, identity.exceptions,
             identity.enums.
 Key invariants:
@@ -27,6 +28,7 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.erasure_hooks import registered_erasure_hooks
 from app.core.database import get_session, scoped_session
 from app.identity.enums import SubjectType, UserRole
 from app.identity.exceptions import PermissionDeniedError, TokenInvalidError
@@ -248,14 +250,18 @@ def get_company_support_service(
 def get_erasure_service(session: AsyncSession = Depends(get_session)) -> ErasureService:
     """Provide ErasureService on a PLAIN session (erasure/offboarding spans all orgs).
 
-    The AuditService shares this session so the org.erased event commits atomically with the
-    deletes — a partial erasure can't be left behind.
+    The AuditService AND every registered erasure hook (app.common.erasure_hooks — the
+    Connect/entities deletes, wired at startup in app.main) share this session, so the
+    feature-module deletes + the org.erased event commit atomically with the identity-side
+    erasure — a partial erasure can't be left behind.
     """
     return ErasureService(
+        session=session,
         organizations=OrganizationRepository(session),
         users=UserRepository(session),
         refresh_tokens=RefreshTokenRepository(session),
         support_grants=SupportGrantRepository(session),
         platform_admins=PlatformAdminRepository(session),
         audit=AuditService(AuditRepository(session)),
+        erasure_hooks=registered_erasure_hooks(),
     )

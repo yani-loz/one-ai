@@ -119,3 +119,15 @@ class ErasureConfirmationError(IdentityError):
     A guard against accidental destruction: the request must echo the org's slug exactly
     (GitHub-style "type the name to delete"). A mismatch deletes nothing.
     """
+
+
+# — 500 Internal Server Error —
+class ErasureNotConfiguredError(IdentityError):
+    """Erasure was refused because NO feature-module erasure hooks are registered (-> 500).
+
+    Fail-closed guard: an empty hook registry means Connect tables + the entity graph would
+    silently survive while a deletion certificate is still issued (the exact partial-erasure
+    bug the hook registry exists to prevent). Triggers only in a process that constructs
+    ErasureService without running app.main.create_app() (which registers the hooks) — a
+    deployment/wiring error, so 500, and NOTHING is deleted.
+    """

@@ -8,18 +8,25 @@ Key invariants tested:
     404 for read/test/delete (never a 403/200-empty existence leak, never B-data in the body).
   - The credential never appears in any response body.
   - member -> 403, missing token -> 401, duplicate -> 409, test reports status without raising.
+  - ACTOR PLUMBING (H-5): the connector.* audit row records the JWT principal's subject_id —
+    the route does not discard the caller's identity (content-blindness re-checked end to end).
 """
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.connectors.dependencies as connector_dependencies
 from app.connectors.base.connector import ConnectionCheck
+from app.identity.models.audit_log import AuditLog
+from tests.conftest import seed_org
 from tests.connectors.conftest import bearer, company_token
 
 
@@ -37,7 +44,7 @@ def _payload() -> dict[str, object]:
 
 
 async def test_create_connection_returns_201_without_secret(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
 
     response = await client.post("/connectors", json=_payload(), headers=bearer(token))
 
@@ -51,7 +58,7 @@ async def test_create_connection_returns_201_without_secret(client: AsyncClient)
 
 
 async def test_create_duplicate_connection_returns_409(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     await client.post("/connectors", json=_payload(), headers=bearer(token))
 
     response = await client.post("/connectors", json=_payload(), headers=bearer(token))
@@ -60,7 +67,7 @@ async def test_create_duplicate_connection_returns_409(client: AsyncClient) -> N
 
 
 async def test_list_returns_the_orgs_connections(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     await client.post("/connectors", json=_payload(), headers=bearer(token))
 
     response = await client.get("/connectors", headers=bearer(token))
@@ -70,7 +77,7 @@ async def test_list_returns_the_orgs_connections(client: AsyncClient) -> None:
 
 
 async def test_get_unknown_connection_returns_404(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
 
     response = await client.get(f"/connectors/{uuid4()}", headers=bearer(token))
 
@@ -78,7 +85,7 @@ async def test_get_unknown_connection_returns_404(client: AsyncClient) -> None:
 
 
 async def test_test_connection_success_sets_status_connected(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     created = await client.post("/connectors", json=_payload(), headers=bearer(token))
     connection_id = created.json()["id"]
 
@@ -96,7 +103,7 @@ async def test_test_connection_failure_sets_status_error(
     stub_outcome["check"] = ConnectionCheck(
         ok=False, message="Authentication failed — check the username and password."
     )
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     created = await client.post("/connectors", json=_payload(), headers=bearer(token))
     connection_id = created.json()["id"]
 
@@ -109,7 +116,7 @@ async def test_test_connection_failure_sets_status_error(
 
 
 async def test_delete_connection_returns_204_then_404(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     created = await client.post("/connectors", json=_payload(), headers=bearer(token))
     connection_id = created.json()["id"]
 
@@ -121,7 +128,7 @@ async def test_delete_connection_returns_204_then_404(client: AsyncClient) -> No
 
 
 async def test_disable_then_enable_round_trip(client: AsyncClient) -> None:
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     connection_id = (
         await client.post("/connectors", json=_payload(), headers=bearer(token))
     ).json()["id"]
@@ -136,11 +143,11 @@ async def test_disable_then_enable_round_trip(client: AsyncClient) -> None:
 
 
 async def test_cannot_disable_another_orgs_connection_returns_404(client: AsyncClient) -> None:
-    org_a = company_token(uuid4(), uuid4())
+    org_a = company_token(uuid4(), await seed_org())
     connection_id = (
         await client.post("/connectors", json=_payload(), headers=bearer(org_a))
     ).json()["id"]
-    org_b = company_token(uuid4(), uuid4())
+    org_b = company_token(uuid4(), await seed_org())
 
     disable_b = await client.post(f"/connectors/{connection_id}/disable", headers=bearer(org_b))
     enable_b = await client.post(f"/connectors/{connection_id}/enable", headers=bearer(org_b))
@@ -158,10 +165,10 @@ async def test_member_cannot_disable_connection_returns_403(client: AsyncClient)
 
 
 async def test_cannot_read_another_orgs_connection_returns_404(client: AsyncClient) -> None:
-    org_a = company_token(uuid4(), uuid4())
+    org_a = company_token(uuid4(), await seed_org())
     created = await client.post("/connectors", json=_payload(), headers=bearer(org_a))
     connection_id = created.json()["id"]
-    org_b = company_token(uuid4(), uuid4())
+    org_b = company_token(uuid4(), await seed_org())
 
     get_b = await client.get(f"/connectors/{connection_id}", headers=bearer(org_b))
     test_b = await client.post(f"/connectors/{connection_id}/test", headers=bearer(org_b))
@@ -175,10 +182,10 @@ async def test_cannot_read_another_orgs_connection_returns_404(client: AsyncClie
 
 
 async def test_another_org_cannot_delete_then_owner_still_has_it(client: AsyncClient) -> None:
-    org_a = company_token(uuid4(), uuid4())
+    org_a = company_token(uuid4(), await seed_org())
     created = await client.post("/connectors", json=_payload(), headers=bearer(org_a))
     connection_id = created.json()["id"]
-    org_b = company_token(uuid4(), uuid4())
+    org_b = company_token(uuid4(), await seed_org())
 
     await client.delete(f"/connectors/{connection_id}", headers=bearer(org_b))
     owner_get = await client.get(f"/connectors/{connection_id}", headers=bearer(org_a))
@@ -201,9 +208,9 @@ async def test_missing_token_returns_401(client: AsyncClient) -> None:
 
 
 async def test_list_excludes_other_orgs_connections(client: AsyncClient) -> None:
-    org_a = company_token(uuid4(), uuid4())
+    org_a = company_token(uuid4(), await seed_org())
     await client.post("/connectors", json=_payload(), headers=bearer(org_a))
-    org_b = company_token(uuid4(), uuid4())
+    org_b = company_token(uuid4(), await seed_org())
 
     response = await client.get("/connectors", headers=bearer(org_b))
 
@@ -213,9 +220,9 @@ async def test_list_excludes_other_orgs_connections(client: AsyncClient) -> None
 
 
 async def test_duplicate_check_is_org_scoped(client: AsyncClient) -> None:
-    org_a = company_token(uuid4(), uuid4())
+    org_a = company_token(uuid4(), await seed_org())
     await client.post("/connectors", json=_payload(), headers=bearer(org_a))
-    org_b = company_token(uuid4(), uuid4())
+    org_b = company_token(uuid4(), await seed_org())
 
     # The SAME (connector_type, username) in a DIFFERENT org must be allowed, not a 409 — a 409
     # here would both leak that org A configured this mailbox and deny org B.
@@ -238,7 +245,7 @@ async def test_test_connection_failure_persists_to_the_row(
     stub_outcome["check"] = ConnectionCheck(
         ok=False, message="Authentication failed — check the username and password."
     )
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
     connection_id = (
         await client.post("/connectors", json=_payload(), headers=bearer(token))
     ).json()["id"]
@@ -248,6 +255,65 @@ async def test_test_connection_failure_persists_to_the_row(
 
     assert persisted.json()["status"] == "error"
     assert "uthentication" in persisted.json()["last_error"]
+
+
+async def test_create_connection_audit_row_carries_the_jwt_actor(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # H-5 end to end: the route must plumb the verified principal into the service so the
+    # connector.created row records WHO acted — and stays content-blind over the wire too.
+    user_id, org_id = uuid4(), await seed_org()
+    token = company_token(user_id, org_id)
+
+    response = await client.post("/connectors", json=_payload(), headers=bearer(token))
+
+    assert response.status_code == 201
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLog).where(
+                    AuditLog.org_id == org_id, AuditLog.action == "connector.created"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].actor_id == user_id  # the JWT subject, not discarded at the route boundary
+    assert str(rows[0].entity_id) == response.json()["id"]
+    serialized = json.dumps(rows[0].details)
+    assert "imap-app-pw-123" not in serialized
+    assert "sales@example.com" not in serialized
+
+
+async def test_delete_connection_audit_row_carries_the_jwt_actor(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # The delete cascades the corpus away (H-7) — the audit row must survive with the actor.
+    user_id, org_id = uuid4(), await seed_org()
+    token = company_token(user_id, org_id)
+    connection_id = (
+        await client.post("/connectors", json=_payload(), headers=bearer(token))
+    ).json()["id"]
+
+    response = await client.delete(f"/connectors/{connection_id}", headers=bearer(token))
+
+    assert response.status_code == 204
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLog).where(
+                    AuditLog.org_id == org_id, AuditLog.action == "connector.deleted"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].actor_id == user_id
+    assert str(rows[0].entity_id) == connection_id
 
 
 async def test_connector_endpoint_returns_503_when_key_insecure_in_nondev(
@@ -263,7 +329,7 @@ async def test_connector_endpoint_returns_503_when_key_insecure_in_nondev(
             requires_secure_secrets=True,
         ),
     )
-    token = company_token(uuid4(), uuid4())
+    token = company_token(uuid4(), await seed_org())
 
     response = await client.post("/connectors", json=_payload(), headers=bearer(token))
 

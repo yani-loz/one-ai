@@ -1,7 +1,10 @@
 # Data-Quality Points of Investigation — IMAP ingest → entity graph
 
-**Status:** STANDARD (investigation catalog). Not yet executed — execution lands as `TC-DQ-*` files +
-harness queries in this folder, mirroring `testing/10_imap-connector/`.
+**Status:** STANDARD (investigation catalog) — **executed twice**: 2026-06-09 (first pass →
+`docs/audits/2026-06-09_imap-data-quality.md`) and 2026-06-10 (full-DB re-audit →
+`docs/audits/2026-06-10_db-data-quality-audit.md`). Current corpus numbers live in the
+**Baselines** section at the end of this file — the next pass grades against those, not against the
+catalog rows' first-run figures.
 
 **Scope.** A *different axis* from the `10_imap-connector` pass. That pass proved **plumbing**:
 never-lose-mail, crash safety, DB-level tenant isolation (RLS holds). This standard asks the opposite
@@ -217,3 +220,43 @@ Message-ID with different bytes yields a different hash → it is stored, not sk
 concern **inverts** to over-storage of near-duplicates (**DQ-B05**). (Note the stale `email.py` model
 docstring still says "Message-ID, else hash" — a doc/code mismatch worth correcting.) **Action: confirm
 C02 is closed before spending effort "fixing" it; redirect that effort to B05 if anywhere.**
+
+---
+
+## Baselines — 2026-06-10 full-DB audit (grade the next pass against these)
+
+Authoritative source: `docs/audits/2026-06-10_db-data-quality-audit.md` §5 (right-hand column).
+Corpus: dev org `d1500000-…`, 13,635 `.eml` on disk → **13,583 stored** (52 dedup-skipped, 0 failed).
+Deltas that exactly equal a landed remediation (person −73 = DQ-C02 gating, company +77 = DQ-D01,
+person_alias 0→1,293 = DQ-K04) are **expected movement, not regressions** — see audit §3 (B-17).
+
+| Metric (DQ point) | Baseline (2026-06-10) | Reading |
+|---|---|---|
+| Duplicate message groups / redundant rows (DQ-B05) | 2,537 groups / 5,343 redundant rows = **39.3%** of email_message | ❌ vs <0.1% green — the content-key remediation removed only the 52 byte-identical copies. **Fix landed 2026-06-11** (content-identity `_dedup_key`): **VERIFIED 2026-06-11 (key v3: + UTC-instant Date + TNEF presence marker): 8,386 stored / 5,249 skipped; content-identical residual = 18 rows (0.21%), the NEW baseline** — see the audit report §7. |
+| Ingest dedup skips | 52 / 13,635 (0.4%) | pre-fix figure (byte-identical copies only) |
+| person rows | 1,154 | −73 vs 06-09 = DQ-C02 gating ✓ |
+| company rows | 572 | +77 vs 06-09 = DQ-D01 role-suppressed domains observed ✓ |
+| person_alias rows | 1,293 | DQ-K04 alias writing landed ✓ (was a dead table) |
+| NULL display_name (DQ-K04) | 332/1,154 = 28.8% | improved from 38%, but the top-degree head is still nameless — red on the "none in top-degree" axis |
+| Persons / companies per 1,000 emails | 84 / 42 | expected drift from the two remediations |
+| Subdomain company pairs (DQ-B03) | 37 | **tripled** vs 12; eTLD+1 folding still missing |
+| Within-message dup recipient edges (DQ-B06) | 183 groups / 199 redundant rows | unfixed vs 06-09 |
+| Attachment extracted_text mojibake (DQ-H02) | 9 | unchanged, documented limitation |
+| Address-as-display-name persons (DQ-F01 bucket) | 15 | grown from 8; still inside the <5% budget |
+| Body mojibake (DQ-F02) | 41 rows = 0.30% | 3x over the <0.1% green (first measurement) |
+| NULL-direction draft rows | 80 | by-design (unsent drafts — audit §3 B-6) |
+| Attachment content-type census | 9,109 png / 2,355 tnef / 2,306 pdf / 1,641 docx | byte-identical across audits — deterministic parse ✓ |
+| Punycode/IDN pairs (DQ-B04) | 1 pair (breeze.no Cyrillic-о homoglyph) | target 0; quarantine mechanism needed |
+| Business-doc census, extraction 0% (DQ-H01 / CA-CONN-04) | 2,306 PDF / 1,641 docx / 99 xlsx / 68 pptx / 61 doc | full corpus (~8x the 1,500-email sample baseline) |
+
+### New-in-this-audit baselines (first measured 2026-06-10 — no prior figure)
+
+| Metric | Baseline | Maps to |
+|---|---|---|
+| Quote-wrapped names (Outlook `'Name'` convention) | 9,215 recipient rows (33%) / 101 persons (8.8%) / 398 aliases (30.8%), of which 347 have an unquoted twin | audit H-3 (DQ-F01 axis) |
+| Phantom automation persons (compound no-reply localparts) | 13 persons (worst: a 10-alias over-merge hub) | audit H-4 (DQ-C01 blind spot) |
+| Free-mail-domain companies | abv.bg (22 people, rank #1) + mail.bg (1) | audit M-7 (DQ-C03/DQ-K03) |
+| C0 control chars surviving into body_text | 19 rows (U+0007/U+000B) | audit L-6 (DQ-F02 axis) |
+| Non-addr-spec from_address | 9 rows (`'System Administrator'` Exchange NDRs, stored `is_automated=false`) | audit L-7 |
+| org-FK coverage (org_id tables with a FK to organizations) | 1/15 (users only) — the phantom-tenant enabler | audit H-2 |
+| audit_log connector lifecycle coverage | 0 `connector.*`/`sync.*` actions (fix in flight — see FIX_BEFORE_PROD CA-CONN-06) | audit H-5 |

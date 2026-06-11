@@ -37,6 +37,7 @@ from app.connectors.security.credential_cipher import CredentialCipher
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person, PersonAlias, PersonEmail
+from tests.conftest import register_org
 
 # Parents before children (create order); TRUNCATE ... CASCADE handles FK order on teardown.
 _RUNNER_TABLES = [
@@ -172,7 +173,11 @@ async def seed_connection(
     mailbox: str = "owner@acme.com",
     disabled: bool = False,
 ) -> ConnectorConnection:
-    """Insert a connector_connection with a REAL encrypted credential (runner can decrypt)."""
+    """Insert a connector_connection with a REAL encrypted credential (runner can decrypt).
+
+    Registers the org row first (idempotent) — 0014's org-root FK rejects phantom tenants.
+    """
+    await register_org(session, org_id)
     connection = ConnectorConnection(
         org_id=org_id,
         connector_type="imap",

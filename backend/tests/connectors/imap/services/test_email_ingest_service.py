@@ -244,6 +244,34 @@ async def test_ingest_recursion_failure_stores_a_flagged_stub_not_dropped(
     )  # no entity-graph rows from a content-less stub
 
 
+async def test_ingest_runs_parse_email_off_the_event_loop_thread(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Event-loop hygiene: parse_email is pure CPU (RFC822 parse, base64, sha256, html2text) and
+    # must run via asyncio.to_thread — never on the loop thread inside the background sync.
+    import threading
+
+    import app.connectors.imap.services.email_ingest_service as ingest_module
+
+    parse_threads: list[threading.Thread] = []
+    real_parse = ingest_module.parse_email
+
+    def _spy(raw_bytes: bytes, mailbox: str, internal_date: object = None) -> object:
+        parse_threads.append(threading.current_thread())
+        return real_parse(raw_bytes, mailbox, internal_date)
+
+    monkeypatch.setattr(ingest_module, "parse_email", _spy)
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    raw = _eml("From: a@globex.com\nTo: owner@acme.com\nMessage-ID: <thread@x>")
+
+    outcome = await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    assert outcome is IngestOutcome.STORED  # behavior unchanged by the offload
+    assert len(parse_threads) == 1
+    assert parse_threads[0] is not threading.main_thread()  # ran on a worker, not the loop
+
+
 async def test_ingest_human_on_mailing_list_still_creates_from_person(
     db_session: AsyncSession,
 ) -> None:

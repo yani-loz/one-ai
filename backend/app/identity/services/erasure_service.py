@@ -4,32 +4,48 @@ Role: GDPR erasure (offboarding) + the exportable compliance artifact. Erases a 
       certificate; serves a compliance export bundling org metadata + the audit trail. Holds
       the erasure business logic (rule A5).
 Used by: routes.erasure_routes; constructed in identity.dependencies on a PLAIN session
-         (platform spans all orgs).
+         (platform spans all orgs) with the hooks from app.common.erasure_hooks.
 Depends on: organization/user/refresh-token/support-grant repositories, AuditService,
-            identity.principal/enums/exceptions/schemas.
+            app.common.erasure_hooks (the feature-module seam), identity.principal/enums/
+            exceptions/schemas, security.password (async sudo re-auth).
 Key invariants:
   - LEGAL-HOLD-BEATS-ERASURE: if the org is under legal hold, erase raises LegalHoldError
     (409) and touches NOTHING. Guards run before any delete: slug confirmation (400) → a
-    sudo-style password re-auth of the acting admin (403) → legal hold (409).
-  - ATOMIC: all deletes/scrubs + the org.erased audit row commit in ONE request transaction
-    (get_session) — a partial erasure can't be left behind.
+    sudo-style password re-auth of the acting admin (403; a DEACTIVATED admin gets the same
+    generic failure, and the bcrypt check runs async + against a dummy hash when the account
+    is missing/inactive, so no timing oracle) → legal hold (409).
+  - ATOMIC: all deletes/scrubs + every erasure hook + the org.erased audit row commit in ONE
+    request transaction (get_session) — a partial erasure can't be left behind.
   - COMPLETE across tenant PII: deletes users + refresh tokens (tokens FIRST — they key on
-    the users' ids), and SCRUBS support_grant.decided_by_email (a tenant subject). The
-    append-only audit_log is the one store that CANNOT be deleted (the immutability trigger),
-    so its actor_email is RETAINED under a documented legal basis — the certificate says so.
-    ⚠️ Any NEW tenant-scoped table MUST be added here (see FIX_BEFORE_PROD erasure invariant).
+    the users' ids), SCRUBS support_grant.decided_by_email (a tenant subject), then runs
+    EVERY registered erasure hook (Connect tables + the entity graph — CA-CONN-01/03) on the
+    same session; the certificate reports each hook's per-table counts. The hooks run on the
+    RLS-EXEMPT global session BY DESIGN, so each hook's own org-scoped SQL is the only
+    containment. FAIL-CLOSED: a registry missing ANY required module (REQUIRED_ERASURE_HOOKS —
+    empty AND partial configurations both) refuses to erase at all
+    (ErasureNotConfiguredError -> 500) — a process that skipped create_app()'s hook
+    registration must never emit a certificate that omits Connect/entity PII.
+    The append-only audit_log is the one store that CANNOT be deleted (the
+    immutability trigger), so its actor_email is RETAINED under a documented legal basis —
+    the certificate says so. ⚠️ Any NEW tenant-scoped table MUST join an erasure hook (or be
+    added here) — see the FIX_BEFORE_PROD erasure invariant.
   - The org row is retained at status='offboarded' as the subject of the compliance record.
   - Platform-only; content-blind (counts + metadata, never tenant content).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.common.erasure_hooks import REQUIRED_ERASURE_HOOKS, ErasureHook
 from app.identity.enums import AuditActorType, OrganizationStatus
 from app.identity.exceptions import (
     ErasureConfirmationError,
+    ErasureNotConfiguredError,
     LegalHoldError,
     OrganizationNotFoundError,
     PasswordConfirmationError,
@@ -46,7 +62,7 @@ from app.identity.schemas.erasure_schemas import (
     ErasureRequest,
 )
 from app.identity.schemas.platform_schemas import OrganizationDetailResponse
-from app.identity.security.password import verify_password
+from app.identity.security.password import DUMMY_PASSWORD_HASH, verify_password_async
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 _ENTITY_ORGANIZATION = "organization"
@@ -63,29 +79,42 @@ class ErasureService:
 
     def __init__(
         self,
+        session: AsyncSession,
         organizations: OrganizationRepository,
         users: UserRepository,
         refresh_tokens: RefreshTokenRepository,
         support_grants: SupportGrantRepository,
         platform_admins: PlatformAdminRepository,
         audit: AuditService,
+        erasure_hooks: Mapping[str, ErasureHook],
     ) -> None:
-        """Wire the repositories + audit writer (all bound to one plain platform session)."""
+        """Wire the repositories + audit writer (all bound to one plain platform session).
+
+        `session` is that same plain (RLS-exempt) session — passed to each erasure hook so
+        the feature-module deletes commit atomically with the identity-side erasure.
+        `erasure_hooks` is REQUIRED (dependencies injects app.common.erasure_hooks'
+        registry): forcing the caller to supply it is what keeps a forgotten wiring from
+        silently reintroducing the partial-erasure bug.
+        """
+        self._session = session
         self._organizations = organizations
         self._users = users
         self._refresh_tokens = refresh_tokens
         self._support_grants = support_grants
         self._platform_admins = platform_admins
         self._audit = audit
+        self._erasure_hooks = erasure_hooks
 
     async def erase_organization(
         self, org_id: UUID, payload: ErasureRequest, actor: Principal
     ) -> ErasureCertificateResponse:
         """Erase a tenant's personal data and return the deletion certificate.
 
-        Order: LOCK the org (FOR UPDATE) → confirm slug (400) → re-auth password (403) →
-        legal-hold guard (409, touch nothing) → delete tokens → scrub support emails → delete
-        users → offboard → audit. All atomic. The row lock closes a TOCTOU: a concurrent
+        Order: LOCK the org (FOR UPDATE) → confirm slug (400) → re-auth password (403; a
+        missing OR deactivated admin fails identically, against a dummy hash so timing can't
+        tell which) → legal-hold guard (409, touch nothing) → delete tokens → scrub support
+        emails → delete users → run every registered erasure hook (Connect + entity graph) →
+        offboard → audit. All atomic. The row lock closes a TOCTOU: a concurrent
         set_legal_hold can't slip a hold in between the legal_hold read and the deletes — it
         blocks until this transaction commits, so a hold placed as a purge looms is never
         overwritten by an in-flight erase.
@@ -93,10 +122,25 @@ class ErasureService:
         Raises:
             OrganizationNotFoundError: no such org (-> 404).
             ErasureConfirmationError: confirm_slug != the org's slug (-> 400, nothing deleted).
-            PasswordConfirmationError: the admin's password re-check failed (-> 403, nothing
-                deleted) — a sudo-style guard, even though the admin is already authenticated.
+            PasswordConfirmationError: the admin's password re-check failed, or the admin is
+                missing/deactivated (-> 403, nothing deleted, same generic message) — a
+                sudo-style guard, even though the admin is already authenticated.
             LegalHoldError: the org is under legal hold (-> 409, nothing deleted).
+            ErasureNotConfiguredError: any REQUIRED erasure hook is unregistered (-> 500,
+                nothing deleted) — fail-closed on empty AND partial registries: a missing
+                module means its PII would survive behind a clean certificate (a wiring
+                error, e.g. a process that never ran create_app()).
         """
+        # Fail-closed on PARTIAL configuration too, not just empty: a process registering only
+        # one module would erase incompletely behind a clean certificate (cross-vendor review).
+        missing_hooks = [name for name in REQUIRED_ERASURE_HOOKS if name not in self._erasure_hooks]
+        if missing_hooks:
+            raise ErasureNotConfiguredError(
+                "Erasure hooks missing for required module(s) "
+                f"{', '.join(missing_hooks)} — refusing to erase: the certificate would "
+                "silently omit that module's PII. Run app.main.create_app() (it registers "
+                "every required hook) before erasing."
+            )
         organization = await self._organizations.get_for_update(org_id)
         if organization is None:
             raise OrganizationNotFoundError("Organization not found.")
@@ -105,7 +149,12 @@ class ErasureService:
                 "Confirmation does not match the organization's slug."
             )
         admin = await self._platform_admins.get_by_id(actor.subject_id)
-        if admin is None or not verify_password(payload.password, admin.password_hash):
+        # Always pay the bcrypt cost (dummy hash when the admin is missing/deactivated) so the
+        # generic 403 can't be told apart by response time; async so it never blocks the loop.
+        admin_eligible = admin is not None and admin.is_active
+        password_hash = admin.password_hash if admin_eligible else DUMMY_PASSWORD_HASH
+        password_ok = await verify_password_async(payload.password, password_hash)
+        if not admin_eligible or not password_ok:
             raise PasswordConfirmationError("Password confirmation failed.")
         if organization.legal_hold:
             raise LegalHoldError(
@@ -115,6 +164,13 @@ class ErasureService:
         tokens_deleted = await self._refresh_tokens.delete_for_org_users(org_id)
         emails_scrubbed = await self._support_grants.scrub_decider_emails(org_id)
         users_erased = await self._users.delete_all_in_org(org_id)
+        # Feature-module erasure (Connect tables + the entity graph — CA-CONN-01/03): every
+        # registered hook runs in THIS transaction on the shared session; each hook's SQL is
+        # org-scoped (the only containment on the RLS-exempt session). Counts merge into one
+        # per-table report (hooks own disjoint tables).
+        erased_rows_by_table: dict[str, int] = {}
+        for hook in self._erasure_hooks.values():
+            erased_rows_by_table.update(await hook(org_id, self._session))
         organization.status = OrganizationStatus.offboarded.value
         erased_at = datetime.now(UTC)
 
@@ -130,6 +186,7 @@ class ErasureService:
                     "users_erased": users_erased,
                     "tokens_deleted": tokens_deleted,
                     "support_decider_emails_scrubbed": emails_scrubbed,
+                    "erased_rows_by_table": erased_rows_by_table,
                     "audit_log_retained": True,
                     "reason": payload.reason,
                 },
@@ -145,6 +202,7 @@ class ErasureService:
             users_erased=users_erased,
             tokens_deleted=tokens_deleted,
             support_decider_emails_scrubbed=emails_scrubbed,
+            erased_rows_by_table=erased_rows_by_table,
             audit_log_retained=True,
             retained_legal_basis=_LEGAL_BASIS,
         )

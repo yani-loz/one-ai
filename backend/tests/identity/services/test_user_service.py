@@ -73,6 +73,33 @@ async def test_create_user_duplicate_email_raises_duplicate(db_session: AsyncSes
         await service.create_user(org.id, payload, _ACTOR)
 
 
+async def test_create_user_hashes_password_via_async_helper(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Event-loop hygiene: create_user must hash through hash_password_async (worker
+    # thread) — the sync form costs ~300ms of bcrypt CPU on the loop for every tenant.
+    import app.identity.services.user_service as user_module
+
+    hashed_passwords: list[str] = []
+    real_hash_async = user_module.hash_password_async
+
+    async def _spy(raw_password: str) -> str:
+        hashed_passwords.append(raw_password)
+        return await real_hash_async(raw_password)
+
+    monkeypatch.setattr(user_module, "hash_password_async", _spy)
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    service = _service(db_session)
+    payload = UserCreateRequest(
+        email="async@acme.example", full_name="Async", role=UserRole.member, password="StrongPass1"
+    )
+
+    created = await service.create_user(org.id, payload, _ACTOR)
+
+    assert hashed_passwords == ["StrongPass1"]
+    assert created.email == "async@acme.example"
+
+
 async def test_list_users_returns_only_caller_org(db_session: AsyncSession) -> None:
     org_a = await seed_organization(db_session, name="A", slug="a")
     org_b = await seed_organization(db_session, name="B", slug="b")

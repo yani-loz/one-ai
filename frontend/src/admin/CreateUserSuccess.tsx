@@ -8,6 +8,10 @@
  * Key invariants:
  *   - The plaintext password is held only transiently in client state (the admin just set or
  *     generated it); the backend stores a bcrypt hash. The copy is hand-off, NOT storage.
+ *   - "Copied" is only claimed after the clipboard write CONFIRMS. A missing Clipboard API
+ *     (plain-HTTP LAN host) or a rejected write shows "Copy failed — select the text manually"
+ *     instead — never a false success over a one-time credential. (CopyField is kept
+ *     structurally in sync with platform/OnboardSuccess.tsx.)
  *   - This hand-off is the deliberate MVP shortcut until an email-invite / first-login reset
  *     lands (FIX_BEFORE_PROD: admin-set passwords) — so the panel tells the admin to share it
  *     securely and have the user change it on first sign-in.
@@ -23,15 +27,27 @@ import { AgentInsignia } from "../components/AgentInsignia";
 import { seedFromString } from "../components/insignia/generateInsignia";
 import type { CompanyUser } from "./types";
 
-/** A read-only credential row with a one-tap copy affordance. */
+/** A read-only credential row with a one-tap copy affordance — "Copied" only after a CONFIRMED
+ *  clipboard write; a missing/denied clipboard shows a manual-copy fallback, never false success. */
 function CopyField({ label, value }: { label: string; value: string }): React.JSX.Element {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
-  function copyToClipboard(): void {
-    // navigator.clipboard is absent in some test/headless contexts — guard it.
-    void navigator.clipboard?.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+  async function copyToClipboard(): Promise<void> {
+    // navigator.clipboard is absent off secure contexts (plain-HTTP LAN hosts) and in some
+    // test/headless contexts; a present clipboard can still reject (permission denied). Only a
+    // resolved write may claim "Copied" — this is a one-time credential, a false claim loses it.
+    const clipboard = navigator.clipboard;
+    if (clipboard === undefined) {
+      setCopyState("failed");
+      return;
+    }
+    try {
+      await clipboard.writeText(value);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1500);
+    } catch {
+      setCopyState("failed");
+    }
   }
 
   return (
@@ -43,12 +59,17 @@ function CopyField({ label, value }: { label: string; value: string }): React.JS
         </code>
         <button
           type="button"
-          onClick={copyToClipboard}
+          onClick={() => void copyToClipboard()}
           className="shrink-0 rounded-lg border border-white/50 bg-white/50 px-3 py-2 text-xs font-medium text-text-primary transition-all duration-200 hover:scale-[1.03] hover:border-brand-teal/50 active:scale-[0.97]"
         >
-          {copied ? "Copied" : "Copy"}
+          {copyState === "copied" ? "Copied" : "Copy"}
         </button>
       </div>
+      {copyState === "failed" && (
+        <p role="alert" className="mt-1 animate-fade-in text-xs text-brand-red">
+          Copy failed — select the text manually.
+        </p>
+      )}
     </div>
   );
 }

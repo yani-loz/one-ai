@@ -10,9 +10,9 @@ Depends on: scripts.ingest_imap_dump (the driver), the services conftest schema 
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
 
 from scripts.ingest_imap_dump import _ingest_mailbox
+from tests.conftest import seed_org
 
 
 async def test_ingest_mailbox_isolates_a_failing_email(ingest_schema: None, tmp_path: Path) -> None:
@@ -20,7 +20,8 @@ async def test_ingest_mailbox_isolates_a_failing_email(ingest_schema: None, tmp_
     valid.write_bytes(b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <ok@x>\r\n\r\nbody")
     missing = tmp_path / "missing.eml"  # never created → read_bytes raises → must be isolated
 
-    tally = await _ingest_mailbox("owner@acme.com", [valid, missing], uuid4())
+    # _ingest_mailbox opens its OWN session → the org row must be committed first (0014 FK).
+    tally = await _ingest_mailbox("owner@acme.com", [valid, missing], await seed_org())
 
     assert tally["stored"] == 1  # the valid email still got through
     assert tally["failed"] == 1  # the unreadable one was counted, not allowed to abort the run

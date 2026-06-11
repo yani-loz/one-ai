@@ -1,10 +1,12 @@
 /**
  * Tests for the onboard drawer — slug auto-suggestion (and that it stops after a manual
  * edit), client-side validation gating, the success/credential hand-off + copy, the
- * duplicate vs generic error messages, the close-without-onboard path, and the
- * session-expiry (401) → logout path. Onboarding hits a mocked /platform/orgs POST.
+ * duplicate vs generic error messages, the close-without-onboard path, the session-expiry
+ * (401) → logout path, close paths inert while a submit is in flight, and the
+ * late-resolution guard (a parent force-close mid-flight refreshes the list without
+ * ghosting the hand-off). Onboarding hits a mocked /platform/orgs POST.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -147,7 +149,8 @@ describe("OnboardCompanyDrawer", () => {
     await user.click(screen.getAllByRole("button", { name: "Copy" })[0]);
 
     expect(writeText).toHaveBeenCalledWith("anna@acme.de");
-    expect(screen.getByText("Copied")).toBeInTheDocument();
+    // "Copied" only appears after the (now-awaited) clipboard write confirms.
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
   });
 
   it("test_duplicate_slug_or_email_shows_specific_message", async () => {
@@ -186,6 +189,63 @@ describe("OnboardCompanyDrawer", () => {
     await user.click(screen.getByRole("button", { name: "Onboard company" }));
 
     await waitFor(() => expect(handlers.onSessionExpired).toHaveBeenCalled());
+  });
+
+  it("test_close_paths_ignored_while_submitting_then_handoff_still_appears", async () => {
+    const user = userEvent.setup();
+    let resolveOnboard!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>((resolve) => (resolveOnboard = resolve))),
+    );
+    const handlers = renderDrawer();
+    await fillForm(user);
+    await user.click(screen.getByRole("button", { name: "Onboard company" }));
+
+    // Mid-submit: the ✕ is disabled and every close path (✕, backdrop, Escape) is inert —
+    // closing here would wipe the one-time password while the onboard may still succeed.
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    expect(closeButton).toBeDisabled();
+    fireEvent.click(closeButton);
+    fireEvent.click(screen.getByRole("dialog").previousElementSibling as Element); // backdrop
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(handlers.onClose).not.toHaveBeenCalled();
+
+    resolveOnboard(jsonResponse(201, ONBOARDED));
+
+    // The hand-off appears (no wiped state) and closing works again, still refreshing the list.
+    expect(await screen.findByText(/is live/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(handlers.onOnboarded).toHaveBeenCalledTimes(1);
+    expect(handlers.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("test_late_success_after_parent_force_close_refreshes_without_ghost_panel", async () => {
+    const user = userEvent.setup();
+    let resolveOnboard!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>((resolve) => (resolveOnboard = resolve))),
+    );
+    const handlers: DrawerHandlers = {
+      onClose: vi.fn(),
+      onOnboarded: vi.fn(),
+      onSessionExpired: vi.fn(),
+    };
+    const view = render(<OnboardCompanyDrawer open {...handlers} />);
+    await fillForm(user);
+    await user.click(screen.getByRole("button", { name: "Onboard company" }));
+
+    // The parent force-closes the drawer mid-flight, then the onboard resolves late. The company
+    // exists server-side → the list must refresh…
+    view.rerender(<OnboardCompanyDrawer open={false} {...handlers} />);
+    resolveOnboard(jsonResponse(201, ONBOARDED));
+    await waitFor(() => expect(handlers.onOnboarded).toHaveBeenCalledTimes(1));
+
+    // …but reopening must show a fresh form, never a ghost hand-off with a blank password.
+    view.rerender(<OnboardCompanyDrawer open {...handlers} />);
+    expect(screen.queryByText(/is live/)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Onboard a company" })).toBeInTheDocument();
   });
 
   it("test_closing_without_onboarding_does_not_refresh", async () => {

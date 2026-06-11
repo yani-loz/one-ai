@@ -5,7 +5,8 @@ Depends on: SQLAlchemy 2.0 (external). Leaf module within the project.
 Key invariants:
   - Every persisted model inherits Base.
   - Every TENANT-SCOPED model mixes in TenantMixin -> org_id NOT NULL + indexed
-    (security.md layer 1). org_id is the canonical tenant key, project-wide.
+    (security.md layer 1) + LIVE RLS enforcement (layer 2 — see TenantMixin's
+    docstring). org_id is the canonical tenant key, project-wide.
   - Primary keys are server-generated UUIDs (gen_random_uuid(), Postgres core).
 """
 
@@ -50,8 +51,13 @@ class TimestampMixin:
 class TenantMixin:
     """Adds `org_id` — the tenant scope column (NOT NULL + indexed).
 
-    The hardest security rule: every tenant-scoped table carries this and every
-    query is filtered by it (application scope today, RLS once policies land).
+    The hardest security rule: every tenant-scoped table carries this, every query is
+    filtered by it, AND the DB enforces it — every TenantMixin table is under
+    ENABLE + FORCE ROW LEVEL SECURITY with the `org_isolation` policy keyed to the GUC
+    `app.current_org_id` (migrations 0009/0011; audit_log — not a TenantMixin table —
+    joined via 0013). Since 0013, new tables get NO automatic tenant-role grant: a
+    migration creating a tenant table must GRANT its DML to `oneai_app` explicitly
+    (tests/db/test_least_privilege_grants.py fails on a forgotten grant).
     """
 
     org_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False, index=True)

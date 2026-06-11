@@ -15,6 +15,9 @@ Key invariants:
   - The service runs on the TENANT-scoped session (get_tenant_session): org_id comes only from
     the verified JWT, never a header/body. get_connector_registry is a separate provider so tests
     can override it with a fake-client registry (the vendor mock boundary).
+  - AUDIT WIRING (report H-5): ConnectorService and SyncService each get an AuditService sharing
+    THEIR tenant session, so connector.*/sync.started audit rows commit atomically with the
+    lifecycle change (the identity domain's same-transaction success-event semantics).
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ from app.connectors.sync.sync_service import SyncService
 from app.connectors.sync.sync_task_registry import SyncTaskSpawner, spawn_sync_task
 from app.core.config import get_settings
 from app.identity.dependencies import get_tenant_session
+from app.identity.repositories.audit_repository import AuditRepository
+from app.identity.services.audit_service import AuditService
 
 # Built once per process; defensive discovery means this never raises (see build_default_registry).
 _REGISTRY = build_default_registry()
@@ -61,6 +66,7 @@ def get_connector_service(
         connections=ConnectorConnectionRepository(session),
         cipher=cipher,
         registry=registry,
+        audit=AuditService(AuditRepository(session)),
     )
 
 
@@ -92,5 +98,6 @@ def get_sync_service(
         connections=ConnectorConnectionRepository(session),
         runs=ConnectorSyncRunRepository(session),
         runner=runner,
+        audit=AuditService(AuditRepository(session)),
         spawn=spawn,
     )

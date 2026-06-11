@@ -6,9 +6,10 @@ Used by: SupportGrantRepository; registered on Base.metadata via models/__init__
 Depends on: app.common.base_model (Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin).
 Key invariants:
   - TENANT-TAGGED (TenantMixin org_id, NOT NULL + indexed): a grant always targets one
-    tenant. The company side reads it org-scoped (a company_admin sees ONLY their org's
-    grants); the platform side spans orgs on a plain session (the documented cross-org
-    exception, same as login/onboard). RLS-ready, inert today.
+    tenant. RLS is ENFORCED (org_isolation defined in 0006; FORCE + made live by the 0009
+    runtime-role split): the company side reads it on the RLS-bound tenant engine (a
+    company_admin sees ONLY their org's grants); the platform side spans orgs on the
+    BYPASSRLS global engine (the documented cross-org exception, same as login/onboard).
   - NO foreign keys (durable attribution via denormalized emails, like audit_log): the row
     survives deletion/rename of the requester, decider, or org — it is a compliance record.
   - `status` is pinned by a DB CHECK to requested|approved|denied|revoked. There is NO

@@ -14,11 +14,23 @@ Key invariants:
   - The email match key is normalized through email_normalizer.normalize_email on the ONE path that
     both looks up and inserts — never two different normalizations (a mismatch silently fails to
     match). The raw as-seen address stays on the source rows; only the key is normalized.
-  - PERSON-HOOD guards: a role/shared mailbox (`info@`, `kontakt@`) never becomes a Person, and the
+  - The resolver is the NORMALIZATION SEAM for display names (audit H-3): ONE layer of wrapping
+    quotes (Outlook's `'Lozanov, Yani'` convention — single or double) is stripped, then
+    whitespace re-trimmed, before the name reaches insert, backfill, AND alias paths.
+    email_recipient.name stays raw-as-seen BY CONTRACT — the parser never normalizes.
+  - PERSON-HOOD guards: a role/shared mailbox (`info@`, `kontakt@`, compound automation localparts
+    like `drive-shares-dm-noreply@` — token-matched, audit H-4) never becomes a Person, and the
     caller can suppress person-hood via allow_person=False (DQ-C01 an automated sender; DQ-C02 a
     reply_to/sender-only routing identity). In every case the domain is STILL observed as a Company.
-    A generic free-mail domain (`gmail.com`) never becomes a Company. Over-exclusion only
+    A generic free-mail domain (`gmail.com`, `abv.bg`) never becomes a Company. Over-exclusion only
     under-creates (a recoverable fragment), never over-merges.
+  - COMPANY IDENTITY folds to the eTLD+1 registrable domain (audit M-9): `bg.ibm.com` and
+    `ibm.com` resolve to ONE company keyed `ibm.com`, while every distinct observed host is still
+    recorded as a company_domain evidence row. PSL-private SaaS suffixes stay distinct identities
+    (`foo.atlassian.net` ≠ `bar.atlassian.net`).
+  - IDN/PUNYCODE QUARANTINE (audit M-8): a domain with any `xn--` label (homoglyph spoof surface)
+    never mints a Company or person_company link — the person still resolves; the sighting is
+    logged for future HiTL review. No automatic merging with an ASCII lookalike, ever.
   - ENRICHMENT (DQ-K04): on every sighting the person's blank display_name is back-filled (first
     non-empty name wins) and a deduped person_alias is recorded — so a person first seen as a bare
     address gains a name later; this is intra-person enrichment, NOT a cross-person merge.
@@ -29,6 +41,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from uuid import UUID
 
@@ -39,8 +52,35 @@ from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person, PersonAlias, PersonEmail
 from app.entities.repositories.company_repository import CompanyRepository
 from app.entities.repositories.person_repository import PersonRepository
-from app.entities.services.address_rules import is_generic_email_domain, is_role_address
+from app.entities.services.address_rules import (
+    fold_to_registrable_domain,
+    is_generic_email_domain,
+    is_role_address,
+    is_suspicious_idn_domain,
+)
 from app.entities.services.email_normalizer import extract_domain, normalize_email
+
+logger = logging.getLogger(__name__)
+
+# Quote characters Outlook conventionally wraps display names in (audit H-3).
+_WRAPPING_QUOTE_CHARS = ("'", '"')
+
+
+def _clean_display_name(display_name: str | None) -> str | None:
+    """Normalize a sighted display name for graph storage (audit H-3) — the resolver-side seam.
+
+    Trims whitespace, strips ONE layer of wrapping quotes (single or double — Outlook's
+    `'Lozanov, Yani'` convention), then re-trims. A quote is stripped only when the value starts
+    AND ends with the SAME quote char and is longer than 2 chars, so `O'Brien` (apostrophe inside,
+    no wrap) survives untouched while `'O'Brien'` unwraps to `O'Brien`. Returns None when nothing
+    usable remains. The raw as-seen name stays on email_recipient.name by contract.
+    """
+    if display_name is None:
+        return None
+    name = display_name.strip()
+    if len(name) > 2 and name[0] == name[-1] and name[0] in _WRAPPING_QUOTE_CHARS:
+        name = name[1:-1].strip()
+    return name or None
 
 
 class EntityResolver:
@@ -60,6 +100,12 @@ class EntityResolver:
         self._companies = CompanyRepository(session)
         self._mailbox_address = normalize_email(mailbox_address)
         self._mailbox_domain = extract_domain(self._mailbox_address)
+        # The mailbox's COMPANY key (eTLD+1, M-9) — what an observed company key is compared
+        # against for internality. None when the mailbox sits on a generic free-mail provider
+        # (a shared free-mail domain says nothing about who is a colleague).
+        self._mailbox_company_key: str | None = None
+        if self._mailbox_domain is not None and not is_generic_email_domain(self._mailbox_domain):
+            self._mailbox_company_key = fold_to_registrable_domain(self._mailbox_domain)
         self._source = source
 
     async def resolve_participant(
@@ -105,20 +151,26 @@ class EntityResolver:
     ) -> UUID:
         """Return the person owning `normalized_email`, creating one if none exists (race-safe).
 
-        On EVERY resolution (existing, new, or race-winner) the person is ENRICHED with the current
-        sighting's name (DQ-K04): a blank display_name is back-filled and a deduped alias is
-        recorded, so a person first seen as a bare address gains a name from a later sighting.
+        The sighted name is cleaned ONCE here (audit H-3: wrapping-quote strip + re-trim) so the
+        insert, backfill, and alias paths all store the normalized form. On EVERY resolution
+        (existing, new, or race-winner) the person is ENRICHED with the current sighting's name
+        (DQ-K04): a blank display_name is back-filled and a deduped alias is recorded, so a person
+        first seen as a bare address gains a name from a later sighting.
         """
+        cleaned_name = _clean_display_name(display_name)
         person_id = await self._people.get_person_id_by_email(org_id, normalized_email)
         if person_id is None:
-            person_id = await self._insert_person(org_id, normalized_email, display_name)
-        await self._enrich_person(org_id, person_id, display_name)
+            person_id = await self._insert_person(org_id, normalized_email, cleaned_name)
+        await self._enrich_person(org_id, person_id, cleaned_name)
         return person_id
 
     async def _insert_person(
         self, org_id: UUID, normalized_email: str, display_name: str | None
     ) -> UUID:
-        """Insert a new person + its email key; on a concurrent-insert race, return the winner."""
+        """Insert a new person + its email key; on a concurrent-insert race, return the winner.
+
+        `display_name` arrives already cleaned by `_get_or_create_person` (H-3).
+        """
         domain = extract_domain(normalized_email)
         try:
             async with self._session.begin_nested():
@@ -146,57 +198,112 @@ class EntityResolver:
             return winner
 
     async def _enrich_person(
-        self, org_id: UUID, person_id: UUID, display_name: str | None
+        self, org_id: UUID, person_id: UUID, cleaned_name: str | None
     ) -> None:
-        """DQ-K04: back-fill a blank display_name from this sighting + record a deduped alias."""
-        name = (display_name or "").strip()
-        if not name:
+        """DQ-K04: back-fill a blank display_name from this sighting + record a deduped alias.
+
+        `cleaned_name` arrives already normalized by `_get_or_create_person` (H-3 quote-strip) —
+        both the backfill and the alias write store the cleaned form.
+        """
+        if not cleaned_name:
             return
-        await self._people.backfill_display_name(org_id, person_id, name)
+        await self._people.backfill_display_name(org_id, person_id, cleaned_name)
         try:
             async with self._session.begin_nested():
                 await self._people.add_alias(
                     PersonAlias(
-                        org_id=org_id, person_id=person_id, alias=name, source=self._source
+                        org_id=org_id, person_id=person_id, alias=cleaned_name, source=self._source
                     )
                 )
         except IntegrityError:
             pass  # this exact alias is already recorded for the person (UNIQUE) — idempotent
 
     async def _observe_company(self, org_id: UUID, normalized_email: str) -> UUID | None:
-        """Get-or-create the Company for the address's domain; return its id (None for generic).
+        """Get-or-create the Company for the address's domain; return its id (None when skipped).
 
         Observation is independent of person-hood (DQ-D01) — the caller links the person separately,
-        only when one is created.
+        only when one is created. Skips (returns None): generic free-mail domains, IDN-shaped
+        domains in EITHER wire form — `xn--` ACE or raw-Unicode EAI (M-8 quarantine — logged for
+        HiTL review, never auto-merged with an ASCII lookalike), and hosts whose eTLD+1 fold lands
+        on a generic provider. The company is keyed
+        by the registrable domain (M-9); the full observed host is recorded as domain evidence.
         """
-        domain = extract_domain(normalized_email)
-        if domain is None or is_generic_email_domain(domain):
+        observed_host = extract_domain(normalized_email)
+        if observed_host is None or is_generic_email_domain(observed_host):
             return None
-        return await self._get_or_create_company(org_id, domain)
+        if is_suspicious_idn_domain(observed_host):
+            # M-8: spoof-adjacent (homoglyph) surface — quarantine from the company graph.
+            # Covers BOTH wire forms: ACE (`xn--`) and raw-Unicode SMTPUTF8/EAI delivery — the
+            # same logical spoof domain must not mint a company under either encoding.
+            logger.warning(
+                "IDN domain quarantined from company minting (needs HiTL review): "
+                "org_id=%s domain=%s",
+                org_id,
+                observed_host,
+            )
+            return None
+        company_key = fold_to_registrable_domain(observed_host)
+        if is_generic_email_domain(company_key):
+            return None  # a host UNDER a free-mail provider must not resurrect it as a company
+        return await self._get_or_create_company(org_id, company_key, observed_host)
 
-    async def _get_or_create_company(self, org_id: UUID, domain: str) -> UUID:
-        """Return the company owning `domain`, creating one if none exists (race-safe)."""
-        existing = await self._companies.get_company_id_by_domain(org_id, domain)
-        if existing is not None:
-            return existing
+    async def _get_or_create_company(
+        self, org_id: UUID, company_key: str, observed_host: str
+    ) -> UUID:
+        """Return the company keyed by `company_key` (eTLD+1), creating one if none exists.
 
-        is_internal = self._mailbox_domain is not None and domain == self._mailbox_domain
+        When the observed host differs from the key (a subdomain sighting), it is additionally
+        recorded as an idempotent company_domain evidence row (M-9: key folds, evidence stays
+        full-fidelity).
+        """
+        company_id = await self._companies.get_company_id_by_domain(org_id, company_key)
+        if company_id is None:
+            company_id = await self._insert_company(org_id, company_key)
+        if observed_host != company_key:
+            await self._record_observed_host(org_id, company_id, observed_host)
+        return company_id
+
+    async def _insert_company(self, org_id: UUID, company_key: str) -> UUID:
+        """Insert a new company + its key domain row; on a concurrent race, return the winner."""
+        is_internal = (
+            self._mailbox_company_key is not None and company_key == self._mailbox_company_key
+        )
         try:
             async with self._session.begin_nested():
                 company = await self._companies.insert(
-                    Company(org_id=org_id, name=domain, is_internal=is_internal)
+                    Company(org_id=org_id, name=company_key, is_internal=is_internal)
                 )
                 await self._companies.add_domain(
                     CompanyDomain(
-                        org_id=org_id, company_id=company.id, domain=domain, source=self._source
+                        org_id=org_id,
+                        company_id=company.id,
+                        domain=company_key,
+                        source=self._source,
                     )
                 )
             return company.id
         except IntegrityError:
-            winner = await self._companies.get_company_id_by_domain(org_id, domain)
+            winner = await self._companies.get_company_id_by_domain(org_id, company_key)
             if winner is None:  # pragma: no cover - the UNIQUE guarantees a winner exists
                 raise
             return winner
+
+    async def _record_observed_host(
+        self, org_id: UUID, company_id: UUID, observed_host: str
+    ) -> None:
+        """Idempotently record a full observed host as evidence for a folded company (M-9)."""
+        try:
+            async with self._session.begin_nested():
+                await self._companies.add_domain(
+                    CompanyDomain(
+                        org_id=org_id,
+                        company_id=company_id,
+                        domain=observed_host,
+                        source=self._source,
+                    )
+                )
+        except IntegrityError:
+            pass  # this host is already recorded (UNIQUE(org_id, domain)) — idempotent
 
     async def _link_person_company(
         self, org_id: UUID, person_id: UUID, company_id: UUID
@@ -213,10 +320,14 @@ class EntityResolver:
     def _is_internal(self, normalized_email: str, domain: str | None) -> bool:
         """True if this address belongs to the tenant itself (own-domain colleague, or the mailbox).
 
-        Uses the mailbox's domain when it is a real company domain; for a mailbox on a generic
-        provider only the exact mailbox address counts as internal (a shared free-mail domain says
-        nothing about who is a colleague).
+        Compares REGISTRABLE (eTLD+1-folded) domains, consistent with company identity (M-9):
+        a mailbox on bg.ibm.com must classify alice@ibm.com as internal — they fold to the same
+        company, and an exact-host compare would link her to the tenant's own company yet mark
+        her external (2026-06-11 cross-vendor review). PSL-private SaaS suffixes stay distinct
+        (tenant-a.onmicrosoft.com is NOT internal to tenant-b.onmicrosoft.com). For a mailbox on
+        a generic provider only the exact mailbox address counts as internal (a shared free-mail
+        domain says nothing about who is a colleague).
         """
-        if self._mailbox_domain and not is_generic_email_domain(self._mailbox_domain):
-            return domain == self._mailbox_domain
+        if self._mailbox_company_key is not None and domain is not None:
+            return fold_to_registrable_domain(domain) == self._mailbox_company_key
         return normalized_email == self._mailbox_address

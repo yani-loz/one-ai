@@ -2,9 +2,12 @@
 Role: Deterministic RFC822 → structured decomposition (design §4). Turns raw email bytes into a
       ParsedEmail (headers, addresses, body text, attachment metadata + transient bytes, derived
       flags) with NO database or network access — a pure function the ingest runner maps to rows.
-Used by: the IMAP ingest runner (step 3d) and the attachment extractor (consumes ParsedAttachment).
+Used by: the IMAP ingest runner (step 3d), the attachment extractor (consumes ParsedAttachment and
+         reuses sanitize_body_text for text attachments), and .extractors.pdf (reuses
+         sanitize_body_text — the ONE source of the stored-text sanitization rules).
 Depends on: stdlib email (BytesParser, policy.default, getaddresses), html2text (html→text body),
-            app.connectors.imap.parsing.headers (header/identity/date primitives), .flags, .models.
+            app.connectors.imap.parsing.headers (header/identity/date primitives), .dedup_key
+            (content-identity computation — A2 split), .flags, .models.
 Key invariants:
   - ROBUST by construction: every header/body/charset decode ends in an errors='replace' fallback
     (the body decode first walks a STRICT charset chain — declared → cp1252 → windows-1251 — so a
@@ -18,10 +21,13 @@ Key invariants:
     skips the same bytes on the raw-byte fallback key; a re-parse path for 'failed' rows is a
     follow-up). Any OTHER exception PROPAGATES so the runner retries it — a transient parse fault
     must never be frozen as a permanent empty stub.
-  - `dedup_key` is a CONTENT IDENTITY over DECODED content (see _dedup_key): with a usable
-    Message-ID it hashes the normalized Message-ID + the decoded From/Subject/Date headers + the
-    decoded `body_text` + the decoded text/html body candidate's digest + the sorted attachment
-    content hashes; otherwise `sha256(raw_bytes)`. The html digest covers the MIME alternative
+  - `dedup_key` is a CONTENT IDENTITY over DECODED content (computed in .dedup_key — the recipe of
+    record — v4): with a usable Message-ID it hashes the normalized Message-ID + the decoded
+    From/Subject headers + the UTC-NORMALIZED send instant + the canonical To/Cc envelope (Bcc
+    excluded — only the Sent copy carries it) + the decoded `body_text` + the decoded text/html
+    body candidate's digest + the sorted per-attachment identities (filename digest + content
+    hash; TNEF contributes its stable INTERIOR digest); otherwise `sha256(raw_bytes)` (also for
+    headers-only messages). The html digest covers the MIME alternative
     `body_text` does NOT see when text/plain is selected — without it two distinct emails sharing
     a static plain stub but differing only in HTML would silently fold (appliance senders /
     planted decoys; fixup of the 2026-06-10 review). FOLDER-INDEPENDENT by decoding: Outlook
@@ -34,7 +40,9 @@ Key invariants:
     instead of deduping (fails open to duplication, never to loss). Accepted pre-production; the
     dev corpus is wiped + re-ingested after a recipe change.
   - `body_text` is text/plain when available, else text/html flattened to text. No HTML is stored.
-    Sanitized: canonical LF line endings; C0 control chars stripped EXCEPT tab/LF (audit L-6).
+    Sanitized (sanitize_body_text — guarantee: storable as UTF-8): canonical LF line endings; C0
+    control chars stripped EXCEPT tab/LF (audit L-6); lone surrogates U+D800–U+DFFF stripped
+    (broken PDF ToUnicode CMaps would otherwise crash the asyncpg flush — poison message).
   - Stored `from_address` is addr-spec shaped (contains '@') or None: a bare display token in From
     (Exchange NDR 'System Administrator', audit L-7) is NOT stored as an address — the raw token
     stays in `headers` and still feeds the .flags automation classifiers.
@@ -46,7 +54,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from email import message_from_bytes, policy
 from email.message import EmailMessage
 from email.utils import getaddresses
@@ -54,8 +62,8 @@ from hashlib import sha256
 from typing import cast
 
 import html2text
-from tnefparse import TNEF
 
+from app.connectors.imap.parsing.dedup_key import compute_dedup_key
 from app.connectors.imap.parsing.flags import (
     derive_direction,
     is_automated_origin,
@@ -92,10 +100,14 @@ _DECODE_ERRORS = (LookupError, UnicodeDecodeError, ValueError)
 # gb2312 but carry cp1252 bytes; Cyrillic mail often hides behind a wrong label as windows-1251.
 _CHARSET_FALLBACKS: tuple[str, ...] = ("cp1252", "windows-1251")
 
-# C0 control chars EXCEPT tab (\x09), LF (\x0A), CR (\x0D) — stripped from body_text (audit L-6:
-# BEL/VT-class garbage pollutes chunking/embedding; NUL would crash Postgres). CR is exempted here
-# only because the LF-normalization pass in _extract_body_text has already removed it.
-_BODY_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Code points that must never reach a stored text column:
+#   - C0 control chars EXCEPT tab (\x09), LF (\x0A), CR (\x0D) — audit L-6: BEL/VT-class garbage
+#     pollutes chunking/embedding; NUL would crash Postgres. CR is exempted here only because the
+#     LF-normalization pass in sanitize_body_text has already removed it.
+#   - LONE SURROGATES (U+D800–U+DFFF) — pdfminer/pypdf emit them from broken PDF ToUnicode CMaps;
+#     they survive in a Python str but asyncpg raises UnicodeEncodeError at flush, turning the
+#     whole email into a poison message (2026-06-11 review).
+_UNSTORABLE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
 
 logger = logging.getLogger(__name__)
 
@@ -160,176 +172,6 @@ def _degraded_parse(raw_bytes: bytes, internal_date: datetime | None) -> ParsedE
     )
 
 
-def _dedup_key(
-    message: EmailMessage,
-    message_id: str | None,
-    body_text: str,
-    attachments: list[ParsedAttachment],
-    raw_bytes: bytes,
-) -> str:
-    """The CONTENT-IDENTITY dedup key — folder-independent, no over- or under-dedup.
-
-    With a usable Message-ID, hashes DECODED logical content: the normalized Message-ID + the
-    decoded From/Subject headers + the UTC-NORMALIZED send instant (_date_instant — Outlook
-    re-renders the raw Date header in a different timezone per folder copy) + the canonical
-    To/Cc envelope (_recipient_identity — distinct sends to different audiences must not fold;
-    Bcc excluded because only the Sent copy carries it) + the decoded/sanitized `body_text` +
-    the decoded text/html body candidate's digest (_html_body_digest — covers the alternative
-    `body_text` does NOT select; without it a static plain stub + HTML-only differences silently
-    fold) + the SORTED per-attachment identities (_attachment_identity: filename digest + the
-    decoded payload's sha256 as computed for email_attachment.content_hash — reused, never
-    re-decoded — except the volatile TNEF container, which contributes its STABLE INTERIOR
-    digest: embedded-attachment bytes only, verified stable across all 271 multi-copy TNEF
-    groups while raw blobs and the RTF body regenerate per copy). Raw body bytes must
-    NOT participate: Outlook regenerates `----=_NextPart_...` MIME boundaries and re-wraps
-    quoted-printable/base64 in every folder copy's serialization, so a raw-byte hash fragments per
-    copy (audit H-1 stored 39.3% duplicate rows); after decoding that variance vanishes and all
-    copies share ONE key. Distinct emails REUSING a Message-ID (planted decoy, appliance sender)
-    differ in at least one decoded field → distinct keys, so nothing genuine is silently skipped.
-    Injective encoding: the NUL-joined, fixed-position fields are individually NUL-free
-    (message_id is NUL-checked, safe_header/body_text are NUL-stripped, digests are hex), and the
-    final encode uses surrogateescape (raw undecodable header bytes round-trip as their ORIGINAL
-    bytes — errors='replace' would collapse every non-ASCII byte to '?', folding two distinct
-    8-bit Cyrillic subjects into one key) with a backslashreplace fallback if a surrogate ever
-    falls outside the escape range.
-
-    No usable Message-ID → sha256 of the raw bytes: stable across re-fetches of the SAME copy and
-    injective on distinct bytes, but folder copies of an id-less message do not fold (rare:
-    drafts, malformed mail). The SAME raw-byte fallback applies to a HEADERS-ONLY message (empty
-    body, no html alternative, no attachments) even WITH a Message-ID: metadata fields alone
-    cannot distinguish repeated appliance notifications that reuse one Message-ID and differ only
-    in trace headers — content-keying those would silently skip every event after the first.
-
-    KEY VERSIONING: changing this recipe (or the decode pipeline feeding body_text/content hashes)
-    invalidates previously-stored keys — old rows then duplicate against a re-fetch instead of
-    deduping (fails open to duplication, never to data loss). Accepted pre-production; the dev
-    corpus is wiped and re-ingested after a recipe change.
-    """
-    if message_id is None or "\x00" in message_id or len(message_id) > MSGID_MAX:
-        return f"sha256:{sha256(raw_bytes).hexdigest()}"
-    html_digest = _html_body_digest(message)
-    if not body_text and not html_digest and not attachments:
-        return f"sha256:{sha256(raw_bytes).hexdigest()}"
-    identity = "\x00".join(
-        [
-            message_id,
-            *(safe_header(message, name) or "" for name in ("From", "Subject")),
-            _date_instant(message),
-            _recipient_identity(message),
-            body_text,
-            html_digest,
-            *sorted(_attachment_identity(attachment) for attachment in attachments),
-        ]
-    )
-    try:
-        identity_bytes = identity.encode("utf-8", "surrogateescape")
-    except UnicodeEncodeError:
-        identity_bytes = identity.encode("utf-8", "backslashreplace")
-    return f"sha256:{sha256(identity_bytes).hexdigest()}"
-
-
-def _date_instant(message: EmailMessage) -> str:
-    """The Date header as a UTC-normalized INSTANT string (raw header if unparseable).
-
-    Outlook re-renders the Date header in a different timezone per folder copy of the SAME email
-    (verified on the corpus: `10:43:53 +0200` in one folder, `11:43:53 +0300` in another — the
-    identical instant; 649 duplicate groups survived on exactly this). Keying on the parsed
-    instant erases the rendering variance while still splitting genuinely distinct sends, which
-    differ in the actual moment, not its formatting. An unparseable Date falls back to the raw
-    decoded header so the field still participates injectively.
-    """
-    raw = safe_header(message, "Date") or ""
-    parsed = parse_date(raw)
-    return parsed.astimezone(UTC).isoformat() if parsed is not None else raw
-
-
-def _attachment_identity(attachment: ParsedAttachment) -> str:
-    """The attachment's dedup-key contribution: filename digest + content hash (TNEF: interior).
-
-    `application/ms-tnef` (winmail.dat) is a VOLATILE CONTAINER: Outlook regenerates the blob per
-    folder copy (Thread-Index and transport properties live inside it), so its raw decoded bytes
-    differ per copy of the same email (verified: ALL 253 attachment-divergent duplicate groups on
-    the corpus involved TNEF; zero without it). A bare presence marker would fold two DISTINCT
-    emails differing only in files embedded INSIDE the TNEF (silent loss — 2026-06-11 cross-vendor
-    review), so TNEF contributes its INTERIOR digest instead: the embedded attachments' bytes,
-    which are byte-stable across regeneration (verified on ALL 271 multi-copy TNEF groups in the
-    corpus) while the volatile transport properties and the RTF body (the instability source,
-    whose content already surfaces in the plain-text stub `body_text` hashes) are excluded.
-
-    Non-TNEF attachments contribute the sanitized filename's digest alongside the payload hash:
-    two distinct sends differing only in an attachment's NAME (same bytes) must not fold; folder
-    copies keep their filenames verbatim, so this adds no under-dedup risk.
-    """
-    if attachment.content_type == "application/ms-tnef":
-        return f"tnef:{_tnef_interior_digest(attachment.payload)}"
-    filename_digest = sha256(
-        (attachment.filename or "").encode("utf-8", "surrogateescape")
-    ).hexdigest()
-    return f"{filename_digest}:{attachment.content_hash}"
-
-
-def _tnef_interior_digest(payload: bytes) -> str:
-    """Digest of a TNEF container's STABLE interior: the embedded attachments' bytes only.
-
-    Sorted per-attachment sha256, re-hashed. The TNEF body (RTF) is deliberately EXCLUDED — it is
-    the re-serialization instability source (4/40 sampled groups varied on it) and its content is
-    already represented in the key via the derived plain-text stub. 'empty' = parsed, nothing
-    embedded. 'unparseable' = tnefparse failed: copies of one email then still fold (both
-    unparseable → same token) at the cost of re-accepting the narrow marker-collision class for
-    corrupt blobs only — documented residual.
-    """
-    try:
-        interior = TNEF(payload)
-        parts = sorted(
-            sha256(embedded.data).hexdigest()
-            for embedded in interior.attachments
-            if embedded.data
-        )
-    except Exception:  # tnefparse raises diverse internals on corrupt blobs — degrade, never fail
-        return "unparseable"
-    if not parts:
-        return "empty"
-    return sha256("|".join(parts).encode()).hexdigest()
-
-
-def _recipient_identity(message: EmailMessage) -> str:
-    """Canonical To/Cc envelope for the dedup key: sorted, case-folded `kind:address` pairs.
-
-    Two distinct sends reusing a Message-ID at the same instant with identical content but
-    DIFFERENT recipients must not fold (2026-06-11 cross-vendor review). Bcc is deliberately
-    EXCLUDED: the mailbox owner's Sent copy carries the Bcc header while every received copy of
-    the same logical email does not — including it would split copies that must fold. Reply-To/
-    Sender are likewise excluded (re-serialization may add Sender; they don't define the
-    audience). Reads the same getaddresses path as _extract_recipients.
-    """
-    pairs = sorted(
-        f"{kind}:{address.strip().lower()}"
-        for kind in ("to", "cc")
-        for _, address in getaddresses([str(v) for v in message.get_all(kind, [])])
-        if address
-    )
-    return "|".join(pairs)
-
-
-def _html_body_digest(message: EmailMessage) -> str:
-    """Hex sha256 of the DECODED text/html body candidate, or '' when the message has none.
-
-    The selected body alone is blind to the other MIME alternative: when text/plain is selected,
-    iter_attachments never yields the unselected text/html part, so two distinct emails sharing a
-    static plain stub (appliance/notification senders shipping the real event only in HTML, or a
-    planted decoy differing only in HTML) would otherwise collapse onto ONE dedup_key — permanent
-    silent mail loss. Hashing the DECODED html (same strict charset chain as body_text, line
-    endings normalized to LF) stays folder-independent: Outlook's per-copy boundary regeneration
-    and transfer-encoding re-wraps are erased by the decode. Computed even when html IS the
-    selected body, so markup-only differences that html2text flattens away still split the key.
-    """
-    html_part = message.get_body(preferencelist=("html",))
-    if html_part is None:
-        return ""
-    html_text = _decode_text_part(html_part).replace("\r\n", "\n").replace("\r", "\n")
-    return sha256(html_text.encode("utf-8", "replace")).hexdigest()
-
-
 def _parse_email_strict(
     raw_bytes: bytes, mailbox_address: str, internal_date: datetime | None = None
 ) -> ParsedEmail:
@@ -351,7 +193,9 @@ def _parse_email_strict(
     attachments = _extract_attachments(message)
 
     return ParsedEmail(
-        dedup_key=_dedup_key(message, message_id, body_text, attachments, raw_bytes),
+        dedup_key=compute_dedup_key(
+            message, message_id, body_text, attachments, raw_bytes, _decode_text_part
+        ),
         message_id=sanitize(message_id, MSGID_MAX),
         in_reply_to=sanitize(in_reply_to, MSGID_MAX),
         references=references,
@@ -393,6 +237,21 @@ def _addr_spec_or_none(address: str | None) -> str | None:
     return address if address and "@" in address else None
 
 
+def sanitize_body_text(text: str) -> str:
+    """Apply the canonical stored-text sanitization to a decoded text block.
+
+    The guarantee is: the result is STORABLE AS UTF-8, period. Canonical LF line endings (wire
+    CRLF must not leak), THEN strip the remaining C0 controls except tab/LF (audit L-6: NUL would
+    crash Postgres; BEL/VT-class garbage pollutes chunking) AND lone surrogates U+D800–U+DFFF
+    (pdfminer/pypdf emit them from broken ToUnicode CMaps; asyncpg raises UnicodeEncodeError at
+    flush — a poison message), then trim surrounding whitespace. The SINGLE source of these rules:
+    email bodies, text attachments (attachment_extractor) AND extracted PDF text (extractors.pdf)
+    all pass through here, never a re-implementation.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _UNSTORABLE_CHARS.sub("", text).strip()
+
+
 def _extract_body_text(message: EmailMessage) -> str:
     """Return the body as plain text: text/plain if present, else text/html flattened, else ''."""
     body_part = message.get_body(preferencelist=("plain", "html"))
@@ -401,10 +260,7 @@ def _extract_body_text(message: EmailMessage) -> str:
     text = _decode_text_part(body_part)
     if body_part.get_content_type() == "text/html":
         text = _html_to_text(text)
-    # Canonical LF line endings (wire CRLF must not leak), THEN strip the remaining C0 controls
-    # except tab/LF — NUL would crash Postgres; BEL/VT-class garbage pollutes chunking (audit L-6).
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return _BODY_CONTROL_CHARS.sub("", text).strip()
+    return sanitize_body_text(text)
 
 
 def _decode_text_part(part: EmailMessage) -> str:

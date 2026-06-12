@@ -409,11 +409,11 @@ def test_parse_tnef_distinct_embedded_files_distinct_dedup_keys(
     import pytest
 
     assert isinstance(monkeypatch, pytest.MonkeyPatch)
-    from app.connectors.imap.parsing import email_parser
+    from app.connectors.imap.parsing import dedup_key as dedup_key_module
 
     payload_a, payload_b = b"raw-serialization-A", b"raw-serialization-B"
     _FakeTnef.interiors = {payload_a: [b"contract-v1.docx-bytes"], payload_b: [b"OTHER-file-bytes"]}
-    monkeypatch.setattr(email_parser, "TNEF", _FakeTnef)
+    monkeypatch.setattr(dedup_key_module, "TNEF", _FakeTnef)
 
     key_a = parse_email(_tnef_eml(payload_a), MAILBOX).dedup_key
     key_b = parse_email(_tnef_eml(payload_b), MAILBOX).dedup_key
@@ -429,12 +429,12 @@ def test_parse_tnef_regenerated_blob_same_interior_same_dedup_key(
     import pytest
 
     assert isinstance(monkeypatch, pytest.MonkeyPatch)
-    from app.connectors.imap.parsing import email_parser
+    from app.connectors.imap.parsing import dedup_key as dedup_key_module
 
     payload_a, payload_b = b"raw-serialization-A", b"raw-serialization-B"
     same = [b"contract-v1.docx-bytes"]
     _FakeTnef.interiors = {payload_a: same, payload_b: same}
-    monkeypatch.setattr(email_parser, "TNEF", _FakeTnef)
+    monkeypatch.setattr(dedup_key_module, "TNEF", _FakeTnef)
 
     assert (
         parse_email(_tnef_eml(payload_a), MAILBOX).dedup_key
@@ -465,7 +465,8 @@ def test_parse_bcc_only_difference_same_dedup_key() -> None:
     sent_copy = _eml(base + "\nBcc: archive@oneai.com", "hello")
     received_copy = _eml(base, "hello")
 
-    assert parse_email(sent_copy, MAILBOX).dedup_key == parse_email(received_copy, MAILBOX).dedup_key
+    sent_key = parse_email(sent_copy, MAILBOX).dedup_key
+    assert sent_key == parse_email(received_copy, MAILBOX).dedup_key
 
 
 def test_parse_same_attachment_bytes_different_filename_distinct_dedup_keys() -> None:

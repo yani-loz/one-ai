@@ -224,7 +224,8 @@ async def test_erase_hook_failure_rolls_back_identity_deletes(db_session: AsyncS
             raise RuntimeError("hook blew up mid-erasure")
 
     service = _service(
-        db_session, {"connectors": _RecordingHook({"connector_connection": 0}), "entities": _ExplodingHook()}
+        db_session,
+        {"connectors": _RecordingHook({"connector_connection": 0}), "entities": _ExplodingHook()},
     )
     payload = ErasureRequest(reason=_REASON, confirm_slug="acme", password=_ADMIN_PASSWORD)
 

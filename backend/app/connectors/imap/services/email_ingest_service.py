@@ -13,9 +13,13 @@ Key invariants:
     re-run — or the same logical email seen in multiple IMAP folders — stores exactly one row.
   - Returns a plain IngestOutcome enum, NEVER a live ORM row (a row read after the caller's commit
     could lazy-load on a closed greenlet). The CALLER owns the transaction + commit.
-  - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4).
-  - parse_email (pure CPU: RFC822 parse, base64 decode, sha256, html2text) runs on a WORKER
-    thread (asyncio.to_thread) so a large email never stalls the event loop mid-sync.
+  - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4);
+    each row stores the ExtractionResult's status + extractor provenance (0015) — honest NULL
+    text always carries its machine-readable reason.
+  - CPU work is OFF-LOOP: parse_email (RFC822 parse, base64 decode, sha256, html2text) AND
+    extract_text (pdfplumber + tables + possible pypdf over ≤50MB payloads) both run on a WORKER
+    thread (asyncio.to_thread) so a large email or PDF never stalls the event loop mid-sync.
+    Per-email transaction semantics are unchanged — neither call touches the session.
 """
 
 from __future__ import annotations
@@ -167,8 +171,13 @@ class EmailIngestService:
             )
 
     async def _store_attachments(self, org_id: UUID, email_id: UUID, parsed: ParsedEmail) -> None:
-        """Insert each attachment with inline-extracted text; the raw bytes are dropped."""
+        """Insert each attachment with inline-extracted text + the extraction outcome; the raw
+        bytes are dropped. Status + extractor provenance come straight off the ExtractionResult
+        (the seam never raises), so every row records WHY its text is present or honestly NULL.
+        extract_text is pure CPU (pdfplumber/pypdf over up-to-50MB payloads) — off-loaded to a
+        worker thread, same as parse_email, so a heavy PDF never stalls the loop mid-sync."""
         for attachment in parsed.attachments:
+            extraction = await asyncio.to_thread(extract_text, attachment)
             await self._emails.add_attachment(
                 EmailAttachment(
                     org_id=org_id,
@@ -179,6 +188,9 @@ class EmailIngestService:
                     content_hash=attachment.content_hash,
                     is_inline=attachment.is_inline,
                     content_id=attachment.content_id,
-                    extracted_text=extract_text(attachment),
+                    extracted_text=extraction.text,
+                    extraction_status=extraction.status,
+                    extractor_name=extraction.extractor_name,
+                    extractor_version=extraction.extractor_version,
                 )
             )

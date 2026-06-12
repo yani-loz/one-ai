@@ -3,9 +3,11 @@ Role: Email Layer-1 ORM models — the IMAP connector's source-of-record tables:
       plus its recipients and attachments. The "natural" per-connector data (Bible §15 Layer 1).
 Used by: the IMAP email repository + (later) the parser/ingest; the standing RLS-invariant test +
          test fixtures register these via app.connectors.imap.models.
-Depends on: app.common.base_model (Base + mixins), SQLAlchemy + postgresql dialect (JSONB/ARRAY).
-            FKs to `person` (app.entities) and `connector_connection` (app.connectors) are STRING
-            references — no Python import of those models, only same-Base.metadata registration.
+Depends on: app.common.base_model (Base + mixins), SQLAlchemy + postgresql dialect (JSONB/ARRAY),
+            app.connectors.imap.parsing.extraction_result (the status vocabulary the 0015 CHECK
+            pins). FKs to `person` (app.entities) and `connector_connection` (app.connectors) are
+            STRING references — no Python import of those models, only same-Base.metadata
+            registration.
 Key invariants:
   - TENANT-SCOPED (org_id NOT NULL + indexed). RLS policy defined in the migration (inert until the
     least-privilege role lands — the RLS engine-flip).
@@ -29,6 +31,13 @@ Key invariants:
     person FKs null ONLY the person pointer on delete: PG-15+ `ON DELETE SET NULL (<col>)`,
     declared verbatim via ondelete="SET NULL (<col>)" (passes through to DDL + matches
     reflection, so the schema-parity gate sees no drift).
+  - 0015 EXTRACTION STATUS (CA-CONN-04): email_attachment.extraction_status is a CHECK-pinned
+    closed vocabulary — the SAME set as parsing.extraction_result.EXTRACTION_STATUSES (the
+    Python source of truth; tests/db assert the two never drift). `extracted_text` is non-NULL
+    only for text-bearing statuses (extracted/truncated/extracted_partial_scanned) — honest NULL
+    with a reason, never ''.
+    extractor_name/extractor_version record WHICH engine produced the row (version-aware
+    backfills); the (org_id, content_hash) index is the backfill/dedup lookup key 0014 deferred.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -51,6 +61,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.common.base_model import Base, TenantMixin, TimestampMixin, UUIDPrimaryKeyMixin
+from app.connectors.imap.parsing.extraction_result import EXTRACTION_STATUSES
 
 
 class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
@@ -183,6 +194,16 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
             ondelete="CASCADE",
             name="fk_email_attachment_email_id_org",
         ),
+        # 0015: pin the closed extraction-status vocabulary at the DB layer too — kept in
+        # lockstep with parsing.extraction_result.EXTRACTION_STATUSES (sorted for determinism).
+        CheckConstraint(
+            "extraction_status IN ({})".format(
+                ", ".join(f"'{status}'" for status in sorted(EXTRACTION_STATUSES))
+            ),
+            name="ck_email_attachment_extraction_status",
+        ),
+        # 0015: the hash-keyed extraction/backfill lookup 0014 deferred to CA-CONN-04.
+        Index("ix_email_attachment_org_content_hash", "org_id", "content_hash"),
     )
 
     email_id: Mapped[UUID] = mapped_column(
@@ -196,5 +217,14 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     content_hash: Mapped[str | None] = mapped_column(String(64))
     is_inline: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     content_id: Mapped[str | None] = mapped_column(String(998))
-    # Text extracted inline at parse (later stage); original bytes discarded.
+    # Text extracted inline at parse; original bytes discarded. Non-NULL only for the text-bearing
+    # statuses (extracted/truncated/extracted_partial_scanned) — honest NULL with a reason,
+    # never ''.
     extracted_text: Mapped[str | None] = mapped_column(Text)
+    # WHY extracted_text is (or is not) populated — the 0015 CHECK-pinned vocabulary.
+    extraction_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="pending"
+    )
+    # Provenance: which engine + version produced this row (version-aware backfill targeting).
+    extractor_name: Mapped[str | None] = mapped_column(Text)
+    extractor_version: Mapped[str | None] = mapped_column(Text)

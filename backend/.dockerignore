@@ -13,3 +13,7 @@ tests/
 # Dev-only demo seed (with public credentials) — never bake into a shipped image.
 # Available in dev via the compose bind-mount, so excluding it here is safe (AUD-13).
 scripts/
+
+# Agent/scratch verifier artifacts — never in the image (2026-06-12 Codex review)
+tmp_*
+.tmp_*

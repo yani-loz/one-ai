@@ -48,3 +48,7 @@ oneai-scaffold-running.png
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/projects/
+
+# Agent/scratch verifier artifacts (2026-06-12 Codex review)
+backend/tmp_*
+backend/.tmp_*

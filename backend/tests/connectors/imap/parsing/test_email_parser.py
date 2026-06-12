@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.connectors.imap.parsing.email_parser import parse_email
+from app.connectors.imap.parsing.email_parser import parse_email, sanitize_body_text
 
 MAILBOX = "me@oneai.com"
 
@@ -301,6 +301,18 @@ def test_parse_strips_nul_bytes_from_body_and_headers() -> None:
 
     assert "\x00" not in parsed.body_text and parsed.body_text == "badbody"
     assert all("\x00" not in str(v) for v in parsed.headers.values())
+
+
+def test_sanitize_body_text_strips_lone_surrogates_keeping_utf8_storability() -> None:
+    # pdfminer/pypdf surface lone surrogates (broken ToUnicode CMaps) through the SAME sanitizer
+    # email bodies use; asyncpg raises UnicodeEncodeError at flush on any survivor, so the
+    # guarantee is: the result is storable as UTF-8, period.
+    polluted = "ok \ud800 mid \udfff end"
+
+    sanitized = sanitize_body_text(polluted)
+
+    assert sanitized == "ok  mid  end"
+    sanitized.encode("utf-8")  # must not raise — the storability guarantee
 
 
 def test_parse_strips_c0_control_chars_from_body_keeps_tab_and_newline() -> None:

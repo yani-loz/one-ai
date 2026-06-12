@@ -1,12 +1,12 @@
 """
 Role: Unit tests for the attachment extraction seam — text/* (and text-shaped application/*)
       decode inline as `extracted` and pass through sanitize_body_text (the SINGLE sanitization
-      source: CRLF→LF + C0 + surrogate strip); PDF dispatches to extractors.pdf; non-documents and
-      not-yet-supported document formats get their honest skip/unsupported statuses; the global
-      size ceiling; never raises. Pure, no I/O.
+      source: CRLF→LF + C0 + surrogate strip); PDF dispatches to extractors.pdf and docx to
+      extractors.docx; non-documents and not-yet-supported document formats get their honest
+      skip/unsupported statuses; the global size ceiling; never raises. Pure, no I/O.
 Used by: pytest (tests/connectors/imap/parsing).
 Depends on: app.connectors.imap.parsing.attachment_extractor + .extraction_result + .models;
-            the extractors conftest PDF builder (a real parseable PDF payload).
+            the extractors conftest builders (real parseable PDF/docx payloads).
 """
 
 from __future__ import annotations
@@ -23,7 +23,11 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_UNSUPPORTED_FORMAT,
 )
 from app.connectors.imap.parsing.models import ParsedAttachment
-from tests.connectors.imap.parsing.extractors.conftest import TEXT_PAGE_STREAM, build_pdf
+from tests.connectors.imap.parsing.extractors.conftest import (
+    TEXT_PAGE_STREAM,
+    build_docx,
+    build_pdf,
+)
 
 
 def _attachment(content_type: str, payload: bytes) -> ParsedAttachment:
@@ -101,6 +105,17 @@ def test_extract_text_pdf_dispatches_to_pdf_extractor() -> None:
     assert result.extractor_name == "pdfplumber"
 
 
+def test_extract_text_docx_dispatches_to_docx_extractor() -> None:
+    payload = build_docx(["Hello from a docx"])
+    content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    result = extract_text(_attachment(content_type, payload))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text == "Hello from a docx"
+    assert result.extractor_name == "python-docx"
+
+
 @pytest.mark.parametrize(
     "content_type",
     ["image/png", "image/jpeg", "audio/mpeg", "video/mp4", "application/zip",
@@ -116,7 +131,6 @@ def test_extract_text_nondocument_types_return_skipped_nondocument(content_type:
 @pytest.mark.parametrize(
     "content_type",
     [
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.ms-excel",
         "application/rtf",
         "application/ms-tnef",
@@ -126,7 +140,7 @@ def test_extract_text_nondocument_types_return_skipped_nondocument(content_type:
 def test_extract_text_unhandled_document_formats_return_unsupported_format(
     content_type: str,
 ) -> None:
-    # Document-bearing formats without a Phase-A extractor: honest NULL + unsupported_format
+    # Document-bearing formats without an extractor yet: honest NULL + unsupported_format
     # (Phase B/C re-target exactly these rows via the backfill).
     result = extract_text(_attachment(content_type, b"\xd0\xcf\x11\xe0 ole..."))
 

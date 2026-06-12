@@ -4,8 +4,9 @@ Role: The attachment-extraction contract — ExtractionResult (what every extrac
       becomes honest-NULL-WITH-A-REASON: every attachment row carries a machine-readable status so
       future backfills can target exactly the rows a better extractor would improve (design §2).
 Used by: app.connectors.imap.parsing.attachment_extractor (the seam returns these),
-         .extractors.pdf (produces them), app.connectors.imap.services.email_ingest_service
-         (stores status + provenance columns), scripts.backfill_attachment_extraction,
+         .extractors.pdf + .extractors.docx (produce them),
+         app.connectors.imap.services.email_ingest_service (stores status + provenance columns),
+         scripts.backfill_attachment_extraction,
          migration 0015 + tests/db (the DB CHECK pins this exact vocabulary).
 Depends on: stdlib only (dataclasses).
 Key invariants:

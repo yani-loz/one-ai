@@ -6,6 +6,8 @@ Role: PDF attachment text extraction (design §2.1) — pdfplumber primary (layo
       keeps every extracted char (`extracted_partial_scanned`); only a document whose ENTIRE text
       layer is below the char floor is marked `scanned_pending_ocr` with text=None.
 Used by: app.connectors.imap.parsing.attachment_extractor (dispatches application/pdf payloads);
+         app.connectors.imap.parsing.extractors.docx (reuses serialize_table — ONE table
+         serializer across extractors — and MAX_EXTRACTED_CHARS);
          scripts.backfill_attachment_extraction (via the seam).
 Depends on: pdfplumber (MIT), pypdf (BSD) — NO PyMuPDF (AGPL, design hard-no);
             app.connectors.imap.parsing.extraction_result (the result contract);
@@ -161,9 +163,9 @@ def extract_pdf_text(payload: bytes) -> ExtractionResult:
     try:
         return _extract(payload)
     except Exception as unexpected:  # the seam's NEVER-raise contract: even our bugs degrade
-        logger.warning(
-            "pdf extraction: unexpected failure (%s)", type(unexpected).__name__, exc_info=True
-        )
+        # Class name ONLY - no exc_info: a formatted traceback ends with "Class: str(exc)",
+        # and library exception strings can embed payload fragments (2026-06-12 review).
+        logger.warning("pdf extraction: unexpected failure (%s)", type(unexpected).__name__)
         return ExtractionResult(
             None, STATUS_CORRUPT, detail=f"unexpected:{type(unexpected).__name__}"
         )

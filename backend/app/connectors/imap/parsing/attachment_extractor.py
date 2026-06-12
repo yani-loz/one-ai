@@ -2,14 +2,16 @@
 Role: Extract searchable TEXT from an attachment's raw bytes (design §4 lean-attachments: text is
       pulled inline, the original bytes are then discarded) and report the outcome as an
       ExtractionResult — honest NULL with a machine-readable reason, never fake text. Phase A
-      handles text/* + text-shaped application/* and PDF (extractors.pdf); other document formats
-      are honestly marked unsupported_format until their phase lands (design §5).
+      handles text/* + text-shaped application/*, PDF (extractors.pdf) and docx (extractors.docx);
+      other document formats are honestly marked unsupported_format until their phase lands
+      (design §5).
 Used by: the IMAP ingest runner (step 3d) — it calls this per ParsedAttachment, stores text +
          status + extractor provenance in email_attachment, then drops the bytes;
          scripts.backfill_attachment_extraction (re-runs the seam over the disk corpus).
 Depends on: app.connectors.imap.parsing.models (ParsedAttachment), .extraction_result (the
-            contract), .extractors.pdf (PDF path), .email_parser (sanitize_body_text — the SINGLE
-            stored-text sanitization source, shared with email bodies and PDF text).
+            contract), .extractors.pdf (PDF path), .extractors.docx (docx path), .email_parser
+            (sanitize_body_text — the SINGLE stored-text sanitization source, shared with email
+            bodies and PDF text).
 Key invariants:
   - NEVER raises: a bad/undecodable attachment yields a degraded ExtractionResult, never an
     exception (per-message error isolation — one attachment must not fail the whole email).
@@ -21,8 +23,8 @@ Key invariants:
   - The GLOBAL size ceiling (MAX_PARSE_BYTES, design §2) applies before ANY parsing — payloads
     above it are skipped_oversize on every path (bounded memory, never-raise preserved).
   - Non-document types (images/audio/video/archives/signatures) → skipped_nondocument; document
-    formats without a Phase-A extractor (Office/RTF/TNEF/octet-stream) → unsupported_format —
-    the statuses later phases re-target (B: TNEF + sniffing; C: OCR).
+    formats without an extractor yet (xlsx/pptx/RTF/TNEF/octet-stream/legacy Office) →
+    unsupported_format — the statuses later phases re-target (B: TNEF + sniffing; C: OCR).
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_UNSUPPORTED_FORMAT,
     ExtractionResult,
 )
+from app.connectors.imap.parsing.extractors.docx import extract_docx_text
 from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
 from app.connectors.imap.parsing.models import ParsedAttachment
 
@@ -49,6 +52,9 @@ MAX_PARSE_BYTES = 50 * 1024 * 1024
 # v1 bare NUL strip — the single-sanitization-source fix (2026-06-11 review).
 TEXT_DECODER_NAME = "text-decode"
 TEXT_DECODER_VERSION = "2"
+
+# The OOXML WordprocessingML content type — dispatched to extractors.docx (design §2.4).
+_DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # Content-types whose payload is decoded as text directly (unchanged from v1 in behavior).
 _TEXT_PREFIXES = ("text/",)
@@ -88,8 +94,9 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
     Dispatch: empty payload → `empty`; payload above MAX_PARSE_BYTES → `skipped_oversize`
     (nothing oversize is ever parsed); text/* + text-shaped application/* → inline decode +
     sanitize_body_text (`extracted`; sanitized-to-blank → `empty`); application/pdf →
-    extractors.pdf (full §2.1/§3.1 pipeline); image/audio/video/archive/signature classes →
-    `skipped_nondocument`; every other format → `unsupported_format` (Phase B/C re-target these).
+    extractors.pdf (full §2.1/§3.1 pipeline); the docx content type → extractors.docx (§2.4);
+    image/audio/video/archive/signature classes → `skipped_nondocument`; every other format →
+    `unsupported_format` (Phase B/C re-target these).
 
     Args:
         attachment: the parsed attachment (transient payload bytes + declared content type).
@@ -109,6 +116,8 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
         return _decode_text(attachment.payload)
     if content_type == "application/pdf":
         return extract_pdf_text(attachment.payload)
+    if content_type == _DOCX_CONTENT_TYPE:
+        return extract_docx_text(attachment.payload)
     if _is_nondocument(content_type):
         return ExtractionResult(None, STATUS_SKIPPED_NONDOCUMENT)
     return ExtractionResult(None, STATUS_UNSUPPORTED_FORMAT)

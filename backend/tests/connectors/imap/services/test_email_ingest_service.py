@@ -19,7 +19,11 @@ from app.connectors.imap.models.email import EmailAttachment, EmailMessage, Emai
 from app.connectors.imap.services.email_ingest_service import EmailIngestService, IngestOutcome
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person
-from tests.connectors.imap.parsing.extractors.conftest import TEXT_PAGE_STREAM, build_pdf
+from tests.connectors.imap.parsing.extractors.conftest import (
+    TEXT_PAGE_STREAM,
+    build_docx,
+    build_pdf,
+)
 from tests.connectors.imap.services.conftest import seed_connection
 
 MAILBOX = "owner@acme.com"
@@ -219,6 +223,37 @@ async def test_ingest_valid_pdf_attachment_stores_text_and_extraction_provenance
     assert attachment.extracted_text == "[page 1]\nHello World"
     assert attachment.extraction_status == "extracted"
     assert attachment.extractor_name == "pdfplumber"
+    assert attachment.extractor_version is not None
+
+
+async def test_ingest_valid_docx_attachment_stores_text_and_extraction_provenance(
+    db_session: AsyncSession,
+) -> None:
+    # End-to-end docx slice (design §2.4): a real python-docx-built attachment lands with its
+    # body text extracted and the 0015 status + provenance columns filled.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    service = EmailIngestService(db_session, connection)
+    docx_b64 = b64encode(build_docx(["Quarterly summary attached."]))
+    docx_type = b"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    raw = (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <docx@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: " + docx_type + b"\r\n"
+        b'Content-Disposition: attachment; filename="summary.docx"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n" + docx_b64 + b"\r\n--B--\r\n"
+    )
+
+    await service.ingest_email(raw)
+
+    attachment = (
+        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
+    ).scalar_one()
+    assert attachment.filename == "summary.docx"
+    assert attachment.extracted_text == "Quarterly summary attached."
+    assert attachment.extraction_status == "extracted"
+    assert attachment.extractor_name == "python-docx"
     assert attachment.extractor_version is not None
 
 

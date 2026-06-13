@@ -8,7 +8,7 @@ Two layers of guarantee, mirroring tests/db/test_data_quality_guards.py:
      exactly: extraction_status NOT NULL with DEFAULT 'pending', nullable extractor_name/
      extractor_version, the CHECK pinning the closed status vocabulary, and the
      (org_id, content_hash) backfill-lookup index. The CHECK is additionally asserted to match
-     app.connectors.imap.parsing.extraction_result.EXTRACTION_STATUSES — the Python source of
+     app.connectors.extraction.extraction_result.EXTRACTION_STATUSES — the Python source of
      truth — so the DB vocabulary and the seam's constants can NEVER silently drift. 0016 adds
      extraction_detail (nullable text, no default — EQ-7: ExtractionResult.detail persisted).
 
@@ -33,7 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.connectors.imap.parsing.extraction_result import EXTRACTION_STATUSES
+from app.connectors.extraction.extraction_result import EXTRACTION_STATUSES
 from app.core.database import engine
 
 _STATUS_CHECK_NAME = "ck_email_attachment_extraction_status"
@@ -104,7 +104,7 @@ async def test_extraction_columns_exist_with_expected_shapes(migrated_db: None) 
 
 
 async def test_extraction_status_check_matches_python_vocabulary(migrated_db: None) -> None:
-    """The DB CHECK and parsing.extraction_result.EXTRACTION_STATUSES are the SAME set —
+    """The DB CHECK and extraction.extraction_result.EXTRACTION_STATUSES are the SAME set —
     the lockstep guarantee the 0015 docstring promises (drift here breaks honest-NULL)."""
     async with engine.connect() as connection:
         definition = await _constraint_definition(

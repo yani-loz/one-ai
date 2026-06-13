@@ -14,7 +14,7 @@ Depends on: 0014_data_quality_guards (revision chain); the email_attachment tabl
             0008_email_ingestion_schema.
 Key invariants:
   - The CHECK's status set is the SAME literal vocabulary as
-    app.connectors.imap.parsing.extraction_result.EXTRACTION_STATUSES (the Python source of
+    app.connectors.extraction.extraction_result.EXTRACTION_STATUSES (the Python source of
     truth) — deliberately HARDCODED here, never imported: a migration is a frozen snapshot, and
     a future constant rename must not silently rewrite history.
     tests/db/test_attachment_extraction_status.py asserts the live CHECK and the Python set
@@ -53,7 +53,7 @@ down_revision: str | None = "0014_data_quality_guards"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# KEEP IN SYNC with app.connectors.imap.parsing.extraction_result.EXTRACTION_STATUSES (sorted;
+# KEEP IN SYNC with app.connectors.extraction.extraction_result.EXTRACTION_STATUSES (sorted;
 # hardcoded by migration convention — see module docstring). The standing test enforces parity.
 _EXTRACTION_STATUSES = (
     "corrupt",

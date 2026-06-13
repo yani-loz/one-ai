@@ -4,7 +4,7 @@ Role: Email Layer-1 ORM models — the IMAP connector's source-of-record tables:
 Used by: the IMAP email repository + (later) the parser/ingest; the standing RLS-invariant test +
          test fixtures register these via app.connectors.imap.models.
 Depends on: app.common.base_model (Base + mixins), SQLAlchemy + postgresql dialect (JSONB/ARRAY),
-            app.connectors.imap.parsing.extraction_result (the status vocabulary the 0015 CHECK
+            app.connectors.extraction.extraction_result (the status vocabulary the 0015 CHECK
             pins). FKs to `person` (app.entities) and `connector_connection` (app.connectors) are
             STRING references — no Python import of those models, only same-Base.metadata
             registration.
@@ -32,7 +32,7 @@ Key invariants:
     declared verbatim via ondelete="SET NULL (<col>)" (passes through to DDL + matches
     reflection, so the schema-parity gate sees no drift).
   - 0015 EXTRACTION STATUS (CA-CONN-04): email_attachment.extraction_status is a CHECK-pinned
-    closed vocabulary — the SAME set as parsing.extraction_result.EXTRACTION_STATUSES (the
+    closed vocabulary — the SAME set as extraction.extraction_result.EXTRACTION_STATUSES (the
     Python source of truth; tests/db assert the two never drift). `extracted_text` is non-NULL
     only for text-bearing statuses (extracted/truncated/extracted_partial_scanned) — honest NULL
     with a reason, never ''.
@@ -65,7 +65,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.common.base_model import Base, TenantMixin, TimestampMixin, UUIDPrimaryKeyMixin
-from app.connectors.imap.parsing.extraction_result import EXTRACTION_STATUSES
+from app.connectors.extraction.extraction_result import EXTRACTION_STATUSES
 
 
 class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
@@ -199,7 +199,7 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
             name="fk_email_attachment_email_id_org",
         ),
         # 0015: pin the closed extraction-status vocabulary at the DB layer too — kept in
-        # lockstep with parsing.extraction_result.EXTRACTION_STATUSES (sorted for determinism).
+        # lockstep with extraction.extraction_result.EXTRACTION_STATUSES (sorted for determinism).
         CheckConstraint(
             "extraction_status IN ({})".format(
                 ", ".join(f"'{status}'" for status in sorted(EXTRACTION_STATUSES))

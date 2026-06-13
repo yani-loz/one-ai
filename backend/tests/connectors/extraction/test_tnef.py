@@ -9,8 +9,8 @@ Role: Unit tests for the TNEF extractor — the body cascade (compressed-RTF dec
       flattening + the printable guard, the C1/NEL filename strip) live in test_tnef_guards.py
       (A2 size split). Fixtures are HAND-ASSEMBLED minimal TNEF streams (see conftest.build_tnef
       — real tnefparse parses, checksums verified); no _FakeTnef stubbing needed.
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.tnef, .extraction_result, the conftest
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.tnef, .extraction_result, the conftest
             build_tnef/build_pdf/build_docx builders.
 """
 
@@ -22,8 +22,8 @@ from importlib import metadata
 
 import pytest
 
-import app.connectors.imap.parsing.extractors.tnef as tnef_module
-from app.connectors.imap.parsing.extraction_result import (
+import app.connectors.extraction.tnef as tnef_module
+from app.connectors.extraction.extraction_result import (
     EXTRACTION_STATUSES,
     STATUS_CORRUPT,
     STATUS_EMPTY,
@@ -32,8 +32,8 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.tnef import extract_tnef_text
-from tests.connectors.imap.parsing.extractors.conftest import (
+from app.connectors.extraction.tnef import extract_tnef_text
+from tests.connectors.extraction.conftest import (
     TEXT_PAGE_STREAM,
     _tnef_mapi_binary_property,
     build_docx,

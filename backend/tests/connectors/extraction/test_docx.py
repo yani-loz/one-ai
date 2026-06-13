@@ -7,8 +7,8 @@ Role: Unit tests for the docx extractor — document-order paragraph + table ext
       fallback for packages python-docx rejects, truncation, C0 + surrogate sanitization, the
       vendor-log leak regression, and the NEVER-raises property. Fixtures are built in-memory
       with python-docx / stdlib zipfile (see conftest) — pure, no I/O.
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.docx, .extraction_result, the conftest
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.docx, .extraction_result, the conftest
             build_docx builder.
 """
 
@@ -21,8 +21,9 @@ from io import BytesIO
 
 import pytest
 
-import app.connectors.imap.parsing.extractors.docx as docx_module
-from app.connectors.imap.parsing.extraction_result import (
+import app.connectors.extraction.docx as docx_module
+from app.connectors.extraction.docx import extract_docx_text
+from app.connectors.extraction.extraction_result import (
     EXTRACTION_STATUSES,
     STATUS_CORRUPT,
     STATUS_EMPTY,
@@ -32,8 +33,7 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.docx import extract_docx_text
-from tests.connectors.imap.parsing.extractors.conftest import build_docx
+from tests.connectors.extraction.conftest import build_docx
 
 # 8-byte OLE compound-file magic — how a password-protected (ECMA-376-encrypted) docx arrives.
 OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"

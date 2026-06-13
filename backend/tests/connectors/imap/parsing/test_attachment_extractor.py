@@ -4,12 +4,13 @@ Role: Unit tests for the attachment extraction seam — text/* (and text-shaped 
       windows-1251 → utf-8-replace) and pass through sanitize_body_text (the SINGLE sanitization
       source); text/html flattens through the email-body flattener and text/rtf +
       application/rtf strip through striprtf (EQ-4 — raw markup never stores as 'extracted');
-      PDF dispatches to extractors.pdf, docx to extractors.docx, TNEF to extractors.tnef;
+      PDF dispatches to extraction.pdf, docx to extraction.docx, TNEF to extraction.tnef;
       non-documents and not-yet-supported document formats get their honest skip/unsupported
       statuses; the global size ceiling; never raises. Pure, no I/O.
 Used by: pytest (tests/connectors/imap/parsing).
-Depends on: app.connectors.imap.parsing.attachment_extractor + .extraction_result + .models;
-            the extractors conftest builders (real parseable PDF/docx/TNEF payloads).
+Depends on: app.connectors.imap.parsing.attachment_extractor + .models,
+            app.connectors.extraction.extraction_result; the tests.connectors.extraction conftest
+            builders (real parseable PDF/docx/TNEF payloads).
 """
 
 from __future__ import annotations
@@ -17,16 +18,16 @@ from __future__ import annotations
 import pytest
 
 import app.connectors.imap.parsing.attachment_extractor as extractor_module
-from app.connectors.imap.parsing.attachment_extractor import extract_text
-from app.connectors.imap.parsing.extraction_result import (
+from app.connectors.extraction.extraction_result import (
     STATUS_EMPTY,
     STATUS_EXTRACTED,
     STATUS_SKIPPED_NONDOCUMENT,
     STATUS_SKIPPED_OVERSIZE,
     STATUS_UNSUPPORTED_FORMAT,
 )
+from app.connectors.imap.parsing.attachment_extractor import extract_text
 from app.connectors.imap.parsing.models import ParsedAttachment
-from tests.connectors.imap.parsing.extractors.conftest import (
+from tests.connectors.extraction.conftest import (
     TEXT_PAGE_STREAM,
     build_docx,
     build_pdf,

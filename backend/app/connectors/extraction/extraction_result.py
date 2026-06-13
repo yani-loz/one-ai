@@ -3,12 +3,12 @@ Role: The attachment-extraction contract — ExtractionResult (what every extrac
       closed extraction-status vocabulary stored in email_attachment.extraction_status. Honest NULL
       becomes honest-NULL-WITH-A-REASON: every attachment row carries a machine-readable status so
       future backfills can target exactly the rows a better extractor would improve (design §2).
-Used by: app.connectors.imap.parsing.attachment_extractor (the seam returns these),
-         .extractors.pdf + .extractors.docx (produce them),
-         app.connectors.imap.services.email_ingest_service (stores status + provenance columns),
-         scripts.backfill_attachment_extraction,
-         migration 0015 + tests/db (the DB CHECK pins this exact vocabulary).
-Depends on: stdlib only (dataclasses).
+Used by: app.connectors.extraction.pdf / .docx / .tnef (produce them); the IMAP connector's
+         attachment_extractor (the seam returns these), its email model (the status vocabulary the
+         0015 CHECK pins) and email_ingest_service (stores status + provenance columns);
+         scripts.backfill_attachment_extraction; migration 0015 + tests/db (the DB CHECK pins this
+         exact vocabulary). The arrow points IN — this leaf imports nothing back.
+Depends on: stdlib only (dataclasses). NOTHING from any specific connector (connector-agnostic).
 Key invariants:
   - EXTRACTION_STATUSES is the single Python source of truth; the DB CHECK in migration
     0015_attachment_extraction_status pins the SAME literal set — keep them in lockstep

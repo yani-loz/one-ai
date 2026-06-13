@@ -3,9 +3,10 @@ Role: The pieces every attachment extractor shares — the stored-text size cap,
       serializer, and installed-package version lookup for extraction provenance. Split out of
       pdf.py (A2: the per-format modules grew past the ceiling carrying shared helpers, and
       docx/tnef importing them FROM pdf made the PDF module a false dependency hub).
-Used by: extractors.pdf / .docx / .tnef (and every future per-format extractor);
+Used by: app.connectors.extraction.pdf / .docx / .tnef (and every future per-format extractor);
          tests assert the serializer's shape directly.
-Depends on: stdlib only (functools.cache, importlib.metadata).
+Depends on: stdlib only (functools.cache, importlib.metadata). NOTHING from any specific connector
+            (connector-agnostic).
 Key invariants:
   - MAX_EXTRACTED_CHARS is THE storage cap for every extractor: text over it is truncated with
     status `truncated` and the capped text STORED (design §2.1 size discipline). One constant,

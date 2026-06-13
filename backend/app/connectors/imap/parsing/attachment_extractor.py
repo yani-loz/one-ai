@@ -9,11 +9,11 @@ Role: Extract searchable TEXT from an attachment's raw bytes (design §4 lean-at
 Used by: the IMAP ingest runner (step 3d) — it calls this per ParsedAttachment, stores text +
          status + detail + extractor provenance in email_attachment, then drops the bytes;
          scripts.backfill_attachment_extraction (re-runs the seam over the disk corpus).
-Depends on: app.connectors.imap.parsing.models (ParsedAttachment), .extraction_result (the
-            contract), .extractors.pdf (PDF path), .extractors.docx (docx path), .extractors.tnef
-            (TNEF path), .email_parser (sanitize_body_text + decode_charset_chain + html_to_text
-            — the SINGLE sanitization/decode/flatten sources, shared with email bodies),
-            striprtf (BSD-3-Clause — RTF flattening, audit EQ-4).
+Depends on: app.connectors.imap.parsing.models (ParsedAttachment); the connector-agnostic
+            app.connectors.extraction package — .extraction_result (the contract), .pdf (PDF path),
+            .docx (docx path), .tnef (TNEF path), .text_sanitize (sanitize_body_text +
+            decode_charset_chain + html_to_text — the SINGLE sanitization/decode/flatten sources,
+            shared with email bodies); striprtf (BSD-3-Clause — RTF flattening, audit EQ-4).
 Key invariants:
   - NEVER raises: a bad/undecodable attachment yields a degraded ExtractionResult, never an
     exception (per-message error isolation — one attachment must not fail the whole email).
@@ -43,12 +43,8 @@ from importlib import metadata
 
 from striprtf.striprtf import rtf_to_text
 
-from app.connectors.imap.parsing.email_parser import (
-    decode_charset_chain,
-    html_to_text,
-    sanitize_body_text,
-)
-from app.connectors.imap.parsing.extraction_result import (
+from app.connectors.extraction.docx import extract_docx_text
+from app.connectors.extraction.extraction_result import (
     STATUS_CORRUPT,
     STATUS_EMPTY,
     STATUS_EXTRACTED,
@@ -57,9 +53,13 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_UNSUPPORTED_FORMAT,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.docx import extract_docx_text
-from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
-from app.connectors.imap.parsing.extractors.tnef import extract_tnef_text
+from app.connectors.extraction.pdf import extract_pdf_text
+from app.connectors.extraction.text_sanitize import (
+    decode_charset_chain,
+    html_to_text,
+    sanitize_body_text,
+)
+from app.connectors.extraction.tnef import extract_tnef_text
 from app.connectors.imap.parsing.models import ParsedAttachment
 
 # Global parse ceiling (design §2): nothing above this is parsed, on ANY path — bounded memory.

@@ -5,7 +5,7 @@ Role: In-memory fixture builders for the extractor tests — a classic ~600-byte
       (ordered paragraph/table blocks), and a HAND-ASSEMBLED minimal TNEF stream builder
       (signature + key + attribute records per tnefparse's wire layout: level u8, name u16,
       type u16, length u32, data, checksum u16). Self-contained: no fixture files on disk.
-Used by: tests/connectors/imap/parsing/extractors/test_pdf.py + test_docx.py + test_tnef.py, the
+Used by: tests/connectors/extraction/test_pdf.py + test_docx.py + test_tnef.py, the
          seam test (test_attachment_extractor) and the ingest integration test
          (test_email_ingest_service) import build_pdf/TEXT_PAGE_STREAM/build_docx/build_tnef for
          real parseable payloads.

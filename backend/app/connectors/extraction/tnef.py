@@ -8,18 +8,20 @@ Role: TNEF (winmail.dat) attachment extraction (design §2.9) — BODY CARRIER f
       magic-SNIFFED (never trusts names) and dispatched to the pdf/docx/text extractors, each
       rendered as a '[embedded: SAFE_NAME]' section; nested tnef/ole/unknown payloads are
       skip-marked, never recursed.
-Used by: app.connectors.imap.parsing.attachment_extractor (dispatches application/ms-tnef);
-         scripts.backfill_attachment_extraction (via the seam).
+Used by: the IMAP connector's attachment_extractor (dispatches application/ms-tnef);
+         scripts.backfill_attachment_extraction (via the seam). The arrow points IN — this module
+         imports nothing back from any connector.
 Depends on: tnefparse (LGPL-3.0 — import-only is commercially fine, never vendored/modified;
             pinned, design §2.9), compressed-rtf (MIT, invoked through tnefparse's rtfbody
-            property) + striprtf (BSD-3-Clause) — verified GPL-free in the installed metadata;
-            .extractors.sniff (magic dispatch), .extractors.pdf (extract_pdf_text +
-            MAX_EXTRACTED_CHARS, the shared stored-text cap), .extractors.docx
-            (extract_docx_text), .extraction_result (the contract), .email_parser
-            (sanitize_body_text + html_to_text + decode_charset_chain — the SINGLE
-            sanitization / HTML-flatten / charset-decode sources, never re-implemented),
-            .dedup_key (MAX_COMPRESSED_RTF_BYTES — the shared LZFu-bomb bound, single-sourced
-            there because the reverse import would cycle through email_parser).
+            property) + striprtf (BSD-3-Clause — the embedded-RTF flatten) — verified GPL-free in
+            the installed metadata; sibling extraction modules only:
+            app.connectors.extraction.sniff (magic dispatch), .pdf (extract_pdf_text +
+            MAX_EXTRACTED_CHARS, the shared stored-text cap), .docx (extract_docx_text),
+            .extraction_result (the contract), .text_sanitize (sanitize_body_text + html_to_text +
+            decode_charset_chain — the SINGLE sanitization / HTML-flatten / charset-decode sources,
+            never re-implemented), .tnef_rtf (MAX_COMPRESSED_RTF_BYTES + compressed_rtf_over_bound +
+            flatten_tnef_rtf_body — the shared LZFu-bomb bound + RTF-body flatten primitive). This
+            module imports NOTHING from any specific connector (connector-agnostic).
 Key invariants:
   - extract_tnef_text NEVER raises: tnefparse raises diverse internals on corrupt blobs
     (existing precedent in dedup_key.py) → `corrupt` with the class name only; a final
@@ -79,13 +81,14 @@ from striprtf.striprtf import rtf_to_text
 from tnefparse import TNEF
 from tnefparse.tnef import TNEFAttachment
 
-from app.connectors.imap.parsing.dedup_key import MAX_COMPRESSED_RTF_BYTES
-from app.connectors.imap.parsing.email_parser import (
-    decode_charset_chain,
-    html_to_text,
-    sanitize_body_text,
+from app.connectors.extraction.common import (
+    MAX_EXTRACTED_CHARS,
 )
-from app.connectors.imap.parsing.extraction_result import (
+from app.connectors.extraction.common import (
+    package_version as _package_version,
+)
+from app.connectors.extraction.docx import extract_docx_text
+from app.connectors.extraction.extraction_result import (
     STATUS_CORRUPT,
     STATUS_EMPTY,
     STATUS_EXTRACTED,
@@ -93,19 +96,22 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_UNSUPPORTED_FORMAT,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.common import (
-    MAX_EXTRACTED_CHARS,
-)
-from app.connectors.imap.parsing.extractors.common import (
-    package_version as _package_version,
-)
-from app.connectors.imap.parsing.extractors.docx import extract_docx_text
-from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
-from app.connectors.imap.parsing.extractors.sniff import (
+from app.connectors.extraction.pdf import extract_pdf_text
+from app.connectors.extraction.sniff import (
     KIND_PDF,
     KIND_TEXT,
     KIND_ZIP,
     detect_payload_kind,
+)
+from app.connectors.extraction.text_sanitize import (
+    decode_charset_chain,
+    html_to_text,
+    sanitize_body_text,
+)
+from app.connectors.extraction.tnef_rtf import (
+    MAX_COMPRESSED_RTF_BYTES,
+    compressed_rtf_over_bound,
+    flatten_tnef_rtf_body,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,8 +134,8 @@ MAX_EMBEDDED_FILES = 64
 # container (no decompression step), but flattening a pathological source through html2text /
 # the charset chain is unbounded CPU plus a second full copy — over-bound sources are skipped
 # and the body cascade falls through to the next layer. (The compressed-RTF bound,
-# MAX_COMPRESSED_RTF_BYTES, is imported from dedup_key — the SAME bound on BOTH TNEF readers,
-# the KEY-CONSISTENCY invariant.)
+# MAX_COMPRESSED_RTF_BYTES, is single-sourced in app.connectors.extraction.tnef_rtf and re-bound
+# here — the SAME bound on BOTH TNEF readers, the KEY-CONSISTENCY invariant.)
 MAX_BODY_SOURCE_BYTES = 16 * 1024 * 1024
 
 # Section-marker safety: embedded file names are length-capped after the control/bracket strip
@@ -280,39 +286,33 @@ def _container_body_text(container: TNEF) -> tuple[str, str, str | None]:
 def _compressed_rtf_over_bound(container: TNEF) -> bool:
     """True when the COMPRESSED RTF property exceeds MAX_COMPRESSED_RTF_BYTES.
 
-    `container._rtfbody` is tnefparse 1.4.0's PRE-DECOMPRESS handle: the raw MAPI_RTF_COMPRESSED
-    property bytes stored at parse time, while `rtfbody` is a LAZY property that
-    LZFu-decompresses on access — so the bound MUST be checked here, before _rtf_body_text ever
-    touches that property (measured 8.0x expansion on the corpus: an unbounded 50MB container
-    could materialize ~400MB + striprtf's second copy). The SAME bound gates the dedup key's
-    flattened-body component (KEY-CONSISTENCY — dedup_key.py owns the constant). Guarded: an
-    odd container could carry a non-sized value; the rtf layer then degrades on its own.
+    Delegates to the shared app.connectors.extraction.tnef_rtf.compressed_rtf_over_bound, passing
+    THIS module's MAX_COMPRESSED_RTF_BYTES so a monkeypatch of the extractor's bound still gates
+    the over-bound skip. `container._rtfbody` is tnefparse 1.4.0's PRE-DECOMPRESS handle while
+    `rtfbody` is a LAZY property that LZFu-decompresses on access — so the bound MUST be checked
+    here, before _rtf_body_text ever touches that property (measured 8.0x expansion: an unbounded
+    50MB container could materialize ~400MB + striprtf's second copy). The SAME bound gates the
+    dedup key's flattened-body component (KEY-CONSISTENCY — tnef_rtf.py single-sources the bound).
     """
-    try:
-        compressed_rtf_property = container._rtfbody  # the pre-decompress handle, see docstring
-        return compressed_rtf_property is not None and (
-            len(compressed_rtf_property) > MAX_COMPRESSED_RTF_BYTES
-        )
-    except Exception:
-        return False
+    return compressed_rtf_over_bound(container, MAX_COMPRESSED_RTF_BYTES)
 
 
 def _rtf_body_text(container: TNEF) -> str:
-    """The compressed-RTF body flattened to text, or '' when absent/corrupt.
+    """The compressed-RTF body flattened to text, or '' when absent/over-bound/corrupt.
 
-    container.rtfbody LZFu-decompresses via compressed-rtf internally — the caller has already
-    passed the MAX_COMPRESSED_RTF_BYTES gate before this property is touched; striprtf then
-    strips the markup (errors='replace' — a broken \\'xx escape must not lose the body). RTF
-    source is ASCII-shaped by spec, so the bytes are read latin-1 (lossless) and striprtf
-    decodes the \\ansicpg hex escapes itself.
+    Delegates the decompress+flatten+strip to the shared
+    app.connectors.extraction.tnef_rtf.flatten_tnef_rtf_body (which LZFu-decompresses via the lazy
+    rtfbody property — the caller has already passed the bound gate — reads latin-1 and strips
+    markup via striprtf errors='replace'), then re-applies sanitize_body_text exactly as before.
+    An over-bound body (RtfBodyOverBoundError) and a None (absent) body both degrade to '' here so
+    the body cascade falls through to the next layer (the orchestrator already skipped over-bound).
     """
     try:
-        rtf_bytes = container.rtfbody
-        if not rtf_bytes:
+        flattened = flatten_tnef_rtf_body(container, MAX_COMPRESSED_RTF_BYTES)
+        if not flattened:
             return ""
-        rtf_source = rtf_bytes.decode("latin-1") if isinstance(rtf_bytes, bytes) else str(rtf_bytes)
-        return sanitize_body_text(rtf_to_text(rtf_source, errors="replace"))
-    except Exception:  # decompress/strip raise diverse internals — degrade to the next layer
+        return sanitize_body_text(flattened)
+    except Exception:  # over-bound / decompress / strip raise diverse internals — next body layer
         return ""
 
 

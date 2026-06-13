@@ -5,8 +5,10 @@ Role: The CONTENT-IDENTITY dedup key (recipe of record — v5) and its component
       timezones, regenerated TNEF containers), so the key hashes DECODED logical content, never
       raw serialization.
 Used by: .email_parser (parse_email computes each ParsedEmail's dedup_key through this module).
-Depends on: stdlib (hashlib, email.utils), tnefparse (TNEF interior digests) + striprtf (the
-            flattened-RTF-body component of the interior digest),
+Depends on: stdlib (hashlib, email.utils), tnefparse (TNEF interior digests),
+            app.connectors.extraction.tnef_rtf (MAX_COMPRESSED_RTF_BYTES + RtfBodyOverBoundError +
+            flatten_tnef_rtf_body — the shared striprtf-flatten primitive + LZFu-bomb bound, the
+            arrow now points OUT to the connector-agnostic extraction package),
             .headers (safe_header / parse_date / MSGID_MAX), .models (ParsedAttachment).
             The text/html decoder is INJECTED by the caller (email_parser._decode_text_part) —
             the decode pipeline stays single-sourced there without an import cycle.
@@ -41,26 +43,29 @@ from email.message import EmailMessage
 from email.utils import getaddresses
 from hashlib import sha256
 
-from striprtf.striprtf import rtf_to_text
 from tnefparse import TNEF
 
+from app.connectors.extraction.tnef_rtf import (
+    MAX_COMPRESSED_RTF_BYTES,
+    RtfBodyOverBoundError,
+    flatten_tnef_rtf_body,
+)
 from app.connectors.imap.parsing.headers import MSGID_MAX, parse_date, safe_header
 from app.connectors.imap.parsing.models import ParsedAttachment
 
 # tnefparse interpolates RAW PAYLOAD BYTES into its log records (live-reproduced 2026-06-12 —
-# see extractors/tnef.py, which documents the repro and carries the same mute). This module
+# see extraction/tnef.py, which documents the repro and carries the same mute). This module
 # parses the same containers via TNEF(payload), and a process importing it WITHOUT the extractor
 # module would have the leak unmuted — so the idempotent setLevel is duplicated here (same
-# process-wide CRITICAL posture as pypdf/pdfminer in extractors/pdf.py; security.md).
+# process-wide CRITICAL posture as pypdf/pdfminer in extraction/pdf.py; security.md).
 logging.getLogger("tnefparse").setLevel(logging.CRITICAL)
 
-# LZFu decompression-bomb bound (measured 8.0x expansion ratio on the corpus): compressed-RTF
-# property bytes above this are NEVER decompressed — the flattened-body component degrades to
-# the fixed token 'rtf-over-bound' instead (8MB compressed ⇒ ≤ ~64MB transient at the measured
-# ratio). SINGLE-SOURCED here and imported by extractors/tnef.py (the reverse import would cycle
-# through email_parser): the key and the extractor must apply the SAME bound, or the two TNEF
-# readers' notions of "the body" would drift apart (the KEY-CONSISTENCY invariant).
-MAX_COMPRESSED_RTF_BYTES = 8 * 1024 * 1024
+# The LZFu decompression-bomb bound (MAX_COMPRESSED_RTF_BYTES) and the flatten primitive
+# (flatten_tnef_rtf_body) are SINGLE-SOURCED in app.connectors.extraction.tnef_rtf and re-bound
+# here. The bound is re-bound into THIS module's namespace and passed explicitly below so the
+# dedup-key over-bound branch is still gated by a monkeypatch of dedup_key.MAX_COMPRESSED_RTF_BYTES;
+# the key and the extractor must apply the SAME bound, or the two TNEF readers' notions of "the
+# body" would drift apart (the KEY-CONSISTENCY invariant).
 
 
 def compute_dedup_key(
@@ -204,23 +209,20 @@ def _tnef_interior_digest(payload: bytes) -> str:
 def _tnef_flattened_body_component(interior: TNEF) -> str:
     """The flattened-RTF-body component of the interior digest (may raise — caller degrades).
 
-    `interior._rtfbody` is tnefparse 1.4.0's PRE-DECOMPRESS handle: the raw MAPI_RTF_COMPRESSED
-    property bytes stored at parse time, while `rtfbody` is the LAZY property that
-    LZFu-decompresses on access — the MAX_COMPRESSED_RTF_BYTES bound is checked on the
-    COMPRESSED bytes before that property is ever touched (measured 8.0x expansion: an unbounded
-    50MB property would materialize ~400MB on the identity path). Absent property → the fixed
-    token 'no-rtf'; over-bound → 'rtf-over-bound' (never decompressed; the extractor skips the
-    same body — KEY-CONSISTENCY); else sha256 of the decompressed body read latin-1 (lossless —
-    RTF source is ASCII-shaped by spec, the same read as extractors/tnef.py), flattened via
-    striprtf with errors='replace', and stripped.
+    Flattens via the shared app.connectors.extraction.tnef_rtf primitive, passing THIS module's
+    MAX_COMPRESSED_RTF_BYTES so a monkeypatch of dedup_key's bound still gates the over-bound
+    branch. Absent RTF body (helper returns None) → the fixed token 'no-rtf'; over-bound
+    (RtfBodyOverBoundError — never decompressed; the extractor skips the same body for
+    KEY-CONSISTENCY) → 'rtf-over-bound'; else sha256 of the flattened+stripped body (the helper
+    reads the lazy decompressed body latin-1 and striprtf-flattens with errors='replace' — the
+    same read as extraction/tnef.py). Decompress/strip failures PROPAGATE to the digest's except.
     """
-    compressed_rtf_property = interior._rtfbody  # the pre-decompress handle — see docstring
-    if not compressed_rtf_property:
-        return "no-rtf"
-    if len(compressed_rtf_property) > MAX_COMPRESSED_RTF_BYTES:
+    try:
+        flattened = flatten_tnef_rtf_body(interior, MAX_COMPRESSED_RTF_BYTES)
+    except RtfBodyOverBoundError:
         return "rtf-over-bound"
-    rtf_bytes = interior.rtfbody  # lazily decompresses — only touched after the bound passed
-    flattened = rtf_to_text(rtf_bytes.decode("latin-1"), errors="replace").strip()
+    if flattened is None:
+        return "no-rtf"
     return sha256(flattened.encode("utf-8", "replace")).hexdigest()
 
 

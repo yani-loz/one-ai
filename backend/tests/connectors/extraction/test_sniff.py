@@ -3,8 +3,8 @@ Role: Unit tests for the payload sniffer — every magic (pdf with BOM/whitespac
       zip/ole/tnef at offset 0), the bounded text heuristic (utf-8 + cp1252 strict decode,
       the ≥90% printable ratio, the probe-window utf-8 split), and the boundary/empty cases.
       Pure, no I/O.
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.sniff; the conftest builders for real
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.sniff; the conftest builders for real
             pdf/docx/tnef payloads.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.connectors.imap.parsing.extractors.sniff import (
+from app.connectors.extraction.sniff import (
     KIND_OLE,
     KIND_PDF,
     KIND_TEXT,
@@ -22,7 +22,7 @@ from app.connectors.imap.parsing.extractors.sniff import (
     TEXT_PROBE_BYTES,
     detect_payload_kind,
 )
-from tests.connectors.imap.parsing.extractors.conftest import (
+from tests.connectors.extraction.conftest import (
     TEXT_PAGE_STREAM,
     build_docx,
     build_pdf,

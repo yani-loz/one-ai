@@ -5,8 +5,8 @@ Role: Crafted-package GUARD tests for the docx extractor — the zip/EOCD bomb b
       amplification), content-type-disguised XML parts, the pathological manifest. Split from
       test_docx.py (A2 size ceiling) — extraction-behavior tests live there; what attacks the
       PACKAGE lives here (mirrors test_tnef_guards.py).
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.docx, .extraction_result, the shared
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.docx, .extraction_result, the shared
             test helpers in test_docx (zip builders) + conftest.
 """
 
@@ -18,11 +18,11 @@ from io import BytesIO
 
 import pytest
 
-import app.connectors.imap.parsing.extractors.docx as docx_module
-from app.connectors.imap.parsing.extraction_result import STATUS_CORRUPT, STATUS_EXTRACTED
-from app.connectors.imap.parsing.extractors.docx import extract_docx_text
-from tests.connectors.imap.parsing.extractors.conftest import build_docx
-from tests.connectors.imap.parsing.extractors.test_docx import (
+import app.connectors.extraction.docx as docx_module
+from app.connectors.extraction.docx import extract_docx_text
+from app.connectors.extraction.extraction_result import STATUS_CORRUPT, STATUS_EXTRACTED
+from tests.connectors.extraction.conftest import build_docx
+from tests.connectors.extraction.test_docx import (
     WORDML_NS,
     _document_xml,
     _rezip_docx_with,

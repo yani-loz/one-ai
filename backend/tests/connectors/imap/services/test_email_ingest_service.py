@@ -19,7 +19,7 @@ from app.connectors.imap.models.email import EmailAttachment, EmailMessage, Emai
 from app.connectors.imap.services.email_ingest_service import EmailIngestService, IngestOutcome
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person
-from tests.connectors.imap.parsing.extractors.conftest import (
+from tests.connectors.extraction.conftest import (
     TEXT_PAGE_STREAM,
     build_docx,
     build_pdf,

@@ -6,8 +6,8 @@ Role: Unit tests for the TNEF extractor's resource + content GUARDS (split from 
       flattening (html/rtf payloads FLATTENED, never stored as raw source — the EQ-4 invariant
       inside the container), the FULL-TEXT printable guard (binary behind an ASCII preamble is
       skip-marked, never stored as soup), and the C1/NEL filename strip.
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.tnef, .extraction_result, the conftest
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.tnef, .extraction_result, the conftest
             build_tnef builder.
 """
 
@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import pytest
 
-import app.connectors.imap.parsing.extractors.tnef as tnef_module
-from app.connectors.imap.parsing.extraction_result import STATUS_EMPTY, STATUS_EXTRACTED
-from app.connectors.imap.parsing.extractors.tnef import extract_tnef_text
-from tests.connectors.imap.parsing.extractors.conftest import build_tnef
+import app.connectors.extraction.tnef as tnef_module
+from app.connectors.extraction.extraction_result import STATUS_EMPTY, STATUS_EXTRACTED
+from app.connectors.extraction.tnef import extract_tnef_text
+from tests.connectors.extraction.conftest import build_tnef
 
 RTF_BODY = b"{\\rtf1\\ansi\\ansicpg1252\\deff0 Quarterly \\b report\\b0  body!}"
 

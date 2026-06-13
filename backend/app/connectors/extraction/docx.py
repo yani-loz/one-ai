@@ -6,17 +6,17 @@ Role: docx (OOXML WordprocessingML) attachment text extraction (design §2.4) �
       rejects. Headers/footers are DELIBERATELY skipped (a §2.4 divergence): per-page running
       headers/footers are boilerplate noise (letterheads, page numbers, confidentiality footers)
       that would repeat into search/embeddings without adding content.
-Used by: app.connectors.imap.parsing.attachment_extractor (dispatches the
+Used by: the IMAP connector's attachment_extractor (dispatches the
          application/vnd.openxmlformats-officedocument.wordprocessingml.document content type);
-         scripts.backfill_attachment_extraction (via the seam).
-Depends on: python-docx (MIT; lxml BSD-3-Clause underneath) — verified GPL-free;
-            app.connectors.imap.parsing.extraction_result (the result contract);
-            app.connectors.imap.parsing.extractors.pdf (serialize_table — ONE table serializer
-            for every extractor, never re-implemented — and MAX_EXTRACTED_CHARS, the shared
-            stored-text cap);
-            app.connectors.imap.parsing.email_parser (sanitize_body_text — the SINGLE stored-text
-            sanitization source, shared with email bodies and PDF text);
-            stdlib zipfile + xml.etree (the emergency fallback only).
+         scripts.backfill_attachment_extraction (via the seam). The arrow points IN — this module
+         imports nothing back from any connector.
+Depends on: python-docx (MIT; lxml BSD-3-Clause underneath) — verified GPL-free; sibling extraction
+            modules only: app.connectors.extraction.extraction_result (the result contract),
+            .common (serialize_table — ONE table serializer for every extractor, never
+            re-implemented — MAX_EXTRACTED_CHARS, the shared stored-text cap, + package_version),
+            .text_sanitize (sanitize_body_text — the SINGLE stored-text sanitization source, shared
+            with email bodies and PDF text); stdlib zipfile + xml.etree (the emergency fallback
+            only). Imports NOTHING from any specific connector (connector-agnostic).
 Key invariants:
   - extract_docx_text NEVER raises: every failure (zipfile/python-docx/lxml raise diverse
     internals on malformed payloads) degrades to an ExtractionResult; a final catch-all guards
@@ -65,8 +65,14 @@ from xml.etree import ElementTree
 from docx import Document
 from docx.table import Table
 
-from app.connectors.imap.parsing.email_parser import sanitize_body_text
-from app.connectors.imap.parsing.extraction_result import (
+from app.connectors.extraction.common import (
+    MAX_EXTRACTED_CHARS,
+    serialize_table,
+)
+from app.connectors.extraction.common import (
+    package_version as _package_version,
+)
+from app.connectors.extraction.extraction_result import (
     STATUS_CORRUPT,
     STATUS_EMPTY,
     STATUS_ENCRYPTED,
@@ -74,13 +80,7 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.common import (
-    MAX_EXTRACTED_CHARS,
-    serialize_table,
-)
-from app.connectors.imap.parsing.extractors.common import (
-    package_version as _package_version,
-)
+from app.connectors.extraction.text_sanitize import sanitize_body_text
 
 logger = logging.getLogger(__name__)
 

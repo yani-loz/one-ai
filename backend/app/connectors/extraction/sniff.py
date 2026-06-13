@@ -4,10 +4,10 @@ Role: Content sniffing for attachment payloads — detect_payload_kind classifie
       otherwise. Declared content types are sender-controlled; dispatch decisions over container
       interiors (TNEF embedded files, design §2.9) and the later §2.10 octet-stream rescue trust
       BYTES, never labels.
-Used by: app.connectors.imap.parsing.extractors.tnef (embedded-file dispatch — this slice);
+Used by: app.connectors.extraction.tnef (embedded-file dispatch — this slice);
          the application/octet-stream sniff dispatch (design §2.10) reuses it in a later slice
          (deliberately NOT wired in this slice).
-Depends on: stdlib only.
+Depends on: stdlib only. NOTHING from any specific connector (connector-agnostic).
 Key invariants:
   - PURE + BOUNDED: no I/O and no library construction — magics read a fixed prefix and the text
     heuristic decodes at most the first TEXT_PROBE_BYTES bytes, so sniffing is safe on any blob

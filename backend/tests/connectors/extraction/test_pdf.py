@@ -5,16 +5,17 @@ Role: Unit tests for the PDF extractor — text extraction with page markers, ta
       (char-cap early bail + MAX_PDF_PAGES), C0 + lone-surrogate sanitization, and the
       NEVER-raises property. Fixtures are hand-crafted in-memory PDFs (see conftest) — pure,
       no I/O, no real corpus.
-Used by: pytest (tests/connectors/imap/parsing/extractors).
-Depends on: app.connectors.imap.parsing.extractors.pdf, .extraction_result, the conftest builders.
+Used by: pytest (tests/connectors/extraction).
+Depends on: app.connectors.extraction.pdf, .extraction_result, the conftest builders.
 """
 
 from __future__ import annotations
 
 import pytest
 
-import app.connectors.imap.parsing.extractors.pdf as pdf_module
-from app.connectors.imap.parsing.extraction_result import (
+import app.connectors.extraction.pdf as pdf_module
+from app.connectors.extraction.common import serialize_table
+from app.connectors.extraction.extraction_result import (
     EXTRACTION_STATUSES,
     STATUS_CORRUPT,
     STATUS_EMPTY,
@@ -26,9 +27,8 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.common import serialize_table
-from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
-from tests.connectors.imap.parsing.extractors.conftest import (
+from app.connectors.extraction.pdf import extract_pdf_text
+from tests.connectors.extraction.conftest import (
     EMPTY_PAGE_STREAM,
     IMAGE_PAGE_STREAM,
     TEXT_PAGE_STREAM,
@@ -130,7 +130,7 @@ def test_extract_pdf_text_scanned_only_after_both_engines_find_no_text(
     # reads nothing must consult the pypdf rescue BEFORE being classified scanned — the two
     # engines fail on different font pathologies, and a one-engine verdict would discard a
     # recoverable text layer (NULL stored, bytes dropped on the live path = permanent loss).
-    from app.connectors.imap.parsing.extractors import pdf as pdf_module
+    from app.connectors.extraction import pdf as pdf_module
 
     rescued = ExtractionResult(
         "recovered by the second engine", STATUS_EXTRACTED, extractor_name="pypdf"

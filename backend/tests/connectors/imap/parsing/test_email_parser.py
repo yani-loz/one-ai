@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.connectors.imap.parsing.email_parser import parse_email, sanitize_body_text
+from app.connectors.extraction.text_sanitize import sanitize_body_text
+from app.connectors.imap.parsing.email_parser import parse_email
 
 MAILBOX = "me@oneai.com"
 

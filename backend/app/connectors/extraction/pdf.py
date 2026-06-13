@@ -5,13 +5,15 @@ Role: PDF attachment text extraction (design §2.1) — pdfplumber primary (layo
       NO OCR). Classification is TEXT-PRESERVING: a born-digital PDF with image-only cover pages
       keeps every extracted char (`extracted_partial_scanned`); only a document whose ENTIRE text
       layer is below the char floor is marked `scanned_pending_ocr` with text=None.
-Used by: app.connectors.imap.parsing.attachment_extractor (dispatches application/pdf payloads);
-         scripts.backfill_attachment_extraction (via the seam).
-Depends on: pdfplumber (MIT), pypdf (BSD) — NO PyMuPDF (AGPL, design hard-no);
-            app.connectors.imap.parsing.extraction_result (the result contract);
-            app.connectors.imap.parsing.email_parser (sanitize_body_text — the SAME sanitization
-            rules as email bodies: LF normalization, C0 + lone-surrogate strip; reused, never
-            re-implemented).
+Used by: the IMAP connector's attachment_extractor (dispatches application/pdf payloads);
+         scripts.backfill_attachment_extraction (via the seam). The arrow points IN — this module
+         imports nothing back from any connector.
+Depends on: pdfplumber (MIT), pypdf (BSD) — NO PyMuPDF (AGPL, design hard-no); sibling extraction
+            modules only: app.connectors.extraction.extraction_result (the result contract),
+            .common (MAX_EXTRACTED_CHARS + serialize_table + package_version),
+            .text_sanitize (sanitize_body_text — the SAME sanitization rules as email bodies: LF
+            normalization, C0 + lone-surrogate strip; reused, never re-implemented). Imports
+            NOTHING from any specific connector (connector-agnostic).
 Key invariants:
   - extract_pdf_text NEVER raises: every library failure (pdfminer/pypdf raise diverse internals
     on corrupt blobs) degrades to an ExtractionResult; a final catch-all guards even our own bugs.
@@ -58,8 +60,14 @@ import pdfplumber
 from pdfplumber.page import Page
 from pypdf import PasswordType, PdfReader
 
-from app.connectors.imap.parsing.email_parser import sanitize_body_text
-from app.connectors.imap.parsing.extraction_result import (
+from app.connectors.extraction.common import (
+    MAX_EXTRACTED_CHARS,
+    serialize_table,
+)
+from app.connectors.extraction.common import (
+    package_version as _package_version,
+)
+from app.connectors.extraction.extraction_result import (
     STATUS_CORRUPT,
     STATUS_EMPTY,
     STATUS_ENCRYPTED,
@@ -69,13 +77,7 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.common import (
-    MAX_EXTRACTED_CHARS,
-    serialize_table,
-)
-from app.connectors.imap.parsing.extractors.common import (
-    package_version as _package_version,
-)
+from app.connectors.extraction.text_sanitize import sanitize_body_text
 
 logger = logging.getLogger(__name__)
 

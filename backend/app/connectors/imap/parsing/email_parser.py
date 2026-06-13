@@ -2,12 +2,13 @@
 Role: Deterministic RFC822 → structured decomposition (design §4). Turns raw email bytes into a
       ParsedEmail (headers, addresses, body text, attachment metadata + transient bytes, derived
       flags) with NO database or network access — a pure function the ingest runner maps to rows.
-Used by: the IMAP ingest runner (step 3d), the attachment extractor (consumes ParsedAttachment and
-         reuses sanitize_body_text + decode_charset_chain + html_to_text for text/html/rtf
-         attachments — audits EQ-3/EQ-4), .extractors.pdf and .extractors.tnef (reuse
-         sanitize_body_text / html_to_text / decode_charset_chain — the ONE source of the
-         stored-text sanitization, charset-decode and HTML-flatten rules).
-Depends on: stdlib email (BytesParser, policy.default, getaddresses), html2text (html→text body),
+Used by: the IMAP ingest runner (step 3d). The stored-text sanitization, charset-decode and
+         HTML-flatten rules now live in app.connectors.extraction.text_sanitize (the
+         connector-agnostic ONE source) — this module re-imports them and keeps only its
+         email-specific part decoders (_decode_text_part / _decoded_content / _extract_body_text).
+Depends on: stdlib email (BytesParser, policy.default, getaddresses),
+            app.connectors.extraction.text_sanitize (sanitize_body_text / decode_charset_chain /
+            html_to_text — the connector-agnostic stored-text rules),
             app.connectors.imap.parsing.headers (header/identity/date primitives), .dedup_key
             (content-identity computation — A2 split), .flags, .models.
 Key invariants:
@@ -56,7 +57,6 @@ Key invariants:
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from email import message_from_bytes, policy
 from email.message import EmailMessage
@@ -64,8 +64,11 @@ from email.utils import getaddresses
 from hashlib import sha256
 from typing import cast
 
-import html2text
-
+from app.connectors.extraction.text_sanitize import (
+    decode_charset_chain,
+    html_to_text,
+    sanitize_body_text,
+)
 from app.connectors.imap.parsing.dedup_key import compute_dedup_key
 from app.connectors.imap.parsing.flags import (
     derive_direction,
@@ -98,19 +101,6 @@ _RECIPIENT_HEADERS: tuple[tuple[str, str], ...] = (
     ("sender", "sender"),
 )
 _DECODE_ERRORS = (LookupError, UnicodeDecodeError, ValueError)
-
-# Strict-decode fallbacks for mislabeled charsets (audit M-5): the corpus's Outlook bodies declare
-# gb2312 but carry cp1252 bytes; Cyrillic mail often hides behind a wrong label as windows-1251.
-_CHARSET_FALLBACKS: tuple[str, ...] = ("cp1252", "windows-1251")
-
-# Code points that must never reach a stored text column:
-#   - C0 control chars EXCEPT tab (\x09), LF (\x0A), CR (\x0D) — audit L-6: BEL/VT-class garbage
-#     pollutes chunking/embedding; NUL would crash Postgres. CR is exempted here only because the
-#     LF-normalization pass in sanitize_body_text has already removed it.
-#   - LONE SURROGATES (U+D800–U+DFFF) — pdfminer/pypdf emit them from broken PDF ToUnicode CMaps;
-#     they survive in a Python str but asyncpg raises UnicodeEncodeError at flush, turning the
-#     whole email into a poison message (2026-06-11 review).
-_UNSTORABLE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
 
 logger = logging.getLogger(__name__)
 
@@ -240,21 +230,6 @@ def _addr_spec_or_none(address: str | None) -> str | None:
     return address if address and "@" in address else None
 
 
-def sanitize_body_text(text: str) -> str:
-    """Apply the canonical stored-text sanitization to a decoded text block.
-
-    The guarantee is: the result is STORABLE AS UTF-8, period. Canonical LF line endings (wire
-    CRLF must not leak), THEN strip the remaining C0 controls except tab/LF (audit L-6: NUL would
-    crash Postgres; BEL/VT-class garbage pollutes chunking) AND lone surrogates U+D800–U+DFFF
-    (pdfminer/pypdf emit them from broken ToUnicode CMaps; asyncpg raises UnicodeEncodeError at
-    flush — a poison message), then trim surrounding whitespace. The SINGLE source of these rules:
-    email bodies, text attachments (attachment_extractor) AND extracted PDF text (extractors.pdf)
-    all pass through here, never a re-implementation.
-    """
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return _UNSTORABLE_CHARS.sub("", text).strip()
-
-
 def _extract_body_text(message: EmailMessage) -> str:
     """Return the body as plain text: text/plain if present, else text/html flattened, else ''."""
     body_part = message.get_body(preferencelist=("plain", "html"))
@@ -264,30 +239,6 @@ def _extract_body_text(message: EmailMessage) -> str:
     if body_part.get_content_type() == "text/html":
         text = html_to_text(text)
     return sanitize_body_text(text)
-
-
-def decode_charset_chain(payload: bytes, declared_charset: str | None = None) -> str:
-    """Decode bytes to str via the STRICT charset-fallback chain (audits M-5 + EQ-3).
-
-    Order: declared charset strict (utf-8 when none is declared) → cp1252 strict →
-    windows-1251 strict → declared charset with errors='replace' (U+FFFD only when every strict
-    candidate fails; utf-8-replace if even the declared charset is unknown). Senders mislabel
-    constantly — the corpus's Outlook gb2312-declared bodies are really cp1252, and Cyrillic mail
-    often hides behind a wrong label as windows-1251 — and a strict-first chain recovers those
-    losslessly where a replace-first decode stores replacement chars. The SINGLE chain shared by
-    email bodies, text-shaped attachments (attachment_extractor — EQ-3 measured 9 rows / 564K
-    mojibake chars under the old utf-8-only decode) and TNEF interiors (extractors.tnef).
-    """
-    charset = declared_charset or "utf-8"
-    for candidate in (charset, *_CHARSET_FALLBACKS):
-        try:
-            return payload.decode(candidate)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    try:
-        return payload.decode(charset, errors="replace")
-    except LookupError:
-        return payload.decode("utf-8", errors="replace")
 
 
 def _decode_text_part(part: EmailMessage) -> str:
@@ -305,20 +256,6 @@ def _decoded_content(part: EmailMessage) -> str:
         return content if isinstance(content, str) else str(content)
     except _DECODE_ERRORS:
         return ""
-
-
-def html_to_text(html: str) -> str:
-    """Flatten HTML to readable text (no wrapping, drop images, keep link/anchor text).
-
-    The SINGLE HTML flattener: email bodies, text/html attachments (attachment_extractor —
-    audit EQ-4 found 44 rows storing raw markup source as 'extracted') and TNEF html bodies
-    (extractors.tnef) all flatten through here, never a re-implementation.
-    """
-    converter = html2text.HTML2Text()
-    converter.body_width = 0  # never hard-wrap — wrapping corrupts downstream chunking
-    converter.ignore_images = True
-    converter.unicode_snob = True
-    return converter.handle(html)
 
 
 def _extract_attachments(message: EmailMessage) -> list[ParsedAttachment]:

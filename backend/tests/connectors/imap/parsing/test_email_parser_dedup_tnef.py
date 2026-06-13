@@ -8,7 +8,8 @@ Role: Unit tests for the TNEF leg of the parser's content-identity dedup_key (sp
       to the fixed 'rtf-over-bound' token — KEY-CONSISTENCY with extractors/tnef.py).
 Used by: pytest (tests/connectors/imap/parsing). Pure — no DB, no network.
 Depends on: app.connectors.imap.parsing.email_parser (+ .dedup_key for monkeypatch targets),
-            the extractors conftest build_tnef builder. Builds raw .eml bytes inline per test.
+            the tests.connectors.extraction conftest build_tnef builder. Builds raw .eml bytes
+            inline per test.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import pytest
 
 from app.connectors.imap.parsing import dedup_key as dedup_key_module
 from app.connectors.imap.parsing.email_parser import parse_email
-from tests.connectors.imap.parsing.extractors.conftest import build_tnef
+from tests.connectors.extraction.conftest import build_tnef
 
 MAILBOX = "me@oneai.com"
 

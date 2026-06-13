@@ -24,6 +24,7 @@ dependencies = [
     "python-docx>=1.2.0",
     "compressed-rtf>=1.0.7",
     "striprtf>=0.0.32",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]

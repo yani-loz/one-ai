@@ -3,17 +3,18 @@ Role: Extract searchable TEXT from an attachment's raw bytes (design §4 lean-at
       pulled inline, the original bytes are then discarded) and report the outcome as an
       ExtractionResult — honest NULL with a machine-readable reason, never fake text. Handles
       text/* + text-shaped application/* (charset-chain decode; html/rtf FLATTENED, never stored
-      as raw markup source — audit EQ-4), PDF (extractors.pdf), docx (extractors.docx) and TNEF
-      (extractors.tnef, design §2.9); other document formats are honestly marked
-      unsupported_format until their phase lands (design §5).
+      as raw markup source — audit EQ-4), PDF (extractors.pdf), docx (extractors.docx), xlsx/xlsm
+      (extractors.xlsx, design §2.5) and TNEF (extractors.tnef, design §2.9); other document
+      formats are honestly marked unsupported_format until their phase lands (design §5).
 Used by: the IMAP ingest runner (step 3d) — it calls this per ParsedAttachment, stores text +
          status + detail + extractor provenance in email_attachment, then drops the bytes;
          scripts.backfill_attachment_extraction (re-runs the seam over the disk corpus).
 Depends on: app.connectors.imap.parsing.models (ParsedAttachment); the connector-agnostic
             app.connectors.extraction package — .extraction_result (the contract), .pdf (PDF path),
-            .docx (docx path), .tnef (TNEF path), .text_sanitize (sanitize_body_text +
-            decode_charset_chain + html_to_text — the SINGLE sanitization/decode/flatten sources,
-            shared with email bodies); striprtf (BSD-3-Clause — RTF flattening, audit EQ-4).
+            .docx (docx path), .xlsx (xlsx/xlsm path), .tnef (TNEF path), .text_sanitize
+            (sanitize_body_text + decode_charset_chain + html_to_text — the SINGLE sanitization/
+            decode/flatten sources, shared with email bodies); striprtf (BSD-3-Clause — RTF
+            flattening, audit EQ-4).
 Key invariants:
   - NEVER raises: a bad/undecodable attachment yields a degraded ExtractionResult, never an
     exception (per-message error isolation — one attachment must not fail the whole email).
@@ -32,7 +33,7 @@ Key invariants:
   - The GLOBAL size ceiling (MAX_PARSE_BYTES, design §2) applies before ANY parsing — payloads
     above it are skipped_oversize on every path (bounded memory, never-raise preserved).
   - Non-document types (images/audio/video/archives/signatures) → skipped_nondocument; document
-    formats without an extractor yet (xlsx/pptx/octet-stream/legacy Office) →
+    formats without an extractor yet (pptx/octet-stream/legacy Office incl. legacy .xls) →
     unsupported_format — the statuses later phases re-target (octet-stream sniffing; C: OCR).
 """
 
@@ -60,6 +61,7 @@ from app.connectors.extraction.text_sanitize import (
     sanitize_body_text,
 )
 from app.connectors.extraction.tnef import extract_tnef_text
+from app.connectors.extraction.xlsx import extract_xlsx_text
 from app.connectors.imap.parsing.models import ParsedAttachment
 
 # Global parse ceiling (design §2): nothing above this is parsed, on ANY path — bounded memory.
@@ -82,6 +84,16 @@ _RTF_FLATTENER = "striprtf"
 
 # The OOXML WordprocessingML content type — dispatched to extractors.docx (design §2.4).
 _DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# The OOXML SpreadsheetML content types — dispatched to extractors.xlsx (design §2.5): .xlsx plus
+# macro-enabled .xlsm (same reader; macros ignored, never executed). Legacy application/vnd.ms-excel
+# = .xls is an OLE binary, NOT handled here — it stays unsupported_format at the seam.
+_XLSX_CONTENT_TYPES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel.sheet.macroEnabled.12",
+    }
+)
 
 # The TNEF (winmail.dat) container — dispatched to extractors.tnef (design §2.9).
 _TNEF_CONTENT_TYPE = "application/ms-tnef"
@@ -131,7 +143,8 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
     text/rtf + application/rtf → charset chain + striprtf (EQ-4); other text/* + text-shaped
     application/* → charset chain + sanitize_body_text (EQ-3; `extracted`;
     sanitized-to-blank → `empty`); application/pdf → extractors.pdf (full §2.1/§3.1 pipeline);
-    the docx content type → extractors.docx (§2.4); application/ms-tnef → extractors.tnef
+    the docx content type → extractors.docx (§2.4); the xlsx/xlsm content types → extractors.xlsx
+    (§2.5 — typed grid + text render); application/ms-tnef → extractors.tnef
     (§2.9); image/audio/video/archive/signature classes → `skipped_nondocument`; every other
     format → `unsupported_format` (later phases re-target these).
 
@@ -159,6 +172,8 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
         return extract_pdf_text(attachment.payload)
     if content_type == _DOCX_CONTENT_TYPE:
         return extract_docx_text(attachment.payload)
+    if content_type in _XLSX_CONTENT_TYPES:
+        return extract_xlsx_text(attachment.payload)
     if content_type == _TNEF_CONTENT_TYPE:
         return extract_tnef_text(attachment.payload)
     if _is_nondocument(content_type):

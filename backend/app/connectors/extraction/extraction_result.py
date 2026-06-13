@@ -73,6 +73,12 @@ class ExtractionResult:
     `extractor_name`/`extractor_version` identify WHICH engine produced this outcome (e.g.
     'pdfplumber' 0.11.9) so a version-aware backfill can re-run exactly the rows an upgraded
     extractor would improve; None when no engine ran (skips / unsupported formats).
+
+    `structured` carries a typed, analysis-ready representation for formats that are DATA not prose
+    (xlsx — a faithful typed cell grid persisted to email_attachment.extracted_data for
+    analysis-at-query-time, e.g. via DuckDB later). None for text/document formats: every prose
+    extractor leaves it None, so the field is backward-compatible (the `text` render stays the
+    embeddable surface; `structured` is the lossless source of truth where it applies).
     """
 
     text: str | None
@@ -80,3 +86,4 @@ class ExtractionResult:
     detail: str | None = None
     extractor_name: str | None = None
     extractor_version: str | None = None
+    structured: dict | None = None

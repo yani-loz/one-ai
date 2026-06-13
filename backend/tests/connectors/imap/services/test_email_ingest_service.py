@@ -1,14 +1,15 @@
 """
 Role: End-to-end tests for EmailIngestService — one raw email → Layer-1 rows + the resolved
-      person/company graph, idempotent re-ingest, attachment-text extraction, and the NON-NEGOTIABLE
-      cross-tenant isolation (the same email under two connections stays in two separate tenants).
+      person/company graph, idempotent re-ingest, and the NON-NEGOTIABLE cross-tenant isolation
+      (the same email under two connections stays in two separate tenants). The per-format binary
+      attachment-extraction matrix (pdf/docx/xlsx/tnef/image) lives in the sibling
+      test_email_ingest_attachments.py (A2 split).
 Used by: pytest (tests/connectors/imap/services). Real DB via the services conftest.
 Depends on: app.connectors.imap.services.email_ingest_service + the connector/entity/email models.
 """
 
 from __future__ import annotations
 
-from base64 import b64encode
 from uuid import UUID, uuid4
 
 import pytest
@@ -19,12 +20,6 @@ from app.connectors.imap.models.email import EmailAttachment, EmailMessage, Emai
 from app.connectors.imap.services.email_ingest_service import EmailIngestService, IngestOutcome
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person
-from tests.connectors.extraction.conftest import (
-    TEXT_PAGE_STREAM,
-    build_docx,
-    build_pdf,
-    build_tnef,
-)
 from tests.connectors.imap.services.conftest import seed_connection
 
 MAILBOX = "owner@acme.com"
@@ -169,159 +164,6 @@ async def test_ingest_role_sender_stores_message_with_null_from_person(
     assert message.from_person_id is None  # info@ minted no person
     assert await _count(db_session, Person, org) == 1  # only the recipient owner@acme
     assert await _count(db_session, Company, org) == 2  # globex (role sender, D01) + acme
-
-
-async def test_ingest_corrupt_pdf_attachment_records_null_text_with_corrupt_status(
-    db_session: AsyncSession,
-) -> None:
-    # CA-CONN-04 Phase A: an unparseable PDF stores with extracted_text NULL — and the row now
-    # SAYS why (extraction_status='corrupt'), never silently absent (0015).
-    org = uuid4()
-    connection = await seed_connection(db_session, org)
-    service = EmailIngestService(db_session, connection)
-    raw = (
-        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <bin@x>\r\n"
-        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
-        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-        b'--B\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename="d.pdf"'
-        b"\r\n\r\n%PDF-1.4 binary\r\n--B--\r\n"
-    )
-
-    await service.ingest_email(raw)
-
-    attachment = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalar_one()
-    assert attachment.content_type == "application/pdf"
-    assert attachment.size_bytes > 0
-    assert attachment.extracted_text is None  # honest absent, not empty-string
-    assert attachment.extraction_status == "corrupt"
-    # EQ-7 (0016): the WHY survives to the row — exception class names, never payload content.
-    assert attachment.extraction_detail is not None
-    assert "%PDF" not in attachment.extraction_detail
-
-
-async def test_ingest_valid_pdf_attachment_stores_text_and_extraction_provenance(
-    db_session: AsyncSession,
-) -> None:
-    # End-to-end Phase A: a real (minimal, hand-crafted) PDF lands with its text layer extracted
-    # and the 0015 status + provenance columns filled from the ExtractionResult.
-    org = uuid4()
-    connection = await seed_connection(db_session, org)
-    service = EmailIngestService(db_session, connection)
-    pdf_b64 = b64encode(build_pdf([TEXT_PAGE_STREAM]))
-    raw = (
-        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <pdf@x>\r\n"
-        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
-        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-        b"--B\r\nContent-Type: application/pdf\r\n"
-        b'Content-Disposition: attachment; filename="contract.pdf"\r\n'
-        b"Content-Transfer-Encoding: base64\r\n\r\n" + pdf_b64 + b"\r\n--B--\r\n"
-    )
-
-    await service.ingest_email(raw)
-
-    attachment = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalar_one()
-    assert attachment.extracted_text == "[page 1]\nHello World"
-    assert attachment.extraction_status == "extracted"
-    assert attachment.extractor_name == "pdfplumber"
-    assert attachment.extractor_version is not None
-
-
-async def test_ingest_valid_docx_attachment_stores_text_and_extraction_provenance(
-    db_session: AsyncSession,
-) -> None:
-    # End-to-end docx slice (design §2.4): a real python-docx-built attachment lands with its
-    # body text extracted and the 0015 status + provenance columns filled.
-    org = uuid4()
-    connection = await seed_connection(db_session, org)
-    service = EmailIngestService(db_session, connection)
-    docx_b64 = b64encode(build_docx(["Quarterly summary attached."]))
-    docx_type = b"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    raw = (
-        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <docx@x>\r\n"
-        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
-        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-        b"--B\r\nContent-Type: " + docx_type + b"\r\n"
-        b'Content-Disposition: attachment; filename="summary.docx"\r\n'
-        b"Content-Transfer-Encoding: base64\r\n\r\n" + docx_b64 + b"\r\n--B--\r\n"
-    )
-
-    await service.ingest_email(raw)
-
-    attachment = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalar_one()
-    assert attachment.filename == "summary.docx"
-    assert attachment.extracted_text == "Quarterly summary attached."
-    assert attachment.extraction_status == "extracted"
-    assert attachment.extractor_name == "python-docx"
-    assert attachment.extractor_version is not None
-
-
-async def test_ingest_tnef_attachment_stores_text_with_detail_persisted(
-    db_session: AsyncSession,
-) -> None:
-    # End-to-end TNEF slice (design §2.9 + EQ-7): a winmail.dat attachment lands with its body
-    # + embedded-file text extracted, tnefparse provenance, AND ExtractionResult.detail
-    # persisted to the 0016 extraction_detail column (both write seams previously dropped it).
-    org = uuid4()
-    connection = await seed_connection(db_session, org)
-    service = EmailIngestService(db_session, connection)
-    tnef_payload = build_tnef(
-        rtf_body=b"{\\rtf1\\ansi The real Outlook body.}",
-        attachments=[(b"notes.txt", b"embedded meeting notes")],
-    )
-    tnef_b64 = b64encode(tnef_payload)
-    raw = (
-        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <tnef@x>\r\n"
-        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
-        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-        b"--B\r\nContent-Type: application/ms-tnef\r\n"
-        b'Content-Disposition: attachment; filename="winmail.dat"\r\n'
-        b"Content-Transfer-Encoding: base64\r\n\r\n" + tnef_b64 + b"\r\n--B--\r\n"
-    )
-
-    await service.ingest_email(raw)
-
-    attachment = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalar_one()
-    assert attachment.filename == "winmail.dat"
-    assert attachment.extraction_status == "extracted"
-    assert attachment.extracted_text is not None
-    assert "The real Outlook body." in attachment.extracted_text
-    assert "[embedded: notes.txt]\nembedded meeting notes" in attachment.extracted_text
-    assert attachment.extractor_name == "tnefparse"
-    assert attachment.extractor_version is not None
-    assert attachment.extraction_detail == "body=rtf embedded_files=1"  # EQ-7: detail persisted
-
-
-async def test_ingest_image_attachment_records_skipped_nondocument_status(
-    db_session: AsyncSession,
-) -> None:
-    # Design §2.11: images are correctly skipped — NULL text WITH the machine-readable reason.
-    org = uuid4()
-    connection = await seed_connection(db_session, org)
-    service = EmailIngestService(db_session, connection)
-    raw = (
-        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <img@x>\r\n"
-        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
-        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-        b'--B\r\nContent-Type: image/png\r\nContent-Disposition: inline; filename="logo.png"'
-        b"\r\n\r\n\x89PNG fake pixels\r\n--B--\r\n"
-    )
-
-    await service.ingest_email(raw)
-
-    attachment = (
-        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
-    ).scalar_one()
-    assert attachment.extracted_text is None
-    assert attachment.extraction_status == "skipped_nondocument"
-    assert attachment.extractor_name is None  # no engine ran — nothing to attribute
 
 
 async def test_ingest_malformed_attachments_do_not_drop_email(db_session: AsyncSession) -> None:

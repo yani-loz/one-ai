@@ -15,7 +15,8 @@ Key invariants:
     could lazy-load on a closed greenlet). The CALLER owns the transaction + commit.
   - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4);
     each row stores the ExtractionResult's status + detail (0016, EQ-7) + extractor provenance
-    (0015) — honest NULL text always carries its machine-readable reason.
+    (0015) + the typed structured grid (0017, design §2.5 — NULL for non-xlsx) — honest NULL text
+    always carries its machine-readable reason.
   - CPU work is OFF-LOOP: parse_email (RFC822 parse, base64 decode, sha256, html2text) AND
     extract_text (pdfplumber + tables + possible pypdf over ≤50MB payloads) both run on a WORKER
     thread (asyncio.to_thread) so a large email or PDF never stalls the event loop mid-sync.
@@ -193,5 +194,6 @@ class EmailIngestService:
                     extraction_detail=extraction.detail,
                     extractor_name=extraction.extractor_name,
                     extractor_version=extraction.extractor_version,
+                    extracted_data=extraction.structured,
                 )
             )

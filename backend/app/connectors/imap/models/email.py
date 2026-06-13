@@ -42,6 +42,11 @@ Key invariants:
     ExtractionResult.detail (truncation reason, image_only_pages=N OCR backlog counts, corrupt
     exception class names) — nullable, machine-readable, NEVER attachment content verbatim
     (class names / fixed phrases / counts only — the contract's standing invariant).
+  - 0017 EXTRACTED DATA (design §2.5): email_attachment.extracted_data persists
+    ExtractionResult.structured — the typed, analysis-ready cell grid for formats that are DATA not
+    prose (xlsx/xlsm: the lossless 'xlsx-grid-v1' grid, the source of truth alongside the embeddable
+    extracted_text render). Nullable JSONB; NULL for every text/document format (structured is None
+    there). Rides the table's existing tenant grants/RLS/erasure — a column, not a new table.
 """
 
 from __future__ import annotations
@@ -235,3 +240,11 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     # 0016 (EQ-7): the ExtractionResult.detail — WHY/HOW the status was reached (truncation
     # reason, OCR backlog counts, exception class names). Never attachment content verbatim.
     extraction_detail: Mapped[str | None] = mapped_column(Text)
+    # 0017 (design §2.5): the ExtractionResult.structured — a typed, analysis-ready cell grid for
+    # formats that are DATA not prose (xlsx/xlsm: the lossless 'xlsx-grid-v1' typed grid, the source
+    # of truth alongside the embeddable extracted_text render). NULL for every text/document format
+    # (structured is None there) — backward-compatible.
+    # none_as_null=True is LOAD-BEARING: SQLAlchemy's JSONB default maps Python None -> the JSONB
+    # literal 'null' (a present value), so `WHERE extracted_data IS NOT NULL` would match every
+    # prose attachment and "has structured data?" becomes unanswerable. With it, None -> SQL NULL.
+    extracted_data: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))

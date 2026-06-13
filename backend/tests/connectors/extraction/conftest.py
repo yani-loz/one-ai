@@ -2,15 +2,16 @@
 Role: In-memory fixture builders for the extractor tests — a classic ~600-byte single-text-object
       PDF with a CORRECT xref table (computed offsets), an image-XObject page for
       scanned-detection fixtures, a pypdf-based encryptor, a python-docx document builder
-      (ordered paragraph/table blocks), and a HAND-ASSEMBLED minimal TNEF stream builder
-      (signature + key + attribute records per tnefparse's wire layout: level u8, name u16,
-      type u16, length u32, data, checksum u16). Self-contained: no fixture files on disk.
-Used by: tests/connectors/extraction/test_pdf.py + test_docx.py + test_tnef.py, the
+      (ordered paragraph/table blocks), an openpyxl workbook builder (typed cells, number formats,
+      multi-sheet, optional injected formula cached values), and a HAND-ASSEMBLED minimal TNEF
+      stream builder (signature + key + attribute records per tnefparse's wire layout: level u8,
+      name u16, type u16, length u32, data, checksum u16). Self-contained: no fixture files on disk.
+Used by: tests/connectors/extraction/test_pdf.py + test_docx.py + test_xlsx.py + test_tnef.py, the
          seam test (test_attachment_extractor) and the ingest integration test
-         (test_email_ingest_service) import build_pdf/TEXT_PAGE_STREAM/build_docx/build_tnef for
-         real parseable payloads.
-Depends on: pypdf (the encryptor only), python-docx (the docx builder only), compressed_rtf (the
-            TNEF rtf-body compressor only); stdlib.
+         (test_email_ingest_service) import build_pdf/TEXT_PAGE_STREAM/build_docx/build_xlsx/
+         build_tnef for real parseable payloads.
+Depends on: pypdf (the encryptor only), python-docx (the docx builder only), openpyxl (the workbook
+            builder only), compressed_rtf (the TNEF rtf-body compressor only); stdlib.
 Key invariants:
   - build_pdf output is a VALID PDF (correct xref byte offsets) — pdfplumber and pypdf both parse
     it strictly, so tests never depend on parser error-recovery.
@@ -18,6 +19,10 @@ Key invariants:
     the §3.1 page-covering test by geometry, not by image payload size.
   - build_docx writes blocks in the GIVEN order (paragraph/table interleaving preserved) — the
     extractor's document-order contract is testable against it.
+  - build_xlsx writes a real openpyxl workbook: each sheet's rows are appended in order, typed
+    Python values ride as their native cell type (int/float/bool/datetime/str), per-cell number
+    formats apply, and an optional formula spec injects a CACHED <v> into the sheet XML so the
+    extractor's data_only read returns a value (openpyxl never computes formulas itself).
   - build_tnef output is a VALID TNEF stream tnefparse parses strictly (correct checksums, valid
     version attribute) — verified live against tnefparse 1.4.0; rtf bodies ride as
     LZFu-compressed MAPI_RTF_COMPRESSED properties exactly like Outlook writes them.
@@ -26,9 +31,11 @@ Key invariants:
 from __future__ import annotations
 
 import struct
+import zipfile
 from io import BytesIO
 
 import docx
+import openpyxl
 from compressed_rtf import compress as compress_rtf
 from pypdf import PdfReader, PdfWriter
 
@@ -133,6 +140,88 @@ def build_docx(blocks: list[str | list[list[str]]]) -> bytes:
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+# ── xlsx workbook assembly (openpyxl, design §2.5) ──
+
+# One cell number-format override or a formula+cached-value spec, keyed by A1 reference. A plain
+# string value is the number_format mask; a ('formula', expr, cached) tuple writes the formula AND
+# injects its cached <v> into the sheet XML (openpyxl with data_only never computes formulas).
+CellSpec = str | tuple[str, str, object]
+
+
+def build_xlsx(
+    sheets: list[tuple[str, list[list[object]]]],
+    cell_specs: dict[str, dict[str, CellSpec]] | None = None,
+) -> bytes:
+    """Assemble a real xlsx via openpyxl: each sheet's rows are appended in order.
+
+    Args:
+        sheets: a list of (sheet_name, rows) — each row a list of native Python values
+            (int/float/bool/datetime/date/str/None) written as their native cell type. An empty
+            rows list makes an empty sheet.
+        cell_specs: optional per-sheet {sheet_name: {ref: spec}} overrides — a str spec is a
+            number_format mask applied to that cell; a ('formula', expr, cached) spec writes the
+            formula to that cell AND injects its cached value into the sheet XML so the extractor's
+            data_only read returns `cached` (a library workbook never opened by Excel otherwise has
+            no cached value).
+
+    Returns:
+        The full xlsx bytes (openpyxl reads them with read_only + data_only).
+    """
+    cell_specs = cell_specs or {}
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)  # drop the default sheet — we add named ones explicitly
+    formula_caches: dict[str, dict[str, object]] = {}
+    for sheet_index, (name, rows) in enumerate(sheets):
+        worksheet = workbook.create_sheet(title=name)
+        for row in rows:
+            worksheet.append(row)
+        for ref, spec in cell_specs.get(name, {}).items():
+            if isinstance(spec, tuple):  # ('formula', expr, cached)
+                _, expression, cached = spec
+                worksheet[ref] = f"={expression}"
+                formula_caches.setdefault(f"sheet{sheet_index + 1}.xml", {})[ref] = cached
+            else:
+                worksheet[ref].number_format = spec
+    buffer = BytesIO()
+    workbook.save(buffer)
+    if not formula_caches:
+        return buffer.getvalue()
+    return _inject_formula_caches(buffer.getvalue(), formula_caches)
+
+
+def _inject_formula_caches(payload: bytes, caches: dict[str, dict[str, object]]) -> bytes:
+    """Inject cached <v> values into formula cells' sheet XML (the data_only read source).
+
+    openpyxl writes a formula as `<c r="A2"><f>EXPR</f></c>` with no cached value; Excel would add
+    `<v>RESULT</v>`. For a fixture the extractor can read under data_only, this splices that <v>
+    after each named cell's </f>. Keyed by the worksheet member's basename (e.g. 'sheet1.xml').
+    """
+    out = BytesIO()
+    with (
+        zipfile.ZipFile(BytesIO(payload)) as source,
+        zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target,
+    ):
+        for member in source.namelist():
+            data = source.read(member)
+            basename = member.rsplit("/", 1)[-1]
+            if member.startswith("xl/worksheets/") and basename in caches:
+                text = data.decode("utf-8")
+                for ref, cached in caches[basename].items():
+                    text = _splice_cached_value(text, ref, cached)
+                data = text.encode("utf-8")
+            target.writestr(member, data)
+    return out.getvalue()
+
+
+def _splice_cached_value(sheet_xml: str, ref: str, cached: object) -> str:
+    """Add a `<v>cached</v>` right after the </f> of cell `ref` in one sheet's XML."""
+    cached_value = "1" if cached is True else "0" if cached is False else str(cached)
+    marker = f'<c r="{ref}"'
+    cell_start = sheet_xml.index(marker)
+    formula_end = sheet_xml.index("</f>", cell_start) + len("</f>")
+    return sheet_xml[:formula_end] + f"<v>{cached_value}</v>" + sheet_xml[formula_end:]
 
 
 # ── TNEF stream assembly (tnefparse wire layout, design §2.9) ──

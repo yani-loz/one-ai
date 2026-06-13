@@ -1,6 +1,6 @@
 """
 Standing-invariant + live-enforcement tests for the attachment-extraction columns
-(migrations 0015 + 0016).
+(migrations 0015 + 0016 + 0017).
 
 Two layers of guarantee, mirroring tests/db/test_data_quality_guards.py:
 
@@ -10,13 +10,15 @@ Two layers of guarantee, mirroring tests/db/test_data_quality_guards.py:
      (org_id, content_hash) backfill-lookup index. The CHECK is additionally asserted to match
      app.connectors.extraction.extraction_result.EXTRACTION_STATUSES — the Python source of
      truth — so the DB vocabulary and the seam's constants can NEVER silently drift. 0016 adds
-     extraction_detail (nullable text, no default — EQ-7: ExtractionResult.detail persisted).
+     extraction_detail (nullable text, no default — EQ-7: ExtractionResult.detail persisted). 0017
+     adds extracted_data (nullable JSONB, no default — design §2.5: ExtractionResult.structured,
+     the xlsx typed cell grid, persisted; NULL for prose formats).
 
   2. LIVE ENFORCEMENT — proves the guard bites: an attachment row stamped with a status outside
      the vocabulary dies on the CHECK; a row inserted without a status lands as 'pending' with
      NULL detail.
 
-Requires a migrated DB (alembic upgrade head, ≥0016); skips loudly otherwise. Live tests run on
+Requires a migrated DB (alembic upgrade head, ≥0017); skips loudly otherwise. Live tests run on
 the OWNER engine (schema enforcement is role-independent) inside transactions that are rolled
 back or aborted by the expected violation — nothing persists.
 """
@@ -56,7 +58,7 @@ async def _constraint_definition(connection: AsyncConnection, table: str, name: 
 
 @pytest_asyncio.fixture
 async def migrated_db() -> AsyncIterator[None]:
-    """Skip unless the DB is migrated through 0016 (the columns are migration-only DDL)."""
+    """Skip unless the DB is migrated through 0017 (the columns are migration-only DDL)."""
     async with engine.connect() as connection:
         migrated = (
             await connection.execute(text("SELECT to_regclass('public.alembic_version')"))
@@ -66,12 +68,13 @@ async def migrated_db() -> AsyncIterator[None]:
                 text(
                     "SELECT count(*) FROM information_schema.columns "
                     "WHERE table_schema = 'public' AND table_name = 'email_attachment' "
-                    "AND column_name IN ('extraction_status', 'extraction_detail')"
+                    "AND column_name IN "
+                    "('extraction_status', 'extraction_detail', 'extracted_data')"
                 )
             )
-        ).scalar() == 2
+        ).scalar() == 3
     if not migrated or not columns_present:
-        pytest.skip("DB not migrated through 0015+0016 — run `alembic upgrade head` first.")
+        pytest.skip("DB not migrated through 0015+0016+0017 — run `alembic upgrade head` first.")
     yield
 
 
@@ -136,6 +139,24 @@ async def test_extraction_detail_column_exists_nullable_text(migrated_db: None) 
 
     assert row is not None, "0016 extraction_detail column missing"
     assert tuple(row) == ("text", "YES", None)
+
+
+async def test_extracted_data_column_exists_nullable_jsonb(migrated_db: None) -> None:
+    """0017 (design §2.5): extracted_data is nullable JSONB with NO default — the typed structured
+    grid (xlsx 'xlsx-grid-v1') is written by the seams, NULL for every prose format."""
+    async with engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT data_type, is_nullable, column_default "
+                    "FROM information_schema.columns WHERE table_schema = 'public' "
+                    "AND table_name = 'email_attachment' AND column_name = 'extracted_data'"
+                )
+            )
+        ).one_or_none()
+
+    assert row is not None, "0017 extracted_data column missing"
+    assert tuple(row) == ("jsonb", "YES", None)
 
 
 async def test_content_hash_lookup_index_exists(migrated_db: None) -> None:

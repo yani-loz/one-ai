@@ -3,8 +3,8 @@ Role: DEV driver (NOT the production sync path) — one-shot extraction backfill
       the on-disk spike .eml corpus, recomputes each attachment's content_hash through the SAME
       parser the ingest used, and runs the NEW extraction seam over every email_attachment row
       still marked extraction_status='pending', updating extracted_text + status + detail
-      (0016, EQ-7) + extractor provenance in place. No IMAP re-fetch: the corpus on disk is the
-      byte source.
+      (0016, EQ-7) + extractor provenance + the typed structured grid (0017, extracted_data — NULL
+      for non-xlsx) in place. No IMAP re-fetch: the corpus on disk is the byte source.
 Used by: a developer, run inside a container with the gitignored spike dump mounted read-only:
   docker compose run --rm -v "${PWD}/spikes:/spikes:ro" backend \
       uv run python -m scripts.backfill_attachment_extraction /spikes/imap_dump [--org <uuid>]
@@ -42,6 +42,12 @@ Key invariants:
     message — a typo'd path must never report a successful DONE 0-updates run.
   - Batched commits (every ~200 updated rows) → resumable; progress lines per 500 files; the
     final summary tallies updated rows per extraction status + the pending residue.
+  - PER-ROW SAVEPOINT (mirrors the live sync path's connector_sync_runner._ingest_one): each row's
+    UPDATE runs inside its own begin_nested() so a single un-storable row (e.g. a structured grid
+    that survived extraction but trips a JSONB DataError) rolls back ONLY its savepoint and is
+    skipped (counted under rows_db_failed) — it never poisons the surrounding batch transaction
+    (up to ~200 rows of work) nor escapes to kill a multi-hour corpus run mid-flight. A run that
+    skipped any row exits non-zero so the operator sees it.
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import Integer, Row, case, cast, false, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.imap.models.email import EmailAttachment
@@ -92,20 +99,20 @@ def _refuse_in_secure_env() -> None:
 
 
 async def _assert_migrated() -> None:
-    """Fail fast unless the 0015 (extraction_status) AND 0016 (extraction_detail) columns
-    exist on the target DB — the backfill writes both."""
+    """Fail fast unless the 0015 (extraction_status), 0016 (extraction_detail) AND 0017
+    (extracted_data) columns exist on the target DB — the backfill writes all three."""
     async with GlobalSessionLocal() as session:
         result = await session.execute(
             text(
                 "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
                 "AND table_name = 'email_attachment' "
-                "AND column_name IN ('extraction_status', 'extraction_detail')"
+                "AND column_name IN ('extraction_status', 'extraction_detail', 'extracted_data')"
             )
         )
-        if result.scalar() != 2:
+        if result.scalar() != 3:
             raise SystemExit(
-                "email_attachment.extraction_status/extraction_detail missing — run "
-                "'alembic upgrade head' (migrations 0015 + 0016) first."
+                "email_attachment.extraction_status/extraction_detail/extracted_data missing — run "
+                "'alembic upgrade head' (migrations 0015 + 0016 + 0017) first."
             )
 
 
@@ -220,25 +227,41 @@ async def _row_extraction(
 
 async def _update_pending_row(
     session: AsyncSession, org_id: UUID, row_id: UUID, outcome: ExtractionResult
-) -> int:
-    """Write one extraction outcome onto ONE still-pending row (by id); returns the row count
-    (0 when another process already filled it — idempotence: never overwrite done)."""
-    result = await session.execute(
-        update(EmailAttachment)
-        .where(
-            EmailAttachment.org_id == org_id,
-            EmailAttachment.id == row_id,
-            EmailAttachment.extraction_status == "pending",
-        )
-        .values(
-            extracted_text=outcome.text,
-            extraction_status=outcome.status,
-            extraction_detail=outcome.detail,
-            extractor_name=outcome.extractor_name,
-            extractor_version=outcome.extractor_version,
-        )
-    )
-    return result.rowcount or 0
+) -> int | None:
+    """Write one extraction outcome onto ONE still-pending row (by id), SAVEPOINT-isolated.
+
+    Returns the affected row count (0 when another process already filled it — idempotence: never
+    overwrite done), or None when the UPDATE itself raised a DB error (e.g. a structured grid that
+    survived extraction but is not JSONB-storable). Each row runs inside its OWN begin_nested()
+    savepoint — the same poison-isolation posture as the live sync path (connector_sync_runner.
+    _ingest_one): a single bad row rolls back only its savepoint, NEVER poisoning the surrounding
+    batch transaction (up to _COMMIT_BATCH_ROWS rows of work) nor escaping to kill the whole run.
+    A None return tells the caller to skip-and-continue rather than commit a half-aborted batch.
+    """
+    try:
+        async with session.begin_nested():
+            result = await session.execute(
+                update(EmailAttachment)
+                .where(
+                    EmailAttachment.org_id == org_id,
+                    EmailAttachment.id == row_id,
+                    EmailAttachment.extraction_status == "pending",
+                )
+                .values(
+                    extracted_text=outcome.text,
+                    extraction_status=outcome.status,
+                    extraction_detail=outcome.detail,
+                    extractor_name=outcome.extractor_name,
+                    extractor_version=outcome.extractor_version,
+                    extracted_data=outcome.structured,
+                )
+            )
+        return result.rowcount or 0
+    except SQLAlchemyError as db_error:
+        # The savepoint already rolled back this row; the outer batch transaction is still usable.
+        # Print the exception TYPE only — str(exc) can echo bound parameter values (cell content).
+        print(f"  [db-fail] {type(db_error).__name__} @ row {row_id}", flush=True)
+        return None
 
 
 async def _backfill(
@@ -277,6 +300,9 @@ async def _backfill(
                 continue  # hash not found on disk — counted once per hash below
             outcome = await _row_extraction(outcomes, row.content_hash, row.content_type, payload)
             rows = await _update_pending_row(session, org_id, row.id, outcome)
+            if rows is None:
+                tally["rows_db_failed"] += 1  # savepoint rolled this row back — keep going
+                continue
             tally[outcome.status] += rows
             batch_updates += rows
             if batch_updates >= _COMMIT_BATCH_ROWS:
@@ -318,11 +344,13 @@ async def _run(root: Path, org_id: UUID, requeue: tuple[str, int] | None) -> int
     print("=" * 60)
     residue = tally.pop("hashes_not_on_disk", 0)
     failed_files = tally.pop("files_failed", 0)
+    rows_db_failed = tally.pop("rows_db_failed", 0)
     updated = sum(tally.values())
     print(f"DONE — updated {updated} attachment rows; per-status: {dict(sorted(tally.items()))}")
     print(f"       pending hashes not found on disk: {residue}; unreadable files: {failed_files}")
+    print(f"       rows skipped on a DB error (savepoint rolled back): {rows_db_failed}")
     print("=" * 60)
-    return 1 if failed_files else 0
+    return 1 if (failed_files or rows_db_failed) else 0
 
 
 def main(argv: list[str] | None = None) -> int:

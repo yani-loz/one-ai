@@ -1,12 +1,13 @@
 """
 Role: Unit tests for the docx extractor — document-order paragraph + table extraction (tables
       pipe-serialized via the shared serialize_table, cell text exactly once), the OLE
-      password-protected probe, corrupt/zip-validation statuses, the zip-expansion (raw-bytes)
-      bound, the XML-parts DOM-expansion bound (real tiny-paragraph bomb, media headroom, the
-      [Content_Types].xml Override disguise, the pathological manifest), the stdlib XML-harvest
-      fallback for packages python-docx rejects, truncation, C0 + surrogate sanitization, the
-      vendor-log leak regression, and the NEVER-raises property. Fixtures are built in-memory
-      with python-docx / stdlib zipfile (see conftest) — pure, no I/O.
+      password-protected probe, corrupt/zip-validation statuses, the stdlib XML-harvest fallback
+      for packages python-docx rejects, truncation, C0 + surrogate sanitization, the vendor-log
+      leak regression, and the NEVER-raises property. The shared OOXML zip-bomb battery (EOCD
+      pre-gate, expansion + member + XML-parts bounds, the [Content_Types].xml disguise) now
+      lives in extraction.ooxml — tested directly in test_ooxml.py and via the docx public seam
+      in test_docx_guards.py. Fixtures are built in-memory with python-docx / stdlib zipfile
+      (see conftest) — pure, no I/O.
 Used by: pytest (tests/connectors/extraction).
 Depends on: app.connectors.extraction.docx, .extraction_result, the conftest
             build_docx builder.

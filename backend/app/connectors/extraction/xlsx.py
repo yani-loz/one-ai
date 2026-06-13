@@ -89,12 +89,18 @@ _GRID_FORMAT = "xlsx-grid-v1"
 
 # Typed-capture bounds (the structured grid is the lossless source of truth, but still bounded so a
 # pathological workbook can't balloon a JSONB row / the analysis pipeline):
-#   - MAX_CELLS: total non-empty cells captured across the WHOLE workbook.
-#   - MAX_STRUCTURED_BYTES: a JSON-size backstop (~8 MB) — a few huge text cells can blow the cell
-#     count budget's byte assumption, so the running serialized size is bounded too.
+#   - MAX_CELLS: total NON-EMPTY cells captured across the WHOLE workbook.
+#   - MAX_SCANNED_CELLS: total cell VISITS (empty included) across the workbook. read_only
+#     iter_rows pads to the sheet's declared dimension, so a tiny attachment with one cell near
+#     Excel's lower-right limit (XFD1048576, ~17e9 phantom cells) would otherwise spin the ingest
+#     worker through billions of EMPTY cells without ever incrementing the non-empty MAX_CELLS
+#     counter (2026-06-13 Codex review). This caps total work regardless of how sparse the sheet.
+#   - MAX_STRUCTURED_BYTES: a JSON-size backstop (~8 MB) — checked WITH the candidate cell's size
+#     BEFORE appending, so a single huge cell can't slip past (2026-06-13 Codex review).
 #   - MAX_SHEETS: a workbook declaring more tabs than this is pathological; only the first are read.
 # Hitting any of these sets structured.truncated=true and STOPS capture (kept-what-we-have).
 MAX_CELLS = 50_000
+MAX_SCANNED_CELLS = 5_000_000
 MAX_STRUCTURED_BYTES = 8 * 1024 * 1024
 MAX_SHEETS = 100
 
@@ -172,8 +178,9 @@ class _Capture:
         self.sheets: list[dict] = []  # the structured 'sheets' list (xlsx-grid-v1)
         self.render_blocks: list[str] = []  # per-sheet text-render blocks
         self.cell_count = 0  # non-empty cells captured so far (across the workbook)
+        self.scanned = 0  # cell VISITS so far, empty included (the phantom-cell DoS bound)
         self.structured_bytes = 0  # running JSON-ish size estimate (the byte backstop)
-        self.truncated = False  # a cell/size/sheet bound was hit — capture stopped early
+        self.truncated = False  # a cell/size/sheet/scan bound was hit — capture stopped early
         self.any_cell = False  # at least one non-empty cell anywhere (else → `empty`)
 
 
@@ -213,16 +220,28 @@ def _capture_sheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, capture: _
 
     for row_index, row in enumerate(worksheet.iter_rows(), start=1):
         for column_index, cell in enumerate(row, start=1):
+            capture.scanned += 1
+            if capture.scanned > MAX_SCANNED_CELLS:
+                # A sparse sheet with a bloated declared dimension would otherwise spin here
+                # through billions of phantom empty cells (Codex review) — cap total visits.
+                capture.truncated = True
+                break
             typed = _typed_cell(cell, column_index, row_index)
             if typed is None:
                 continue  # sparse: skip empty cells
             capture.any_cell = True
-            if capture.cell_count >= MAX_CELLS or capture.structured_bytes >= MAX_STRUCTURED_BYTES:
+            cell_bytes = _estimate_cell_bytes(typed)
+            # Check the bounds WITH this candidate cell, BEFORE appending: a single huge cell must
+            # not slip past the byte backstop and leave truncated=false (Codex review).
+            if (
+                capture.cell_count >= MAX_CELLS
+                or capture.structured_bytes + cell_bytes > MAX_STRUCTURED_BYTES
+            ):
                 capture.truncated = True
                 break
             cells.append(typed)
             capture.cell_count += 1
-            capture.structured_bytes += _estimate_cell_bytes(typed)
+            capture.structured_bytes += cell_bytes
             rendered, capped = _add_to_render(
                 render_grid, row_index, column_index, typed["v"], cell.value
             )

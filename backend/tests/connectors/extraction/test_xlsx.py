@@ -246,6 +246,41 @@ def test_extract_xlsx_over_max_sheets_marks_truncated(monkeypatch: pytest.Monkey
     assert len(result.structured["sheets"]) == 1  # only the first sheet read
 
 
+def test_extract_xlsx_phantom_empty_cells_bounded_by_scan_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex review: read_only iter_rows pads to the declared dimension, so a sparse sheet would
+    # spin through empty cells without ever tripping the non-empty MAX_CELLS bound. The scan cap
+    # bounds total VISITS (empty included) so a one-cell-far-away workbook can't tie up the worker.
+    monkeypatch.setattr(xlsx_module, "MAX_SCANNED_CELLS", 4)
+    # 3 rows x 3 cols = 9 visited cells; only 2 are non-empty (under MAX_CELLS), so ONLY the scan
+    # cap can stop this — proving the visit bound, not the non-empty bound, fires.
+    payload = build_xlsx(
+        sheets=[("Sparse", [["x", None, None], [None, None, None], [None, None, "y"]])]
+    )
+
+    result = extract_xlsx_text(payload)
+
+    assert result.structured is not None
+    assert result.structured["truncated"] is True
+
+
+def test_extract_xlsx_single_oversize_cell_caps_before_append(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex review: the byte backstop is checked WITH the candidate cell before appending, so a
+    # single huge cell cannot slip past and leave truncated=false. A lone giant cell -> truncated,
+    # not appended.
+    monkeypatch.setattr(xlsx_module, "MAX_STRUCTURED_BYTES", 100)
+    payload = build_xlsx(sheets=[("Big", [["x" * 5000]])])  # one cell, well over 100 bytes
+
+    result = extract_xlsx_text(payload)
+
+    assert result.structured is not None
+    assert result.structured["truncated"] is True
+    assert result.structured["sheets"][0]["cells"] == []  # the breaching cell was NOT appended
+
+
 def test_extract_xlsx_text_over_char_cap_returns_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

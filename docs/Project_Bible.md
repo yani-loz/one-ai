@@ -79,7 +79,7 @@ Agents work overnight on user-assigned tasks (research, analysis) and AI-initiat
 Modules that plug into company data sources (email, documents, chat, CRM, HR, project management…) with authentication, initial sync, continuous sync, and schema mapping.
 - **Priority set:** Email, Documents, Slack; meeting transcription (Fathom).
 - **Engineering discipline:** build connectors **one at a time**, fully verify each before the next, keep each **self-contained** in its own folder so it can be plugged in/out without affecting others (`BaseConnector` ABC).
-- **Data handling (privacy by design):** a connector ingests into the **one shared DB** as *derived knowledge* — extracted text + resolved entities, **not** a raw copy of the source (data-minimisation; the source system stays the system of record). **Disconnecting** a connector **revokes the AI's access** to its data (enforced at retrieval; data retained so a reconnect needs no re-sync); **deleting** purges it. Detail: [`docs/connect-email-ingestion-design.md`](connect-email-ingestion-design.md).
+- **Data handling (privacy by design):** a connector ingests into the **one shared DB** as *derived knowledge* — extracted text + resolved entities, **not** a raw copy of the source (data-minimisation; the source system stays the system of record). **Disconnecting** a connector **revokes the AI's access** to its data (enforced at retrieval; data retained so a reconnect needs no re-sync); **deleting** purges it. Detail: [`docs/connect-email-ingestion-design.md`](connect-email-ingestion-design.md) (ingest + entity resolution) and [`docs/connect-attachment-extraction-design.md`](connect-attachment-extraction-design.md) (per-format attachment text + structured capture). **First connector built:** IMAP email — ingest, content-identity dedup, person/company entity graph, and PDF/docx/TNEF/xlsx extraction are live.
 
 ---
 
@@ -216,7 +216,8 @@ Cost-awareness is built in from day one.
 - **Database:** PostgreSQL 16 + pgvector. Single database. Keep infrastructure simple until multi-tenant scale genuinely requires more (in-process async is sufficient at single-tenant scale).
 - **Frontend:** React 19 + Vite + TailwindCSS v4 + Framer Motion. Design language per `.claude/rules/frontend-design.md` (glassmorphism, aurora palette, living-organism motion).
 - **Multi-tenant production requirements** (add when going multi-tenant): `org_id` on every table + Row-Level Security, auth middleware (JWT + RBAC + SSO/MFA), schema migrations, containerization, secret manager, monitoring.
-- **Library note:** for PDF extraction prefer **pdfplumber** (MIT) over PyMuPDF (AGPL).
+- **Attachment text extraction** lives in a **connector-agnostic** package (`app/connectors/extraction/`, reusable by any connector): per-format `extract_*(bytes) -> ExtractionResult` (text + a status + provenance), never-raises, honest status over fake text. Libraries are all non-AGPL — PDF **pdfplumber** + pypdf (never PyMuPDF, AGPL); docx **python-docx**; xlsx **openpyxl**; TNEF **tnefparse** + compressed-rtf + striprtf. OCR for scanned docs is a deferred Phase C (local Tesseract, confidence-gated; cloud/LLM OCR only under zero-retention).
+- **Structured-data analysis.** Spreadsheets ingest as a faithful **typed cell grid** (lossless, alongside the text render) — not flattened to prose. Analysis is deferred to **query time**: the agent loads the grid into **DuckDB** (in-process) and writes SQL — the concrete realization of Layer-1 **Structured** + Layer-1 **Explorable** memory (§6). "Dumb lossless ingest, smart query later." Detail: [`docs/connect-attachment-extraction-design.md`](connect-attachment-extraction-design.md).
 
 ---
 

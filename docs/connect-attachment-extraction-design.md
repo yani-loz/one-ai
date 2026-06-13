@@ -1,6 +1,29 @@
 # Connect — Attachment Content Extraction — Design
 
-> **Status: PROPOSAL — for review. Nothing here is implemented.**
+> **Status: PARTIALLY SHIPPED (as of 2026-06-13). This is the design of record; the per-type
+> proposals below (§2) are the spec each slice was built against.** Implementation status:
+>
+> | Type | Status | Commit / note |
+> |---|---|---|
+> | Born-digital PDF + scanned detection (§2.1–2.3) | ✅ SHIPPED | `1ed68ac` — 932/1,075 extracted, scanned→OCR queue, vector-content & two-engine fixes |
+> | docx (§2.4) | ✅ SHIPPED | `6e5f773` — 841/845; OOXML zip-bomb battery |
+> | TNEF + depth-1 recursion (§2.9) + RTF (§2.8) | ✅ SHIPPED | `7b175ad` — 1,454/1,560; dedup key v5 (flattened-body digest) |
+> | xlsx — text + **typed structured capture** (§2.5) | ✅ SHIPPED | `d2ece2f`, `850f642` — 62/63; the lossless `xlsx-grid-v1` grid → DuckDB-at-query-time analysis |
+> | Extraction package relocation | ✅ SHIPPED | `39b566d` — moved to connector-agnostic `app/connectors/extraction/` (reusable for CON-04) |
+> | pptx (§2.6), octet-stream sniff (§2.10), legacy `.doc/.xls` (§2.7) | ⏳ NEXT | the `unsupported_format` tail (~215 rows) |
+> | Phase C — OCR for scanned (§3) | ⏳ DEFERRED | 138 rows `scanned_pending_ocr`/`extracted_partial_scanned`, status-marked in the data; needs OCR-engine sign-off (§6.1) |
+> | Audio/video (§2.12) | ⏳ DEFERRED | → CON-03 transcription |
+>
+> **Two design evolutions beyond the original proposal, both validated and recorded here:**
+> (a) the seam is now `extract_text(payload) -> ExtractionResult` (text + a CHECK-pinned
+> `extraction_status` + `extraction_detail` + extractor provenance + an optional `structured`
+> field) — far richer than the original `str | None`; (b) **xlsx stores DUAL output** — a text
+> render *and* a faithful typed cell grid in `email_attachment.extracted_data` (JSONB) — because a
+> spreadsheet is DATA not prose; "dumb lossless ingest, smart query later" (DuckDB at analysis
+> time). This is the first concrete instance of the Project Bible's **Structured + Explorable**
+> memory types (§6). Proven end-to-end: a real corpus workbook round-trips typed-grid → DuckDB →
+> live `SUM/AVG/MAX` SQL.
+>
 > Closes the CA-CONN-04 gate (`docs/FIX_BEFORE_PROD.md`): binary attachment text extraction MUST land
 > before any production path discards attachment bytes after parse.
 >
@@ -13,9 +36,13 @@
 > - **GDPR / data sovereignty:** no tenant content leaves the deployment without a zero-retention
 >   agreement; local-first extraction (Project Bible; ingestion design §6).
 > - **No AGPL dependencies** (commercial product). PyMuPDF is excluded; so is Marker (see §3.4).
-> - **The extractor seam** (`backend/app/connectors/imap/parsing/attachment_extractor.py`):
->   `extract_text(ParsedAttachment) -> str | None`, NEVER raises, NUL-stripped output, blank → None,
->   and **honest NULL** — None means "no text extracted (yet)", never fake/empty text.
+> - **The extractor seam** — dispatched by `backend/app/connectors/imap/parsing/attachment_extractor.py`
+>   into the connector-agnostic `backend/app/connectors/extraction/` package: each
+>   `extract_*(payload: bytes) -> ExtractionResult`, NEVER raises, output sanitized via the single
+>   `text_sanitize` source, and **honest NULL/status** — a non-extracting format gets a named
+>   `extraction_status` (`scanned_pending_ocr` / `unsupported_format` / `corrupt` / …), never
+>   fake/empty text. (Original proposal: `extract_text(ParsedAttachment) -> str | None`; evolved as
+>   noted in the status block above.)
 > - **Lean attachments (ingestion design §4, DECIDED):** text extracted inline at parse, original
 >   bytes discarded; `RawBlobStore` seam kept unimplemented as the escape hatch (§1, §9).
 > - **Deterministic, no LLM at parse** (ingestion design §4 heading).

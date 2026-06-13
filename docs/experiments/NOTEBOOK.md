@@ -20,7 +20,12 @@
 
 | # | Decision (as a directive) | Source | Date |
 |---|---------------------------|--------|------|
-| *D1* | *(example — delete) Use hybrid BM25+vector retrieval; pure vector misses exact terms.* | *EXP-002* | *2026-06-01* |
+| D1 | Dedup email by **content identity**, never raw bytes: hash decoded Message-ID + From/Subject + UTC send instant + canonical To/Cc + body_text + text/html digest + sorted attachment identities (TNEF contributes its stable embedded-interior digest); no-Message-ID & headers-only fall back to `sha256(raw_bytes)`. Outlook regenerates serialization per folder copy, so any raw-byte hash fragments (was 39% duplicate rows). Key recipe = v5; changing it requires a corpus re-ingest. | `email_parser`/`dedup_key`; audit `2026-06-10_db-data-quality` H-1 | 2026-06-13 |
+| D2 | The file/attachment **text-extraction pipeline is connector-agnostic** — lives in `app/connectors/extraction/` (`extract_*(bytes) -> ExtractionResult`, never raises, honest status), imports nothing from any connector. Each connector supplies its own storage. CON-04 (local folders) reuses it directly. | relocation `39b566d` | 2026-06-13 |
+| D3 | **Spreadsheets are DATA, not prose** — store DUAL: a bounded text render (embed/find) AND a faithful typed cell grid (`xlsx-grid-v1`, lossless) in `email_attachment.extracted_data` (JSONB, `none_as_null=True`). Analysis is deferred to **query time via DuckDB** (the agent writes SQL over the grid). "Dumb lossless ingest, smart query later." First instance of the Bible §6 Structured + Explorable memory types. | `extraction/xlsx`; design §2.5 | 2026-06-13 |
+| D4 | Extraction libraries (all MIT/BSD/LGPL-import — **no AGPL**): PDF → pdfplumber + pypdf; docx → python-docx; xlsx → openpyxl; TNEF → tnefparse + compressed-rtf + striprtf. Vendor loggers that interpolate payload bytes (pypdf, tnefparse) are muted at import. OOXML formats (docx/xlsx) share one zip-bomb guard (`extraction/ooxml`). | extraction slices | 2026-06-13 |
+| D5 | **OCR is Phase C, deferred and status-marked in the data** (`scanned_pending_ocr` / `extracted_partial_scanned`): local Tesseract `bul+deu+eng`, confidence-gated → honest NULL + HiTL below threshold. Cloud/LLM OCR only under zero-retention + EU-DPA + per-tenant opt-in. Image OCR not built (0 doc-scans measured in the corpus). | design §3; FIX_BEFORE_PROD CA-CONN-04 | 2026-06-13 |
+| D6 | The **sync layer is IMAP-specialized today and that is documented, not hidden** (`IncrementalFetch` carries folder/UIDVALIDITY cursors). The connector-blind core is the run-ledger, the registry, and the connection/credential plane. Generalize the fetch/cursor abstraction at the **second** fetching connector (n=2), never from one example. | relocation `39b566d` | 2026-06-13 |
 
 ---
 

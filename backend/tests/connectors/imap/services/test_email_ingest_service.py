@@ -23,6 +23,7 @@ from tests.connectors.imap.parsing.extractors.conftest import (
     TEXT_PAGE_STREAM,
     build_docx,
     build_pdf,
+    build_tnef,
 )
 from tests.connectors.imap.services.conftest import seed_connection
 
@@ -195,6 +196,9 @@ async def test_ingest_corrupt_pdf_attachment_records_null_text_with_corrupt_stat
     assert attachment.size_bytes > 0
     assert attachment.extracted_text is None  # honest absent, not empty-string
     assert attachment.extraction_status == "corrupt"
+    # EQ-7 (0016): the WHY survives to the row — exception class names, never payload content.
+    assert attachment.extraction_detail is not None
+    assert "%PDF" not in attachment.extraction_detail
 
 
 async def test_ingest_valid_pdf_attachment_stores_text_and_extraction_provenance(
@@ -255,6 +259,44 @@ async def test_ingest_valid_docx_attachment_stores_text_and_extraction_provenanc
     assert attachment.extraction_status == "extracted"
     assert attachment.extractor_name == "python-docx"
     assert attachment.extractor_version is not None
+
+
+async def test_ingest_tnef_attachment_stores_text_with_detail_persisted(
+    db_session: AsyncSession,
+) -> None:
+    # End-to-end TNEF slice (design §2.9 + EQ-7): a winmail.dat attachment lands with its body
+    # + embedded-file text extracted, tnefparse provenance, AND ExtractionResult.detail
+    # persisted to the 0016 extraction_detail column (both write seams previously dropped it).
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    service = EmailIngestService(db_session, connection)
+    tnef_payload = build_tnef(
+        rtf_body=b"{\\rtf1\\ansi The real Outlook body.}",
+        attachments=[(b"notes.txt", b"embedded meeting notes")],
+    )
+    tnef_b64 = b64encode(tnef_payload)
+    raw = (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <tnef@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: application/ms-tnef\r\n"
+        b'Content-Disposition: attachment; filename="winmail.dat"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n" + tnef_b64 + b"\r\n--B--\r\n"
+    )
+
+    await service.ingest_email(raw)
+
+    attachment = (
+        await db_session.execute(select(EmailAttachment).where(EmailAttachment.org_id == org))
+    ).scalar_one()
+    assert attachment.filename == "winmail.dat"
+    assert attachment.extraction_status == "extracted"
+    assert attachment.extracted_text is not None
+    assert "The real Outlook body." in attachment.extracted_text
+    assert "[embedded: notes.txt]\nembedded meeting notes" in attachment.extracted_text
+    assert attachment.extractor_name == "tnefparse"
+    assert attachment.extractor_version is not None
+    assert attachment.extraction_detail == "body=rtf embedded_files=1"  # EQ-7: detail persisted
 
 
 async def test_ingest_image_attachment_records_skipped_nondocument_status(

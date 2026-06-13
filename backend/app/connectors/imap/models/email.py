@@ -38,6 +38,10 @@ Key invariants:
     with a reason, never ''.
     extractor_name/extractor_version record WHICH engine produced the row (version-aware
     backfills); the (org_id, content_hash) index is the backfill/dedup lookup key 0014 deferred.
+  - 0016 EXTRACTION DETAIL (EQ-7): email_attachment.extraction_detail persists
+    ExtractionResult.detail (truncation reason, image_only_pages=N OCR backlog counts, corrupt
+    exception class names) — nullable, machine-readable, NEVER attachment content verbatim
+    (class names / fixed phrases / counts only — the contract's standing invariant).
 """
 
 from __future__ import annotations
@@ -228,3 +232,6 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     # Provenance: which engine + version produced this row (version-aware backfill targeting).
     extractor_name: Mapped[str | None] = mapped_column(Text)
     extractor_version: Mapped[str | None] = mapped_column(Text)
+    # 0016 (EQ-7): the ExtractionResult.detail — WHY/HOW the status was reached (truncation
+    # reason, OCR backlog counts, exception class names). Never attachment content verbatim.
+    extraction_detail: Mapped[str | None] = mapped_column(Text)

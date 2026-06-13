@@ -6,8 +6,6 @@ Role: PDF attachment text extraction (design §2.1) — pdfplumber primary (layo
       keeps every extracted char (`extracted_partial_scanned`); only a document whose ENTIRE text
       layer is below the char floor is marked `scanned_pending_ocr` with text=None.
 Used by: app.connectors.imap.parsing.attachment_extractor (dispatches application/pdf payloads);
-         app.connectors.imap.parsing.extractors.docx (reuses serialize_table — ONE table
-         serializer across extractors — and MAX_EXTRACTED_CHARS);
          scripts.backfill_attachment_extraction (via the seam).
 Depends on: pdfplumber (MIT), pypdf (BSD) — NO PyMuPDF (AGPL, design hard-no);
             app.connectors.imap.parsing.extraction_result (the result contract);
@@ -54,8 +52,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from functools import cache
-from importlib import metadata
 from io import BytesIO
 
 import pdfplumber
@@ -73,6 +69,13 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
+from app.connectors.imap.parsing.extractors.common import (
+    MAX_EXTRACTED_CHARS,
+    serialize_table,
+)
+from app.connectors.imap.parsing.extractors.common import (
+    package_version as _package_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +86,6 @@ logger = logging.getLogger(__name__)
 # the triage signal these warnings would have.
 for _vendor_logger_name in ("pypdf", "pdfminer"):
     logging.getLogger(_vendor_logger_name).setLevel(logging.CRITICAL)
-
-# Extraction cap (chars): a pathological text layer must not balloon a row / the embedding
-# pipeline. The page loop BAILS as soon as the materialized text exceeds this — later pages are
-# never parsed — and the capped text is STORED with status `truncated` (design §2.1).
-MAX_EXTRACTED_CHARS = 2_000_000
 
 # CPU-budget proxy against pathological / quasi-hang PDFs: never read more pages than this.
 # Text found by then → `truncated` (detail says page-bounded); none → the scanned/empty verdict
@@ -169,18 +167,6 @@ def extract_pdf_text(payload: bytes) -> ExtractionResult:
         return ExtractionResult(
             None, STATUS_CORRUPT, detail=f"unexpected:{type(unexpected).__name__}"
         )
-
-
-def serialize_table(table: list[list[str | None]]) -> str:
-    """Serialize one pdfplumber extract_tables() table as pipe-joined rows (design §2.1).
-
-    One line per row, cells joined with ' | '; None cells become '', cell-internal newlines
-    flatten to spaces. Returns '' for a table with no cell text at all (nothing worth appending).
-    """
-    lines = [" | ".join((cell or "").replace("\n", " ").strip() for cell in row) for row in table]
-    if not any(line.strip(" |") for line in lines):
-        return ""
-    return "\n".join(lines)
 
 
 def _extract(payload: bytes) -> ExtractionResult:
@@ -502,11 +488,3 @@ def _text_result(text: str, extractor: str, bail_reason: str | None) -> Extracti
     )
 
 
-@cache
-def _package_version(package: str) -> str:
-    """The installed package version (provenance for version-aware backfills); 'unknown' if the
-    distribution metadata is unavailable (e.g. a vendored install)."""
-    try:
-        return metadata.version(package)
-    except metadata.PackageNotFoundError:
-        return "unknown"

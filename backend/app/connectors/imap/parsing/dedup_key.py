@@ -1,11 +1,12 @@
 """
-Role: The CONTENT-IDENTITY dedup key (recipe of record — v4) and its component digests. Computes
+Role: The CONTENT-IDENTITY dedup key (recipe of record — v5) and its component digests. Computes
       the folder-independent identity an email is deduplicated on: Outlook re-serializes every
       folder copy (regenerated MIME boundaries, re-wrapped transfer encodings, re-rendered Date
       timezones, regenerated TNEF containers), so the key hashes DECODED logical content, never
       raw serialization.
 Used by: .email_parser (parse_email computes each ParsedEmail's dedup_key through this module).
-Depends on: stdlib (hashlib, email.utils), tnefparse (TNEF interior digests),
+Depends on: stdlib (hashlib, email.utils), tnefparse (TNEF interior digests) + striprtf (the
+            flattened-RTF-body component of the interior digest),
             .headers (safe_header / parse_date / MSGID_MAX), .models (ParsedAttachment).
             The text/html decoder is INJECTED by the caller (email_parser._decode_text_part) —
             the decode pipeline stays single-sourced there without an import cycle.
@@ -15,27 +16,51 @@ Key invariants:
     carries it) + decoded body_text + the decoded text/html alternative's digest + sorted
     per-attachment identities (filename digest + content hash; TNEF contributes its stable
     INTERIOR digest). No usable Message-ID, or a HEADERS-ONLY message → sha256(raw_bytes).
+  - KEY-CONSISTENCY (v5, mirrored in extractors/tnef.py): the key and the TNEF extractor read
+    the SAME TNEF signals — the striprtf-FLATTENED RTF body + the embedded attachments' bytes —
+    so content the extractor can materialize is always key-distinguished. The flattened body is
+    byte-stable across ALL 271 multi-copy TNEF groups in the corpus (the raw body's 4/40
+    instability was pure RTF re-serialization markup, which flattening erases — measured
+    2026-06-12); the same MAX_COMPRESSED_RTF_BYTES bound gates both readers.
   - NEVER over-dedup (silent mail loss is the worst failure): two genuinely distinct emails must
     differ in at least one keyed decoded field. NEVER under-dedup on serialization variance:
     every per-copy regeneration source identified on the corpus is normalized away.
   - KEY VERSIONING: changing this recipe (or the decode pipeline feeding it) invalidates
     previously-stored keys — re-fetches then duplicate instead of deduping (fails open to
     duplication, never to loss). Accepted pre-production; the dev corpus is wiped + re-ingested
-    after a recipe change.
+    after a recipe change. v5 (the flattened-body component) is such a change: the corpus
+    re-ingest follows this revision (the lead runs it).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC
 from email.message import EmailMessage
 from email.utils import getaddresses
 from hashlib import sha256
 
+from striprtf.striprtf import rtf_to_text
 from tnefparse import TNEF
 
 from app.connectors.imap.parsing.headers import MSGID_MAX, parse_date, safe_header
 from app.connectors.imap.parsing.models import ParsedAttachment
+
+# tnefparse interpolates RAW PAYLOAD BYTES into its log records (live-reproduced 2026-06-12 —
+# see extractors/tnef.py, which documents the repro and carries the same mute). This module
+# parses the same containers via TNEF(payload), and a process importing it WITHOUT the extractor
+# module would have the leak unmuted — so the idempotent setLevel is duplicated here (same
+# process-wide CRITICAL posture as pypdf/pdfminer in extractors/pdf.py; security.md).
+logging.getLogger("tnefparse").setLevel(logging.CRITICAL)
+
+# LZFu decompression-bomb bound (measured 8.0x expansion ratio on the corpus): compressed-RTF
+# property bytes above this are NEVER decompressed — the flattened-body component degrades to
+# the fixed token 'rtf-over-bound' instead (8MB compressed ⇒ ≤ ~64MB transient at the measured
+# ratio). SINGLE-SOURCED here and imported by extractors/tnef.py (the reverse import would cycle
+# through email_parser): the key and the extractor must apply the SAME bound, or the two TNEF
+# readers' notions of "the body" would drift apart (the KEY-CONSISTENCY invariant).
+MAX_COMPRESSED_RTF_BYTES = 8 * 1024 * 1024
 
 
 def compute_dedup_key(
@@ -58,8 +83,8 @@ def compute_dedup_key(
     fold) + the SORTED per-attachment identities (_attachment_identity: filename digest + the
     decoded payload's sha256 as computed for email_attachment.content_hash — reused, never
     re-decoded — except the volatile TNEF container, which contributes its STABLE INTERIOR
-    digest: embedded-attachment bytes only, verified stable across all 271 multi-copy TNEF
-    groups while raw blobs and the RTF body regenerate per copy). Raw body bytes must
+    digest: the striprtf-FLATTENED RTF body + embedded-attachment bytes, both verified stable
+    across all 271 multi-copy TNEF groups while raw blobs regenerate per copy). Raw body bytes must
     NOT participate: Outlook regenerates `----=_NextPart_...` MIME boundaries and re-wraps
     quoted-printable/base64 in every folder copy's serialization, so a raw-byte hash fragments per
     copy (audit H-1 stored 39.3% duplicate rows); after decoding that variance vanishes and all
@@ -127,11 +152,12 @@ def _attachment_identity(attachment: ParsedAttachment) -> str:
     folder copy (Thread-Index and transport properties live inside it), so its raw decoded bytes
     differ per copy of the same email (verified: ALL 253 attachment-divergent duplicate groups on
     the corpus involved TNEF; zero without it). A bare presence marker would fold two DISTINCT
-    emails differing only in files embedded INSIDE the TNEF (silent loss — 2026-06-11 cross-vendor
-    review), so TNEF contributes its INTERIOR digest instead: the embedded attachments' bytes,
-    which are byte-stable across regeneration (verified on ALL 271 multi-copy TNEF groups in the
-    corpus) while the volatile transport properties and the RTF body (the instability source,
-    whose content already surfaces in the plain-text stub `body_text` hashes) are excluded.
+    emails differing only in content INSIDE the TNEF (silent loss — 2026-06-11 cross-vendor
+    review + the 2026-06-12 body finding), so TNEF contributes its INTERIOR digest instead: the
+    striprtf-FLATTENED RTF body + the embedded attachments' bytes, both byte-stable across
+    regeneration (verified on ALL 271 multi-copy TNEF groups in the corpus — the raw RTF body's
+    instability was pure re-serialization markup, erased by flattening) while the volatile
+    transport properties are excluded.
 
     Non-TNEF attachments contribute the sanitized filename's digest alongside the payload hash:
     two distinct sends differing only in an attachment's NAME (same bytes) must not fold; folder
@@ -146,17 +172,23 @@ def _attachment_identity(attachment: ParsedAttachment) -> str:
 
 
 def _tnef_interior_digest(payload: bytes) -> str:
-    """Digest of a TNEF container's STABLE interior: the embedded attachments' bytes only.
+    """Digest of a TNEF container's STABLE interior: flattened RTF body + embedded bytes (v5).
 
-    Sorted per-attachment sha256, re-hashed. The TNEF body (RTF) is deliberately EXCLUDED — it is
-    the re-serialization instability source (4/40 sampled groups varied on it) and its content is
-    already represented in the key via the derived plain-text stub. 'empty' = parsed, nothing
-    embedded. 'unparseable' = tnefparse failed: copies of one email then still fold (both
-    unparseable → same token) at the cost of re-accepting the narrow marker-collision class for
-    corrupt blobs only — documented residual.
+    KEY-CONSISTENCY invariant (mirrored in extractors/tnef.py): the key and the extractor read
+    the SAME TNEF signals — the striprtf-FLATTENED body and the embedded attachments' bytes —
+    so content the extractor can materialize is always key-distinguished. The body participates
+    FLATTENED, never raw: the raw RTF stream is the re-serialization instability source (4/40
+    sampled groups varied on it — pure markup regeneration), while the flattened text is
+    byte-stable across ALL 271 multi-copy TNEF groups in the corpus (measured 2026-06-12).
+    Composition: the flattened-body component (_tnef_flattened_body_component) joined with the
+    sorted per-embedded-attachment sha256s, re-hashed. 'empty' = parsed, no RTF body and nothing
+    embedded. 'unparseable' = tnefparse/decompress/flatten failed: copies of one email then
+    still fold (both unparseable → same token) at the cost of re-accepting the narrow
+    marker-collision class for corrupt blobs only — documented residual.
     """
     try:
         interior = TNEF(payload)
+        body_component = _tnef_flattened_body_component(interior)
         parts = sorted(
             sha256(embedded.data).hexdigest()
             for embedded in interior.attachments
@@ -164,9 +196,32 @@ def _tnef_interior_digest(payload: bytes) -> str:
         )
     except Exception:  # tnefparse raises diverse internals on corrupt blobs — degrade, never fail
         return "unparseable"
-    if not parts:
+    if not parts and body_component == "no-rtf":
         return "empty"
-    return sha256("|".join(parts).encode()).hexdigest()
+    return sha256("|".join([body_component, *parts]).encode()).hexdigest()
+
+
+def _tnef_flattened_body_component(interior: TNEF) -> str:
+    """The flattened-RTF-body component of the interior digest (may raise — caller degrades).
+
+    `interior._rtfbody` is tnefparse 1.4.0's PRE-DECOMPRESS handle: the raw MAPI_RTF_COMPRESSED
+    property bytes stored at parse time, while `rtfbody` is the LAZY property that
+    LZFu-decompresses on access — the MAX_COMPRESSED_RTF_BYTES bound is checked on the
+    COMPRESSED bytes before that property is ever touched (measured 8.0x expansion: an unbounded
+    50MB property would materialize ~400MB on the identity path). Absent property → the fixed
+    token 'no-rtf'; over-bound → 'rtf-over-bound' (never decompressed; the extractor skips the
+    same body — KEY-CONSISTENCY); else sha256 of the decompressed body read latin-1 (lossless —
+    RTF source is ASCII-shaped by spec, the same read as extractors/tnef.py), flattened via
+    striprtf with errors='replace', and stripped.
+    """
+    compressed_rtf_property = interior._rtfbody  # the pre-decompress handle — see docstring
+    if not compressed_rtf_property:
+        return "no-rtf"
+    if len(compressed_rtf_property) > MAX_COMPRESSED_RTF_BYTES:
+        return "rtf-over-bound"
+    rtf_bytes = interior.rtfbody  # lazily decompresses — only touched after the bound passed
+    flattened = rtf_to_text(rtf_bytes.decode("latin-1"), errors="replace").strip()
+    return sha256(flattened.encode("utf-8", "replace")).hexdigest()
 
 
 def _recipient_identity(message: EmailMessage) -> str:

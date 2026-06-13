@@ -59,8 +59,6 @@ from __future__ import annotations
 import logging
 import struct
 import zipfile
-from functools import cache
-from importlib import metadata
 from io import BytesIO
 from xml.etree import ElementTree
 
@@ -76,7 +74,13 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.pdf import MAX_EXTRACTED_CHARS, serialize_table
+from app.connectors.imap.parsing.extractors.common import (
+    MAX_EXTRACTED_CHARS,
+    serialize_table,
+)
+from app.connectors.imap.parsing.extractors.common import (
+    package_version as _package_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -433,11 +437,3 @@ def _text_result(
     )
 
 
-@cache
-def _package_version(package: str) -> str:
-    """The installed package version (provenance for version-aware backfills); 'unknown' if the
-    distribution metadata is unavailable (e.g. a vendored install)."""
-    try:
-        return metadata.version(package)
-    except metadata.PackageNotFoundError:
-        return "unknown"

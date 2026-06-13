@@ -1,17 +1,19 @@
 """
 Role: Extract searchable TEXT from an attachment's raw bytes (design §4 lean-attachments: text is
       pulled inline, the original bytes are then discarded) and report the outcome as an
-      ExtractionResult — honest NULL with a machine-readable reason, never fake text. Phase A
-      handles text/* + text-shaped application/*, PDF (extractors.pdf) and docx (extractors.docx);
-      other document formats are honestly marked unsupported_format until their phase lands
-      (design §5).
+      ExtractionResult — honest NULL with a machine-readable reason, never fake text. Handles
+      text/* + text-shaped application/* (charset-chain decode; html/rtf FLATTENED, never stored
+      as raw markup source — audit EQ-4), PDF (extractors.pdf), docx (extractors.docx) and TNEF
+      (extractors.tnef, design §2.9); other document formats are honestly marked
+      unsupported_format until their phase lands (design §5).
 Used by: the IMAP ingest runner (step 3d) — it calls this per ParsedAttachment, stores text +
-         status + extractor provenance in email_attachment, then drops the bytes;
+         status + detail + extractor provenance in email_attachment, then drops the bytes;
          scripts.backfill_attachment_extraction (re-runs the seam over the disk corpus).
 Depends on: app.connectors.imap.parsing.models (ParsedAttachment), .extraction_result (the
-            contract), .extractors.pdf (PDF path), .extractors.docx (docx path), .email_parser
-            (sanitize_body_text — the SINGLE stored-text sanitization source, shared with email
-            bodies and PDF text).
+            contract), .extractors.pdf (PDF path), .extractors.docx (docx path), .extractors.tnef
+            (TNEF path), .email_parser (sanitize_body_text + decode_charset_chain + html_to_text
+            — the SINGLE sanitization/decode/flatten sources, shared with email bodies),
+            striprtf (BSD-3-Clause — RTF flattening, audit EQ-4).
 Key invariants:
   - NEVER raises: a bad/undecodable attachment yields a degraded ExtractionResult, never an
     exception (per-message error isolation — one attachment must not fail the whole email).
@@ -20,16 +22,32 @@ Key invariants:
   - ONE sanitization source: every stored text (the text/* decode path included) passes through
     sanitize_body_text (CRLF→LF, C0 strip, lone-surrogate strip — storable as UTF-8, period);
     text that sanitizes to '' is stored as honest NULL with status `empty`.
+  - ONE charset-decode source (audit EQ-3): text-shaped payloads decode via email_parser's
+    decode_charset_chain (utf-8 strict → cp1252 strict → windows-1251 strict → utf-8
+    errors='replace'), never a bare utf-8-replace decode — the audit measured 9 rows / 564K
+    mojibake chars from windows-1251 files under the old utf-8-only decode.
+  - MARKUP IS FLATTENED, never stored as 'extracted' source (audit EQ-4, 44 rows): text/html
+    flattens through email_parser's html_to_text; text/rtf + application/rtf strip through
+    striprtf — both AFTER the charset chain.
   - The GLOBAL size ceiling (MAX_PARSE_BYTES, design §2) applies before ANY parsing — payloads
     above it are skipped_oversize on every path (bounded memory, never-raise preserved).
   - Non-document types (images/audio/video/archives/signatures) → skipped_nondocument; document
-    formats without an extractor yet (xlsx/pptx/RTF/TNEF/octet-stream/legacy Office) →
-    unsupported_format — the statuses later phases re-target (B: TNEF + sniffing; C: OCR).
+    formats without an extractor yet (xlsx/pptx/octet-stream/legacy Office) →
+    unsupported_format — the statuses later phases re-target (octet-stream sniffing; C: OCR).
 """
 
 from __future__ import annotations
 
-from app.connectors.imap.parsing.email_parser import sanitize_body_text
+from functools import cache
+from importlib import metadata
+
+from striprtf.striprtf import rtf_to_text
+
+from app.connectors.imap.parsing.email_parser import (
+    decode_charset_chain,
+    html_to_text,
+    sanitize_body_text,
+)
 from app.connectors.imap.parsing.extraction_result import (
     STATUS_CORRUPT,
     STATUS_EMPTY,
@@ -41,6 +59,7 @@ from app.connectors.imap.parsing.extraction_result import (
 )
 from app.connectors.imap.parsing.extractors.docx import extract_docx_text
 from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
+from app.connectors.imap.parsing.extractors.tnef import extract_tnef_text
 from app.connectors.imap.parsing.models import ParsedAttachment
 
 # Global parse ceiling (design §2): nothing above this is parsed, on ANY path — bounded memory.
@@ -50,11 +69,27 @@ MAX_PARSE_BYTES = 50 * 1024 * 1024
 # version-aware backfill can target rows decoded under older rules).
 # v2: output now flows through sanitize_body_text (CRLF→LF + C0 + surrogate strip) instead of the
 # v1 bare NUL strip — the single-sanitization-source fix (2026-06-11 review).
+# v3: the bare utf-8-replace decode became the STRICT charset chain shared with email bodies
+# (utf-8 → cp1252 → windows-1251 → utf-8 errors='replace'; audit EQ-3 — 9 rows / 564K mojibake
+# chars from windows-1251 files were stored under v2's replace-on-utf-8 decode).
 TEXT_DECODER_NAME = "text-decode"
-TEXT_DECODER_VERSION = "2"
+TEXT_DECODER_VERSION = "3"
+
+# EQ-4 provenance: markup attachments record the FLATTENING engine (the transformation that
+# defines the stored text), so a version-aware backfill can target rows per engine upgrade.
+_HTML_FLATTENER = "html2text"
+_RTF_FLATTENER = "striprtf"
 
 # The OOXML WordprocessingML content type — dispatched to extractors.docx (design §2.4).
 _DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# The TNEF (winmail.dat) container — dispatched to extractors.tnef (design §2.9).
+_TNEF_CONTENT_TYPE = "application/ms-tnef"
+
+# Markup types whose SOURCE must never store as 'extracted' (audit EQ-4): html flattens via the
+# email-body flattener; rtf strips via striprtf. Both branch BEFORE the generic text/* prefix.
+_HTML_CONTENT_TYPE = "text/html"
+_RTF_CONTENT_TYPES = frozenset({"text/rtf", "application/rtf"})
 
 # Content-types whose payload is decoded as text directly (unchanged from v1 in behavior).
 _TEXT_PREFIXES = ("text/",)
@@ -92,11 +127,13 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
     """Extract text from one attachment; never raises.
 
     Dispatch: empty payload → `empty`; payload above MAX_PARSE_BYTES → `skipped_oversize`
-    (nothing oversize is ever parsed); text/* + text-shaped application/* → inline decode +
-    sanitize_body_text (`extracted`; sanitized-to-blank → `empty`); application/pdf →
-    extractors.pdf (full §2.1/§3.1 pipeline); the docx content type → extractors.docx (§2.4);
-    image/audio/video/archive/signature classes → `skipped_nondocument`; every other format →
-    `unsupported_format` (Phase B/C re-target these).
+    (nothing oversize is ever parsed); text/html → charset chain + html_to_text (EQ-4);
+    text/rtf + application/rtf → charset chain + striprtf (EQ-4); other text/* + text-shaped
+    application/* → charset chain + sanitize_body_text (EQ-3; `extracted`;
+    sanitized-to-blank → `empty`); application/pdf → extractors.pdf (full §2.1/§3.1 pipeline);
+    the docx content type → extractors.docx (§2.4); application/ms-tnef → extractors.tnef
+    (§2.9); image/audio/video/archive/signature classes → `skipped_nondocument`; every other
+    format → `unsupported_format` (later phases re-target these).
 
     Args:
         attachment: the parsed attachment (transient payload bytes + declared content type).
@@ -112,12 +149,18 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
             None, STATUS_SKIPPED_OVERSIZE, detail=f"{len(attachment.payload)} bytes"
         )
     content_type = attachment.content_type.lower()
+    if content_type == _HTML_CONTENT_TYPE:
+        return _decode_html(attachment.payload)
+    if content_type in _RTF_CONTENT_TYPES:
+        return _decode_rtf(attachment.payload)
     if _is_text_like(content_type):
         return _decode_text(attachment.payload)
     if content_type == "application/pdf":
         return extract_pdf_text(attachment.payload)
     if content_type == _DOCX_CONTENT_TYPE:
         return extract_docx_text(attachment.payload)
+    if content_type == _TNEF_CONTENT_TYPE:
+        return extract_tnef_text(attachment.payload)
     if _is_nondocument(content_type):
         return ExtractionResult(None, STATUS_SKIPPED_NONDOCUMENT)
     return ExtractionResult(None, STATUS_UNSUPPORTED_FORMAT)
@@ -132,26 +175,66 @@ def _is_nondocument(content_type: str) -> bool:
 
 
 def _decode_text(payload: bytes) -> ExtractionResult:
-    """Decode bytes to text (utf-8, replacing undecodable runs), then apply the canonical
-    stored-text sanitization (sanitize_body_text — CRLF→LF, C0 strip, lone-surrogate strip: the
-    SINGLE source shared with email bodies and PDF text, never a re-implementation); a text that
-    sanitizes to blank stores as honest NULL with status `empty`."""
+    """Decode bytes via the strict charset chain (EQ-3 — the SINGLE chain shared with email
+    bodies: utf-8 → cp1252 → windows-1251 → utf-8 errors='replace'), then apply the canonical
+    stored-text sanitization (sanitize_body_text — CRLF→LF, C0 strip, lone-surrogate strip);
+    a text that sanitizes to blank stores as honest NULL with status `empty`."""
     try:
-        text = sanitize_body_text(payload.decode("utf-8", errors="replace"))
+        text = sanitize_body_text(decode_charset_chain(payload))
     except Exception as decode_error:  # belt-and-braces: the seam must never raise
         return ExtractionResult(
             None, STATUS_CORRUPT, detail=f"text-decode:{type(decode_error).__name__}"
         )
+    return _decoded_result(text, TEXT_DECODER_NAME, TEXT_DECODER_VERSION)
+
+
+def _decode_html(payload: bytes) -> ExtractionResult:
+    """text/html attachments: charset chain, THEN the email-body HTML flattener (EQ-4 — raw
+    markup source must never store as 'extracted'); flattened-to-blank → honest `empty`."""
+    try:
+        text = sanitize_body_text(html_to_text(decode_charset_chain(payload)))
+    except Exception as flatten_error:  # belt-and-braces: the seam must never raise
+        return ExtractionResult(
+            None, STATUS_CORRUPT, detail=f"html-flatten:{type(flatten_error).__name__}"
+        )
+    return _decoded_result(text, _HTML_FLATTENER, _package_version(_HTML_FLATTENER))
+
+
+def _decode_rtf(payload: bytes) -> ExtractionResult:
+    """text/rtf + application/rtf attachments: charset chain, THEN striprtf (EQ-4 — RTF control
+    words must never store as 'extracted'; errors='replace' so a broken \\'xx escape degrades
+    instead of raising); stripped-to-blank → honest `empty`."""
+    try:
+        text = sanitize_body_text(rtf_to_text(decode_charset_chain(payload), errors="replace"))
+    except Exception as strip_error:  # belt-and-braces: the seam must never raise
+        return ExtractionResult(
+            None, STATUS_CORRUPT, detail=f"rtf-strip:{type(strip_error).__name__}"
+        )
+    return _decoded_result(text, _RTF_FLATTENER, _package_version(_RTF_FLATTENER))
+
+
+def _decoded_result(text: str, extractor_name: str, extractor_version: str) -> ExtractionResult:
+    """Wrap a decoded/flattened text as `extracted`, or honest-NULL `empty` when blank."""
     if not text:
         return ExtractionResult(
             None,
             STATUS_EMPTY,
-            extractor_name=TEXT_DECODER_NAME,
-            extractor_version=TEXT_DECODER_VERSION,
+            extractor_name=extractor_name,
+            extractor_version=extractor_version,
         )
     return ExtractionResult(
         text,
         STATUS_EXTRACTED,
-        extractor_name=TEXT_DECODER_NAME,
-        extractor_version=TEXT_DECODER_VERSION,
+        extractor_name=extractor_name,
+        extractor_version=extractor_version,
     )
+
+
+@cache
+def _package_version(package: str) -> str:
+    """The installed package version (provenance for version-aware backfills); 'unknown' if the
+    distribution metadata is unavailable (e.g. a vendored install)."""
+    try:
+        return metadata.version(package)
+    except metadata.PackageNotFoundError:
+        return "unknown"

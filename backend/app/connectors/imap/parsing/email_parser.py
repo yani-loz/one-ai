@@ -3,8 +3,10 @@ Role: Deterministic RFC822 → structured decomposition (design §4). Turns raw 
       ParsedEmail (headers, addresses, body text, attachment metadata + transient bytes, derived
       flags) with NO database or network access — a pure function the ingest runner maps to rows.
 Used by: the IMAP ingest runner (step 3d), the attachment extractor (consumes ParsedAttachment and
-         reuses sanitize_body_text for text attachments), and .extractors.pdf (reuses
-         sanitize_body_text — the ONE source of the stored-text sanitization rules).
+         reuses sanitize_body_text + decode_charset_chain + html_to_text for text/html/rtf
+         attachments — audits EQ-3/EQ-4), .extractors.pdf and .extractors.tnef (reuse
+         sanitize_body_text / html_to_text / decode_charset_chain — the ONE source of the
+         stored-text sanitization, charset-decode and HTML-flatten rules).
 Depends on: stdlib email (BytesParser, policy.default, getaddresses), html2text (html→text body),
             app.connectors.imap.parsing.headers (header/identity/date primitives), .dedup_key
             (content-identity computation — A2 split), .flags, .models.
@@ -22,12 +24,13 @@ Key invariants:
     follow-up). Any OTHER exception PROPAGATES so the runner retries it — a transient parse fault
     must never be frozen as a permanent empty stub.
   - `dedup_key` is a CONTENT IDENTITY over DECODED content (computed in .dedup_key — the recipe of
-    record — v4): with a usable Message-ID it hashes the normalized Message-ID + the decoded
+    record — v5): with a usable Message-ID it hashes the normalized Message-ID + the decoded
     From/Subject headers + the UTC-NORMALIZED send instant + the canonical To/Cc envelope (Bcc
     excluded — only the Sent copy carries it) + the decoded `body_text` + the decoded text/html
     body candidate's digest + the sorted per-attachment identities (filename digest + content
-    hash; TNEF contributes its stable INTERIOR digest); otherwise `sha256(raw_bytes)` (also for
-    headers-only messages). The html digest covers the MIME alternative
+    hash; TNEF contributes its stable INTERIOR digest — flattened RTF body + embedded bytes);
+    otherwise `sha256(raw_bytes)` (also for headers-only messages). The html digest covers the
+    MIME alternative
     `body_text` does NOT see when text/plain is selected — without it two distinct emails sharing
     a static plain stub but differing only in HTML would silently fold (appliance senders /
     planted decoys; fixup of the 2026-06-10 review). FOLDER-INDEPENDENT by decoding: Outlook
@@ -259,23 +262,23 @@ def _extract_body_text(message: EmailMessage) -> str:
         return ""
     text = _decode_text_part(body_part)
     if body_part.get_content_type() == "text/html":
-        text = _html_to_text(text)
+        text = html_to_text(text)
     return sanitize_body_text(text)
 
 
-def _decode_text_part(part: EmailMessage) -> str:
-    """Decode a text part to str via a STRICT charset-fallback chain (audit M-5).
+def decode_charset_chain(payload: bytes, declared_charset: str | None = None) -> str:
+    """Decode bytes to str via the STRICT charset-fallback chain (audits M-5 + EQ-3).
 
-    Order: declared charset strict → cp1252 strict → windows-1251 strict → declared charset with
-    errors='replace' (U+FFFD only when every candidate fails). Senders mislabel constantly — the
-    corpus's Outlook gb2312-declared bodies are really cp1252, and Cyrillic mail often hides behind
-    a wrong label as windows-1251 — and a strict-first chain recovers those losslessly where the
-    old replace-on-declared decode stored replacement chars (41 mojibake rows).
+    Order: declared charset strict (utf-8 when none is declared) → cp1252 strict →
+    windows-1251 strict → declared charset with errors='replace' (U+FFFD only when every strict
+    candidate fails; utf-8-replace if even the declared charset is unknown). Senders mislabel
+    constantly — the corpus's Outlook gb2312-declared bodies are really cp1252, and Cyrillic mail
+    often hides behind a wrong label as windows-1251 — and a strict-first chain recovers those
+    losslessly where a replace-first decode stores replacement chars. The SINGLE chain shared by
+    email bodies, text-shaped attachments (attachment_extractor — EQ-3 measured 9 rows / 564K
+    mojibake chars under the old utf-8-only decode) and TNEF interiors (extractors.tnef).
     """
-    payload = part.get_payload(decode=True)
-    if not isinstance(payload, bytes):
-        return _decoded_content(part)
-    charset = part.get_content_charset() or "utf-8"
+    charset = declared_charset or "utf-8"
     for candidate in (charset, *_CHARSET_FALLBACKS):
         try:
             return payload.decode(candidate)
@@ -287,6 +290,14 @@ def _decode_text_part(part: EmailMessage) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+def _decode_text_part(part: EmailMessage) -> str:
+    """Decode a text part to str via decode_charset_chain (the M-5 strict fallback chain)."""
+    payload = part.get_payload(decode=True)
+    if not isinstance(payload, bytes):
+        return _decoded_content(part)
+    return decode_charset_chain(payload, part.get_content_charset())
+
+
 def _decoded_content(part: EmailMessage) -> str:
     """get_content() fallback for the rare part whose decoded payload is not raw bytes."""
     try:
@@ -296,8 +307,13 @@ def _decoded_content(part: EmailMessage) -> str:
         return ""
 
 
-def _html_to_text(html: str) -> str:
-    """Flatten HTML to readable text (no wrapping, drop images, keep link/anchor text)."""
+def html_to_text(html: str) -> str:
+    """Flatten HTML to readable text (no wrapping, drop images, keep link/anchor text).
+
+    The SINGLE HTML flattener: email bodies, text/html attachments (attachment_extractor —
+    audit EQ-4 found 44 rows storing raw markup source as 'extracted') and TNEF html bodies
+    (extractors.tnef) all flatten through here, never a re-implementation.
+    """
     converter = html2text.HTML2Text()
     converter.body_width = 0  # never hard-wrap — wrapping corrupts downstream chunking
     converter.ignore_images = True

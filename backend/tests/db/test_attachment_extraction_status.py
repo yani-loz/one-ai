@@ -1,5 +1,6 @@
 """
-Standing-invariant + live-enforcement tests for the attachment-extraction columns (migration 0015).
+Standing-invariant + live-enforcement tests for the attachment-extraction columns
+(migrations 0015 + 0016).
 
 Two layers of guarantee, mirroring tests/db/test_data_quality_guards.py:
 
@@ -8,12 +9,14 @@ Two layers of guarantee, mirroring tests/db/test_data_quality_guards.py:
      extractor_version, the CHECK pinning the closed status vocabulary, and the
      (org_id, content_hash) backfill-lookup index. The CHECK is additionally asserted to match
      app.connectors.imap.parsing.extraction_result.EXTRACTION_STATUSES — the Python source of
-     truth — so the DB vocabulary and the seam's constants can NEVER silently drift.
+     truth — so the DB vocabulary and the seam's constants can NEVER silently drift. 0016 adds
+     extraction_detail (nullable text, no default — EQ-7: ExtractionResult.detail persisted).
 
   2. LIVE ENFORCEMENT — proves the guard bites: an attachment row stamped with a status outside
-     the vocabulary dies on the CHECK; a row inserted without a status lands as 'pending'.
+     the vocabulary dies on the CHECK; a row inserted without a status lands as 'pending' with
+     NULL detail.
 
-Requires a migrated DB (alembic upgrade head, ≥0015); skips loudly otherwise. Live tests run on
+Requires a migrated DB (alembic upgrade head, ≥0016); skips loudly otherwise. Live tests run on
 the OWNER engine (schema enforcement is role-independent) inside transactions that are rolled
 back or aborted by the expected violation — nothing persists.
 """
@@ -53,22 +56,22 @@ async def _constraint_definition(connection: AsyncConnection, table: str, name: 
 
 @pytest_asyncio.fixture
 async def migrated_db() -> AsyncIterator[None]:
-    """Skip unless the DB is migrated through 0015 (the columns are migration-only DDL)."""
+    """Skip unless the DB is migrated through 0016 (the columns are migration-only DDL)."""
     async with engine.connect() as connection:
         migrated = (
             await connection.execute(text("SELECT to_regclass('public.alembic_version')"))
         ).scalar() is not None
-        column_present = (
+        columns_present = (
             await connection.execute(
                 text(
-                    "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
-                    "AND table_name = 'email_attachment' "
-                    "AND column_name = 'extraction_status'"
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'email_attachment' "
+                    "AND column_name IN ('extraction_status', 'extraction_detail')"
                 )
             )
-        ).scalar() is not None
-    if not migrated or not column_present:
-        pytest.skip("DB not migrated through 0015 — run `alembic upgrade head` first.")
+        ).scalar() == 2
+    if not migrated or not columns_present:
+        pytest.skip("DB not migrated through 0015+0016 — run `alembic upgrade head` first.")
     yield
 
 
@@ -115,6 +118,24 @@ async def test_extraction_status_check_matches_python_vocabulary(migrated_db: No
         f"extraction_result.EXTRACTION_STATUSES: DB-only={db_statuses - EXTRACTION_STATUSES} "
         f"Python-only={EXTRACTION_STATUSES - db_statuses}"
     )
+
+
+async def test_extraction_detail_column_exists_nullable_text(migrated_db: None) -> None:
+    """0016 (EQ-7): extraction_detail is nullable text with NO default — detail is provenance
+    written by the seams, never synthesized by the DB."""
+    async with engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT data_type, is_nullable, column_default "
+                    "FROM information_schema.columns WHERE table_schema = 'public' "
+                    "AND table_name = 'email_attachment' AND column_name = 'extraction_detail'"
+                )
+            )
+        ).one_or_none()
+
+    assert row is not None, "0016 extraction_detail column missing"
+    assert tuple(row) == ("text", "YES", None)
 
 
 async def test_content_hash_lookup_index_exists(migrated_db: None) -> None:
@@ -187,19 +208,21 @@ async def test_attachment_insert_bogus_status_rejected(migrated_db: None) -> Non
 
 
 async def test_attachment_insert_without_status_defaults_to_pending(migrated_db: None) -> None:
-    """A row inserted without a status lands as 'pending' — the backfill's work-queue marker."""
+    """A row inserted without a status lands as 'pending' (the backfill's work-queue marker)
+    with NULL extraction_detail (0016: detail is never DB-synthesized)."""
     async with engine.connect() as connection:
         transaction = await connection.begin()
         org_id, email_id = await _insert_attachment_parents(connection)
-        status = (
+        status, detail = (
             await connection.execute(
                 text(
                     "INSERT INTO email_attachment (org_id, email_id) "
-                    "VALUES (:org, :email) RETURNING extraction_status"
+                    "VALUES (:org, :email) RETURNING extraction_status, extraction_detail"
                 ),
                 {"org": org_id, "email": email_id},
             )
-        ).scalar_one()
+        ).one()
         await transaction.rollback()  # never persist the probe rows
 
     assert status == "pending"
+    assert detail is None

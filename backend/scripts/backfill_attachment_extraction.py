@@ -2,8 +2,9 @@
 Role: DEV driver (NOT the production sync path) — one-shot extraction backfill (design §4.2): walks
       the on-disk spike .eml corpus, recomputes each attachment's content_hash through the SAME
       parser the ingest used, and runs the NEW extraction seam over every email_attachment row
-      still marked extraction_status='pending', updating extracted_text + status + extractor
-      provenance in place. No IMAP re-fetch: the corpus on disk is the byte source.
+      still marked extraction_status='pending', updating extracted_text + status + detail
+      (0016, EQ-7) + extractor provenance in place. No IMAP re-fetch: the corpus on disk is the
+      byte source.
 Used by: a developer, run inside a container with the gitignored spike dump mounted read-only:
   docker compose run --rm -v "${PWD}/spikes:/spikes:ro" backend \
       uv run python -m scripts.backfill_attachment_extraction /spikes/imap_dump [--org <uuid>]
@@ -22,6 +23,14 @@ Key invariants:
     outcomes are memoized per (content_hash, content_type) so identical rows extract once.
   - IDEMPOTENT: only rows with extraction_status='pending' are touched (each UPDATE re-checks the
     status by row id, so a re-run — or a row another process already filled — never overwrites).
+  - ENGINE-UPGRADE REQUEUE (--requeue-extractor NAME --requeue-below-version N, both required
+    together): BEFORE the normal pending pass, rows last written by extractor_name=NAME with a
+    NUMERIC extractor_version < N are flipped back to 'pending' (org-scoped, same session
+    conventions; the count is logged). This is how engine-upgrade backfills target stale rows
+    the pending pass cannot otherwise reach — e.g. the EQ-3/EQ-4 repair re-runs every row the
+    old decode rules damaged: --requeue-extractor text-decode --requeue-below-version 3. Our
+    OWN extractors version with plain integer strings ('1', '2', '3'); vendor-engine versions
+    ('0.11.9', 'unknown') are non-numeric and guarded out of the cast, never crashed on.
   - All tenant writes run on scoped_session(org_id) — the RLS seam, same as the ingest driver —
     never on the BYPASSRLS global engine.
   - HASH FIDELITY: attachments are re-derived via parse_email (the exact decode path that
@@ -43,7 +52,7 @@ from collections import Counter
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import Row, select, text, update
+from sqlalchemy import Integer, Row, case, cast, false, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.imap.models.email import EmailAttachment
@@ -83,19 +92,54 @@ def _refuse_in_secure_env() -> None:
 
 
 async def _assert_migrated() -> None:
-    """Fail fast unless migration 0015's extraction_status column exists on the target DB."""
+    """Fail fast unless the 0015 (extraction_status) AND 0016 (extraction_detail) columns
+    exist on the target DB — the backfill writes both."""
     async with GlobalSessionLocal() as session:
         result = await session.execute(
             text(
-                "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
-                "AND table_name = 'email_attachment' AND column_name = 'extraction_status'"
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
+                "AND table_name = 'email_attachment' "
+                "AND column_name IN ('extraction_status', 'extraction_detail')"
             )
         )
-        if result.scalar() is None:
+        if result.scalar() != 2:
             raise SystemExit(
-                "email_attachment.extraction_status missing — run 'alembic upgrade head' "
-                "(migration 0015) first."
+                "email_attachment.extraction_status/extraction_detail missing — run "
+                "'alembic upgrade head' (migrations 0015 + 0016) first."
             )
+
+
+async def _requeue_stale_rows(
+    session: AsyncSession, org_id: UUID, extractor_name: str, below_version: int
+) -> int:
+    """Flip rows produced by an OLDER version of one of OUR extractors back to 'pending'.
+
+    Engine-upgrade targeting: rows damaged by a bug fixed in extractor version N sit at a
+    TERMINAL status ('extracted' with mojibake / raw markup — audits EQ-3/EQ-4), so the normal
+    pending pass can never reach them. Matching is org-scoped on extractor_name plus a NUMERIC
+    extractor_version below `below_version`. Our own extractors version with plain integer
+    strings ('1', '2', '3' — e.g. text-decode); the CASE guard skips non-numeric versions
+    (vendor engines like '0.11.9' / 'unknown') instead of crashing the int cast — Postgres
+    guarantees a CASE condition evaluates before its THEN branch (plain WHERE conjunctions
+    carry no such ordering guarantee). Returns the number of rows flipped.
+    """
+    version_is_numeric = EmailAttachment.extractor_version.op("~")(r"^[0-9]{1,9}$")
+    result = await session.execute(
+        update(EmailAttachment)
+        .where(
+            EmailAttachment.org_id == org_id,
+            EmailAttachment.extractor_name == extractor_name,
+            case(
+                (
+                    version_is_numeric,
+                    cast(EmailAttachment.extractor_version, Integer) < below_version,
+                ),
+                else_=false(),
+            ),
+        )
+        .values(extraction_status="pending")
+    )
+    return result.rowcount or 0
 
 
 async def _load_pending_rows(session: AsyncSession, org_id: UUID) -> list[Row]:
@@ -189,6 +233,7 @@ async def _update_pending_row(
         .values(
             extracted_text=outcome.text,
             extraction_status=outcome.status,
+            extraction_detail=outcome.detail,
             extractor_name=outcome.extractor_name,
             extractor_version=outcome.extractor_version,
         )
@@ -196,11 +241,22 @@ async def _update_pending_row(
     return result.rowcount or 0
 
 
-async def _backfill(root: Path, files: list[Path], org_id: UUID) -> Counter:
-    """Collect disk payloads for the pending hashes, then update each pending ROW under its own
-    declared content_type, in batched commits."""
+async def _backfill(
+    root: Path, files: list[Path], org_id: UUID, requeue: tuple[str, int] | None
+) -> Counter:
+    """Optionally requeue version-stale rows, collect disk payloads for the pending hashes,
+    then update each pending ROW under its own declared content_type, in batched commits."""
     tally: Counter = Counter()
     async with scoped_session(org_id) as session:
+        if requeue is not None:
+            extractor_name, below_version = requeue
+            requeued = await _requeue_stale_rows(session, org_id, extractor_name, below_version)
+            print(
+                f"requeued {requeued} rows to pending: extractor_name={extractor_name!r} "
+                f"with numeric extractor_version < {below_version}",
+                flush=True,
+            )
+            await session.commit()
         pending_rows = await _load_pending_rows(session, org_id)
         wanted_hashes = {row.content_hash for row in pending_rows}
         print(
@@ -239,8 +295,9 @@ def _mailbox_of(root: Path, path: Path) -> str:
         return "unknown@local"
 
 
-async def _run(root: Path, org_id: UUID) -> int:
-    """Drive the whole backfill: env guard, migration check, corpus walk, summary."""
+async def _run(root: Path, org_id: UUID, requeue: tuple[str, int] | None) -> int:
+    """Drive the whole backfill: env guard, migration check, optional requeue + corpus walk,
+    summary."""
     _refuse_in_secure_env()
     await _assert_migrated()
 
@@ -256,7 +313,7 @@ async def _run(root: Path, org_id: UUID) -> int:
         raise SystemExit(f"no .eml files found under {root} — is the dump root path right?")
     print(f"backfilling from {len(files)} .eml files into org {org_id}")
 
-    tally = await _backfill(root, files, org_id)
+    tally = await _backfill(root, files, org_id, requeue)
 
     print("=" * 60)
     residue = tally.pop("hashes_not_on_disk", 0)
@@ -269,13 +326,36 @@ async def _run(root: Path, org_id: UUID) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments and run the backfill; the requeue flags must be given together."""
     parser = argparse.ArgumentParser(
         description="Re-run attachment extraction over pending email_attachment rows (dev)."
     )
     parser.add_argument("root", help="dump root (e.g. /spikes/imap_dump)")
     parser.add_argument("--org", default=str(_DEV_INGEST_ORG), help="target org_id (uuid)")
+    parser.add_argument(
+        "--requeue-extractor",
+        metavar="NAME",
+        default=None,
+        help="BEFORE the pending pass, requeue rows last written by this extractor_name "
+        "(requires --requeue-below-version; e.g. text-decode)",
+    )
+    parser.add_argument(
+        "--requeue-below-version",
+        metavar="N",
+        type=int,
+        default=None,
+        help="requeue only rows whose NUMERIC extractor_version is below N "
+        "(requires --requeue-extractor; non-numeric versions never match)",
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(Path(args.root), UUID(args.org)))
+    if (args.requeue_extractor is None) != (args.requeue_below_version is None):
+        parser.error("--requeue-extractor and --requeue-below-version must be given together")
+    requeue = (
+        (args.requeue_extractor, args.requeue_below_version)
+        if args.requeue_extractor is not None
+        else None
+    )
+    return asyncio.run(_run(Path(args.root), UUID(args.org), requeue))
 
 
 if __name__ == "__main__":

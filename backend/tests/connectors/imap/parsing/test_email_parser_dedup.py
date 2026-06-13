@@ -13,7 +13,9 @@ Key invariants tested:
   - Distinct content NEVER collides: a decoy or appliance sender reusing a Message-ID gets a
     distinct key — INCLUDING when the difference lives only in the unselected text/html
     alternative behind an identical plain stub (2026-06-10 review fixup); messages without a
-    usable Message-ID fall back to the stable raw-byte hash.
+    usable Message-ID fall back to the stable raw-byte hash. The TNEF-interior leg of the key
+    (the v5 flattened body + embedded bytes) is tested in test_email_parser_dedup_tnef.py
+    (A2 size split).
 """
 
 from __future__ import annotations
@@ -373,73 +375,8 @@ def test_parse_regenerated_tnef_copies_same_dedup_key() -> None:
 
 
 # ── 2026-06-11 cross-vendor (GPT) review fixups ──
-def _tnef_eml(payload: bytes, body: str = "see attached") -> bytes:
-    """A multipart/mixed message carrying `payload` as its application/ms-tnef part."""
-    encoded = base64.b64encode(payload).decode()
-    return (
-        "From: a@corp\r\nTo: me@oneai.com\r\nSubject: doc\r\n"
-        "Date: Mon, 02 Jun 2025 09:00:00 +0000\r\n"
-        "Message-ID: <tnef-interior@corp>\r\n"
-        'Content-Type: multipart/mixed; boundary="B1"\r\n\r\n'
-        f"--B1\r\nContent-Type: text/plain\r\n\r\n{body}\r\n"
-        "--B1\r\nContent-Type: application/ms-tnef; name=winmail.dat\r\n"
-        "Content-Transfer-Encoding: base64\r\n"
-        'Content-Disposition: attachment; filename="winmail.dat"\r\n\r\n'
-        f"{encoded}\r\n--B1--\r\n"
-    ).encode()
-
-
-class _FakeTnef:
-    """Stands in for tnefparse.TNEF at the vendor boundary: payload bytes -> embedded files."""
-
-    interiors: dict[bytes, list[bytes]] = {}
-
-    def __init__(self, payload: bytes) -> None:
-        self.attachments = [
-            type("Att", (), {"data": data})() for data in self.interiors[payload]
-        ]
-
-
-def test_parse_tnef_distinct_embedded_files_distinct_dedup_keys(
-    monkeypatch: object,
-) -> None:
-    # GPT review (HIGH): a bare TNEF presence marker folded two DISTINCT emails whose only
-    # difference was the files embedded INSIDE winmail.dat — silent loss of the second email's
-    # unique attachment. The interior digest must split them...
-    import pytest
-
-    assert isinstance(monkeypatch, pytest.MonkeyPatch)
-    from app.connectors.imap.parsing import dedup_key as dedup_key_module
-
-    payload_a, payload_b = b"raw-serialization-A", b"raw-serialization-B"
-    _FakeTnef.interiors = {payload_a: [b"contract-v1.docx-bytes"], payload_b: [b"OTHER-file-bytes"]}
-    monkeypatch.setattr(dedup_key_module, "TNEF", _FakeTnef)
-
-    key_a = parse_email(_tnef_eml(payload_a), MAILBOX).dedup_key
-    key_b = parse_email(_tnef_eml(payload_b), MAILBOX).dedup_key
-
-    assert key_a != key_b
-
-
-def test_parse_tnef_regenerated_blob_same_interior_same_dedup_key(
-    monkeypatch: object,
-) -> None:
-    # ...while two folder copies (different raw blobs, SAME embedded files — the corpus's 253
-    # regeneration groups, interior verified stable in all 271 multi-copy groups) still fold.
-    import pytest
-
-    assert isinstance(monkeypatch, pytest.MonkeyPatch)
-    from app.connectors.imap.parsing import dedup_key as dedup_key_module
-
-    payload_a, payload_b = b"raw-serialization-A", b"raw-serialization-B"
-    same = [b"contract-v1.docx-bytes"]
-    _FakeTnef.interiors = {payload_a: same, payload_b: same}
-    monkeypatch.setattr(dedup_key_module, "TNEF", _FakeTnef)
-
-    assert (
-        parse_email(_tnef_eml(payload_a), MAILBOX).dedup_key
-        == parse_email(_tnef_eml(payload_b), MAILBOX).dedup_key
-    )
+# (The TNEF-interior leg — embedded files + the v5 flattened body — lives in
+# test_email_parser_dedup_tnef.py, split per the A2 size cap.)
 
 
 def test_parse_reused_message_id_different_recipients_distinct_dedup_keys() -> None:

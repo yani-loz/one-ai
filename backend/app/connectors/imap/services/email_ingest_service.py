@@ -14,8 +14,8 @@ Key invariants:
   - Returns a plain IngestOutcome enum, NEVER a live ORM row (a row read after the caller's commit
     could lazy-load on a closed greenlet). The CALLER owns the transaction + commit.
   - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4);
-    each row stores the ExtractionResult's status + extractor provenance (0015) — honest NULL
-    text always carries its machine-readable reason.
+    each row stores the ExtractionResult's status + detail (0016, EQ-7) + extractor provenance
+    (0015) — honest NULL text always carries its machine-readable reason.
   - CPU work is OFF-LOOP: parse_email (RFC822 parse, base64 decode, sha256, html2text) AND
     extract_text (pdfplumber + tables + possible pypdf over ≤50MB payloads) both run on a WORKER
     thread (asyncio.to_thread) so a large email or PDF never stalls the event loop mid-sync.
@@ -190,6 +190,7 @@ class EmailIngestService:
                     content_id=attachment.content_id,
                     extracted_text=extraction.text,
                     extraction_status=extraction.status,
+                    extraction_detail=extraction.detail,
                     extractor_name=extraction.extractor_name,
                     extractor_version=extraction.extractor_version,
                 )

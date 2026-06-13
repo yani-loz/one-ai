@@ -26,10 +26,8 @@ from app.connectors.imap.parsing.extraction_result import (
     STATUS_TRUNCATED,
     ExtractionResult,
 )
-from app.connectors.imap.parsing.extractors.pdf import (
-    extract_pdf_text,
-    serialize_table,
-)
+from app.connectors.imap.parsing.extractors.common import serialize_table
+from app.connectors.imap.parsing.extractors.pdf import extract_pdf_text
 from tests.connectors.imap.parsing.extractors.conftest import (
     EMPTY_PAGE_STREAM,
     IMAGE_PAGE_STREAM,

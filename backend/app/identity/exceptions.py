@@ -9,7 +9,7 @@ Key invariants:
     never echo a credential, hash, or token).
   - HTTP mapping (set in error_handlers): InvalidCredentials/TokenInvalid/
     TokenExpired/RefreshTokenInvalid -> 401; PermissionDenied -> 403;
-    *NotFound -> 404; Duplicate* -> 409.
+    *NotFound -> 404; Duplicate* -> 409; RateLimited -> 429.
 """
 
 from __future__ import annotations
@@ -43,6 +43,16 @@ class PermissionDeniedError(IdentityError):
     """Authenticated subject lacks the role required for this operation."""
 
 
+class CrossSiteRequestRejectedError(IdentityError):
+    """A cross-site browser request hit a cookie-authenticated state-changing endpoint.
+
+    CSRF defense for the httpOnly-cookie auth endpoints (/auth/refresh, /auth/logout): when the
+    refresh cookie is SameSite=None (the documented cross-origin posture), SameSite no longer
+    blocks forgery, so these endpoints additionally require a first-party Sec-Fetch-Site or an
+    allowlisted Origin. Maps to 403.
+    """
+
+
 class OrganizationSuspendedError(IdentityError):
     """The user's organization is suspended — login and refresh are blocked (-> 403).
 
@@ -58,6 +68,17 @@ class PasswordConfirmationError(IdentityError):
     Used to gate destructive operations (e.g. erasure) behind a fresh password check, even
     for an already-authenticated admin (sudo-style). Mapped to 403 (NOT 401) so a wrong
     password never tears down the valid session — the admin just retries.
+    """
+
+
+# — 429 Too Many Requests —
+class RateLimitedError(IdentityError):
+    """Login attempts from this IP / for this account exceeded the throttle (-> 429).
+
+    Raised by the pre-bcrypt throttle (security/rate_limit.py) BEFORE any bcrypt work, so a
+    credential-stuffing / bcrypt-CPU-DoS attacker is blocked at near-zero server cost. The
+    message carries only a retry hint — never which budget (IP vs account) tripped, never a
+    credential — so it adds no enumeration oracle.
     """
 
 

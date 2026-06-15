@@ -83,8 +83,9 @@ describe("listOrganizations", () => {
   });
 
   it("test_list_surfaces_401_as_auth_error", async () => {
-    // localStorage is cleared in beforeEach, so the 401 refresh attempt has no token to
-    // rotate and surfaces cleanly as AuthRequestError(401) (the caller logs out).
+    // No session is established (no platformLogin), so the in-memory platform refresh token is
+    // null and the company cookie path 401s too — the 401 surfaces cleanly as
+    // AuthRequestError(401) (the caller logs out).
     mockFetch(() => jsonResponse(401, {}));
 
     await expect(listOrganizations()).rejects.toMatchObject({ status: 401 });

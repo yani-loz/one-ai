@@ -120,6 +120,11 @@ function mockApi(getStatus = 200): void {
         const body = JSON.parse(String(init?.body)) as { legal_hold: boolean };
         return json(200, { ...DETAIL, legal_hold: body.legal_hold });
       }
+      // A refresh with no valid session -> 401 (matches the backend), so authorizedFetch's
+      // post-401 rotation surfaces a 401 the page maps to logout.
+      if (url.includes("/auth/refresh") || url.includes("/platform/refresh")) {
+        return json(401, {});
+      }
       return json(404, {});
     }) as unknown as typeof fetch,
   );

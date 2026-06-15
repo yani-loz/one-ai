@@ -17,6 +17,7 @@ Key invariants:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from app.identity.exceptions import RefreshTokenInvalidError
 from app.identity.models.refresh_token import RefreshToken
@@ -31,9 +32,7 @@ class TokenRotator:
         """Bind to the refresh-token repository on the relevant session."""
         self._refresh_tokens = refresh_tokens
 
-    async def consume(
-        self, raw_refresh_token: str, expected_subject_type: str
-    ) -> RefreshToken:
+    async def consume(self, raw_refresh_token: str, expected_subject_type: str) -> RefreshToken:
         """Validate + revoke `raw_refresh_token`, returning the consumed row.
 
         Contract: looks the token up by its sha256 hash; requires it to exist, belong
@@ -63,9 +62,17 @@ class TokenRotator:
             raise RefreshTokenInvalidError("Refresh token is invalid.")
         return stored
 
-    async def revoke(self, raw_refresh_token: str) -> None:
-        """Idempotently revoke `raw_refresh_token` (logout). Unknown token is a no-op."""
-        await self._refresh_tokens.revoke_by_hash(sha256_hex(raw_refresh_token))
+    async def revoke(self, raw_refresh_token: str) -> UUID | None:
+        """Idempotently revoke `raw_refresh_token` (logout); return its subject_id.
+
+        Unknown token -> no-op, returns None. The subject_id lets logout ALSO revoke that
+        subject's outstanding ACCESS tokens via the denylist (the refresh-token revoke alone
+        only stops NEW access tokens; the current one would otherwise live out its TTL).
+        """
+        token_hash = sha256_hex(raw_refresh_token)
+        stored = await self._refresh_tokens.get_by_hash(token_hash)
+        await self._refresh_tokens.revoke_by_hash(token_hash)
+        return stored.subject_id if stored is not None else None
 
     @staticmethod
     def _is_expired(token: RefreshToken) -> bool:

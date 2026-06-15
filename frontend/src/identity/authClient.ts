@@ -1,43 +1,55 @@
 /**
- * Role: Thin HTTP client for the Identity backend — owns token storage (access in
- *       memory; the COMPANY refresh token in localStorage), login/refresh/logout/me, and
- *       a fetch wrapper that attaches the Bearer token and transparently refreshes once
- *       on 401.
+ * Role: Thin HTTP client for the Identity backend — owns token state (access token in
+ *       memory; the COMPANY refresh token in an httpOnly cookie the JS never sees), and
+ *       login/refresh/logout/me plus a fetch wrapper that attaches the Bearer token and
+ *       transparently refreshes once on 401.
  * Used by: AuthProvider.tsx (login/refresh/logout/me). `authorizedFetch` +
- *   `AuthRequestError` are also re-exported via ./index for sibling modules (platform/)
- *   to make authenticated calls without re-implementing token attachment.
- * Depends on: ./types, import.meta.env.VITE_API_URL.
+ *   `AuthRequestError` are also re-exported via ./index for sibling modules (admin/connect/
+ *   platform/support) to make authenticated calls without re-implementing token attachment.
+ * Depends on: ./types. Auth endpoints are reached SAME-ORIGIN (relative paths) — see AUTH_BASE.
  * Key invariants:
- *   - The access token NEVER touches localStorage (XSS-exposure reduction). Only the
- *     COMPANY refresh token is persisted; the high-privilege PLATFORM refresh token is
- *     kept IN MEMORY ONLY (never localStorage) — used for /platform/refresh and
- *     /platform/logout, but gone on reload, so an injected script can never read a
- *     7-day Ethera-staff credential from storage.
- *   - `performRefresh` / `logout` are domain-aware: a platform session rotates/revokes
- *     via /platform/*; a company session via /auth/* (its refresh token in localStorage).
- *   - Company refresh is serialized ACROSS TABS (Web Locks API) plus a compare-and-clear
- *     guard, so two tabs racing to rotate the SHARED localStorage token can't log each
- *     other out (TC-FE-009). Platform refresh is in-memory (single-tab) and needs no lock.
+ *   - The COMPANY refresh token is an httpOnly cookie (Control C): set by /auth/login, sent
+ *     automatically by the browser on /auth/refresh + /auth/logout, never readable by JS, so
+ *     an injected script cannot exfiltrate it. The access token lives in memory only (also
+ *     never localStorage). NOTHING auth-related is persisted in JS-readable storage anymore.
+ *   - The high-privilege PLATFORM refresh token is kept IN MEMORY ONLY (AUD-14) — body-based
+ *     /platform/refresh + /platform/logout — so it is gone on reload and never persisted.
+ *   - Auth uses RELATIVE URLs (AUTH_BASE = "") so the httpOnly cookie is same-origin: in dev
+ *     the Vite proxy forwards /auth + /platform to the backend; in prod the API is served
+ *     behind the same origin / ingress. The Bearer-only feature clients keep using
+ *     VITE_API_URL — only AUTH must be same-origin for the cookie to flow.
+ *   - `performRefresh` / `logout` are domain-aware: a platform session rotates/revokes via
+ *     /platform/*; a company session via /auth/* (cookie).
+ *   - Company refresh is serialized ACROSS TABS (Web Locks API) so two tabs never race the
+ *     single-use rotation; the rotated httpOnly cookie is shared by the browser across tabs.
+ *     Platform refresh is in-memory (single-tab) and needs no lock.
  *   - `authorizedFetch` retries a 401 at most ONCE, and never tries to refresh the
  *     /auth/refresh or /auth/login calls themselves (no infinite loop).
  *   - Every authorized request is TIME-BOUNDED (30s AbortSignal.timeout unless the caller
  *     passes its own signal): drawers block closing mid-submit, so an unsettled fetch on a
  *     blackholed network must never wedge the UI until the browser's own timeout.
- *   - A failed refresh clears the session — compare-and-clear: UNLESS another tab already
- *     rotated the token — so callers fall back to /login.
+ *   - A failed refresh clears the in-memory session so callers fall back to /login.
  */
-import type { AuthUser, CompanyLoginResponse, PlatformAdminView, TokenPair } from "./types";
+import type {
+  AccessTokenResponse,
+  AuthUser,
+  CompanyLoginResponse,
+  PlatformAdminView,
+  TokenPair,
+} from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
-const REFRESH_STORAGE_KEY = "oneai.refresh_token";
+// Auth endpoints are SAME-ORIGIN (relative): the company refresh token is an httpOnly cookie
+// the browser only sends back to its own origin. Dev serves /auth + /platform through the Vite
+// proxy; prod serves the API behind the same origin / ingress.
+const AUTH_BASE = "";
 
 /** Access token lives only in module memory — gone on hard refresh by design. */
 let accessTokenInMemory: string | null = null;
 
 /**
- * Platform refresh token — kept in MEMORY ONLY (never localStorage) so the
+ * Platform refresh token — kept in MEMORY ONLY (never persisted, AUD-14) so the
  * high-privilege platform session can refresh/log out within a tab without exposing the
- * credential to XSS. Null for a company session (whose refresh lives in localStorage).
+ * credential to XSS. Null for a company session (whose refresh lives in the httpOnly cookie).
  */
 let platformRefreshInMemory: string | null = null;
 
@@ -52,38 +64,21 @@ export class AuthRequestError extends Error {
   }
 }
 
-/** Persisted opaque refresh token, or null when no session is stored. */
-export function getStoredRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_STORAGE_KEY);
+/**
+ * Replace the in-memory access token (test/seam helper; also used internally on login/refresh).
+ * Pass null to drop it. Does NOT touch the httpOnly refresh cookie (server-managed).
+ */
+export function setAccessToken(token: string | null): void {
+  accessTokenInMemory = token;
 }
 
 /**
- * Replace the in-memory access token and (optionally) the persisted refresh token.
- *
- * Contract: pass `null` to clear the session (logout / refresh failure). With a token
- * pair, the access token always goes to memory; `persistRefresh` decides where the
- * refresh token lives. Company logins persist it to localStorage (so the session
- * rehydrates on reload). The platform login passes `false`: the platform refresh token
- * is held in MEMORY only (never localStorage) so it survives in-tab refresh/logout but
- * is gone on reload — keeping the high-privilege credential out of XSS-readable storage.
+ * Clear all in-memory session state (access token + any platform refresh token). The company
+ * refresh cookie is httpOnly and is cleared server-side by POST /auth/logout, not from here.
  */
-export function setTokens(tokens: TokenPair | null, persistRefresh = true): void {
-  if (tokens === null) {
-    accessTokenInMemory = null;
-    platformRefreshInMemory = null;
-    localStorage.removeItem(REFRESH_STORAGE_KEY);
-    return;
-  }
-  accessTokenInMemory = tokens.access_token;
-  if (persistRefresh) {
-    platformRefreshInMemory = null;
-    localStorage.setItem(REFRESH_STORAGE_KEY, tokens.refresh_token);
-  } else {
-    // Platform session: hold the refresh token in MEMORY only (for /platform/refresh +
-    // /platform/logout) and clear any stale company token from localStorage.
-    platformRefreshInMemory = tokens.refresh_token;
-    localStorage.removeItem(REFRESH_STORAGE_KEY);
-  }
+export function clearSession(): void {
+  accessTokenInMemory = null;
+  platformRefreshInMemory = null;
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
@@ -94,19 +89,22 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
 }
 
 /**
- * Log a company user in via POST /auth/login and store the issued token pair.
+ * Log a company user in via POST /auth/login. The server sets the httpOnly refresh cookie;
+ * the body carries the access token (stored in memory) + the user.
  *
- * Contract: returns the authenticated user on success. Throws AuthRequestError
- * (status 401) on invalid credentials — the message is generic by design.
+ * Contract: returns the authenticated user on success. Throws AuthRequestError (status 401)
+ * on invalid credentials — the message is generic by design.
  */
 export async function login(email: string, password: string): Promise<AuthUser> {
-  const response = await fetch(`${API_URL}/auth/login`, {
+  const response = await fetch(`${AUTH_BASE}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include", // accept the httpOnly Set-Cookie for the refresh token
     body: JSON.stringify({ email, password }),
   });
   const body = await parseJsonOrThrow<CompanyLoginResponse>(response);
-  setTokens(body);
+  accessTokenInMemory = body.access_token;
+  platformRefreshInMemory = null; // a company login supersedes any prior platform session
   return body.user;
 }
 
@@ -115,17 +113,18 @@ export async function login(email: string, password: string): Promise<AuthUser> 
  *
  * Contract: /platform/login returns tokens only (no user object); the caller resolves the
  * real admin identity separately via GET /platform/me (fetchCurrentPlatformAdmin). The
- * platform refresh token is held in MEMORY only (setTokens(tokens, false)), never
- * localStorage. Throws AuthRequestError (401) on invalid credentials.
+ * platform refresh token is held in MEMORY only, never persisted (AUD-14). Throws
+ * AuthRequestError (401) on invalid credentials.
  */
 export async function platformLogin(email: string, password: string): Promise<void> {
-  const response = await fetch(`${API_URL}/platform/login`, {
+  const response = await fetch(`${AUTH_BASE}/platform/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
   const tokens = await parseJsonOrThrow<TokenPair>(response);
-  setTokens(tokens, false); // store in memory only — the platform refresh token is never persisted
+  accessTokenInMemory = tokens.access_token;
+  platformRefreshInMemory = tokens.refresh_token; // memory only — never persisted
 }
 
 /**
@@ -138,12 +137,11 @@ let refreshInFlight: Promise<string> | null = null;
 /**
  * Rotate the active session's refresh token. Domain-aware: a PLATFORM session rotates via
  * POST /platform/refresh (in-memory token); a COMPANY session via POST /auth/refresh
- * (localStorage token).
+ * (httpOnly cookie).
  *
- * Contract: returns the fresh access token on success and stores the rotated pair in the
- * same place. Concurrent callers share ONE in-flight rotation (no double-rotation).
- * Throws AuthRequestError when there is no token or the server rejects it
- * (revoked/expired/unknown -> 401); the session is cleared on failure.
+ * Contract: returns the fresh access token on success. Concurrent callers share ONE in-flight
+ * rotation (no double-rotation). Throws AuthRequestError when the server rejects the token
+ * (revoked/expired/unknown -> 401) or there is no session; the in-memory session is cleared.
  */
 export function refreshTokens(): Promise<string> {
   if (refreshInFlight === null) {
@@ -157,32 +155,30 @@ export function refreshTokens(): Promise<string> {
 async function performRefresh(): Promise<string> {
   // Platform session: rotate via /platform/refresh using the in-memory platform token.
   if (platformRefreshInMemory !== null) {
-    const response = await fetch(`${API_URL}/platform/refresh`, {
+    const response = await fetch(`${AUTH_BASE}/platform/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: platformRefreshInMemory }),
     });
     if (!response.ok) {
-      setTokens(null);
+      clearSession();
       throw new AuthRequestError(response.status, "Platform refresh rejected");
     }
     const tokens = (await response.json()) as TokenPair;
-    setTokens(tokens, false); // rotate the in-memory platform pair (still not persisted)
+    accessTokenInMemory = tokens.access_token;
+    platformRefreshInMemory = tokens.refresh_token; // rotate the in-memory pair (still unpersisted)
     return tokens.access_token;
   }
 
-  // Company session: serialize rotation ACROSS TABS (Web Locks) so two tabs never rotate
-  // the same localStorage token at once and the loser never wipes the winner's session
-  // (TC-FE-009). Falls back to direct execution (guarded by compare-and-clear) where the
-  // Web Locks API is unavailable.
+  // Company session: serialize rotation ACROSS TABS (Web Locks) so two tabs never race the
+  // single-use rotation. The httpOnly refresh cookie is sent + rotated by the browser.
   return withRefreshLock(rotateCompanySession);
 }
 
 /**
  * Run `task` while holding the cross-tab refresh lock (Web Locks API), so only one tab
- * rotates the shared company refresh token at a time. Falls back to running directly where
- * `navigator.locks` is unavailable (older browsers, jsdom) — the compare-and-clear guard in
- * `rotateCompanySession` still applies on that path.
+ * rotates the company session at a time. Falls back to running directly where
+ * `navigator.locks` is unavailable (older browsers, jsdom).
  */
 function withRefreshLock<T>(task: () => Promise<T>): Promise<T> {
   const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
@@ -193,64 +189,51 @@ function withRefreshLock<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Rotate the company session via POST /auth/refresh. The stored token is re-read here so
- * (under the cross-tab lock) we always rotate the CURRENT token, not a stale captured one.
- *
- * Multi-tab safety (TC-FE-009): on a 401, only clear the session if OUR token is still the
- * stored one. If another tab rotated it while our request was in flight (the no-Web-Locks
- * fallback race), the winner's fresh token is live — surface the failure WITHOUT wiping it.
+ * Rotate the company session via POST /auth/refresh. The httpOnly refresh cookie is sent
+ * automatically (credentials: include) and the rotated cookie is set on the response; the
+ * body carries only the fresh access token. On rejection the in-memory session is cleared.
  */
 async function rotateCompanySession(): Promise<string> {
-  const stored = getStoredRefreshToken();
-  if (stored === null) {
-    throw new AuthRequestError(401, "No refresh token");
-  }
-  const response = await fetch(`${API_URL}/auth/refresh`, {
+  const response = await fetch(`${AUTH_BASE}/auth/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: stored }),
+    credentials: "include", // send the httpOnly refresh cookie + accept the rotated one
   });
   if (!response.ok) {
-    if (getStoredRefreshToken() === stored) {
-      setTokens(null);
-      throw new AuthRequestError(response.status, "Refresh rejected");
-    }
-    throw new AuthRequestError(response.status, "Refresh superseded by another tab");
+    clearSession();
+    throw new AuthRequestError(response.status, "Refresh rejected");
   }
-  const tokens = (await response.json()) as TokenPair;
-  setTokens(tokens);
-  return tokens.access_token;
+  const body = (await response.json()) as AccessTokenResponse;
+  accessTokenInMemory = body.access_token;
+  return body.access_token;
 }
 
 /**
- * Revoke the active session's refresh token server-side and clear local state.
- * Domain-aware: a platform session hits POST /platform/logout (in-memory token), a
- * company session POST /auth/logout (localStorage token).
+ * Revoke the active session server-side and clear local state. Domain-aware: a platform
+ * session hits POST /platform/logout (in-memory token), a company session POST /auth/logout
+ * (httpOnly cookie, which the server also clears).
  *
- * Contract: best-effort — the local session is cleared even if the network call fails,
- * so the user is always logged out locally.
+ * Contract: best-effort — the local session is cleared even if the network call fails, so the
+ * user is always logged out locally.
  */
 export async function logout(): Promise<void> {
   const platformRefresh = platformRefreshInMemory;
-  const companyRefresh = getStoredRefreshToken();
   try {
     if (platformRefresh !== null) {
-      await fetch(`${API_URL}/platform/logout`, {
+      await fetch(`${AUTH_BASE}/platform/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: platformRefresh }),
       });
-    } else if (companyRefresh !== null) {
-      await fetch(`${API_URL}/auth/logout`, {
+    } else {
+      await fetch(`${AUTH_BASE}/auth/logout`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: companyRefresh }),
+        credentials: "include", // send the httpOnly cookie so the server can revoke + clear it
       });
     }
   } catch {
     // Network failure on logout must not strand the user in a logged-in UI.
   }
-  setTokens(null);
+  clearSession();
 }
 
 /**
@@ -261,20 +244,19 @@ export async function logout(): Promise<void> {
  * valid session can be established — the caller treats that as "unauthenticated".
  */
 export async function fetchCurrentUser(): Promise<AuthUser> {
-  const response = await authorizedFetch(`${API_URL}/auth/me`);
+  const response = await authorizedFetch(`${AUTH_BASE}/auth/me`);
   return parseJsonOrThrow<AuthUser>(response);
 }
 
 /**
  * Fetch the current platform admin via GET /platform/me, attaching the Bearer token and
- * refreshing once on 401. Returns the server-verified identity (replacing the prior
- * email-synthesised stand-in).
+ * refreshing once on 401. Returns the server-verified identity.
  *
  * Contract: returns the PlatformAdminView on success. Throws AuthRequestError (401) when
  * no valid platform session can be established.
  */
 export async function fetchCurrentPlatformAdmin(): Promise<PlatformAdminView> {
-  const response = await authorizedFetch(`${API_URL}/platform/me`);
+  const response = await authorizedFetch(`${AUTH_BASE}/platform/me`);
   return parseJsonOrThrow<PlatformAdminView>(response);
 }
 

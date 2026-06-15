@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.identity.dependencies import (
     get_audit_service,
@@ -32,6 +32,7 @@ from app.identity.dependencies import (
     get_platform_org_service,
 )
 from app.identity.principal import Principal
+from app.identity.routes.cookies import client_ip_from_request
 from app.identity.schemas.audit_schemas import (
     DEFAULT_AUDIT_PAGE_SIZE,
     MAX_AUDIT_PAGE_SIZE,
@@ -59,25 +60,26 @@ from app.identity.services.platform_org_service import PlatformOrgService
 router = APIRouter(prefix="/platform", tags=["platform"])
 
 
-@router.post(
-    "/login", response_model=TokenPairResponse, response_model_exclude_none=True
-)
+@router.post("/login", response_model=TokenPairResponse, response_model_exclude_none=True)
 async def platform_login(
     payload: PlatformLoginRequest,
+    request: Request,
     service: PlatformAuthService = Depends(get_platform_auth_service),
 ) -> TokenPairResponse:
     """Authenticate a platform admin; return access+refresh tokens (aud='platform').
 
-    Excludes the null `user` field so the body is exactly {access_token,
-    refresh_token, token_type} per SPEC §4 (the platform domain has no user view).
+    Passes the client IP into the service for the pre-bcrypt throttle (N-01). Excludes the
+    null `user` field so the body is exactly {access_token, refresh_token, token_type} per
+    SPEC §4 (the platform domain has no user view; its refresh token stays in the body —
+    the client holds it IN MEMORY only — and is deliberately NOT moved to a cookie).
     """
-    access_token, refresh_token = await service.login(payload.email, payload.password)
+    access_token, refresh_token = await service.login(
+        payload.email, payload.password, client_ip_from_request(request)
+    )
     return TokenPairResponse(access_token=access_token, refresh_token=refresh_token)
 
 
-@router.post(
-    "/refresh", response_model=TokenPairResponse, response_model_exclude_none=True
-)
+@router.post("/refresh", response_model=TokenPairResponse, response_model_exclude_none=True)
 async def platform_refresh(
     payload: RefreshRequest,
     service: PlatformAuthService = Depends(get_platform_auth_service),
@@ -169,9 +171,7 @@ async def update_organization_legal_hold(
     return await service.set_legal_hold(org_id, payload.legal_hold, admin)
 
 
-@router.get(
-    "/orgs/{org_id}/audit", response_model=list[AuditLogEntryResponse]
-)
+@router.get("/orgs/{org_id}/audit", response_model=list[AuditLogEntryResponse])
 async def get_organization_audit(
     org_id: UUID,
     limit: int = Query(DEFAULT_AUDIT_PAGE_SIZE, ge=1, le=MAX_AUDIT_PAGE_SIZE),
@@ -193,6 +193,4 @@ async def get_global_audit(
     service: AuditService = Depends(get_audit_service),
 ) -> list[AuditLogEntryResponse]:
     """Return the global audit trail, optionally filtered (newest-first, paginated)."""
-    return await service.list_global(
-        action=action, org_id=org_id, limit=limit, offset=offset
-    )
+    return await service.list_global(action=action, org_id=org_id, limit=limit, offset=offset)

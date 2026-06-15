@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oneai}
       POSTGRES_DB: ${POSTGRES_DB:-oneai}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
@@ -34,7 +34,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     volumes:
       # Live source; the venv lives at /opt/venv (outside /app) so it is never shadowed.
       - ./backend:/app
@@ -58,11 +58,15 @@ services:
       context: ./frontend
       target: dev
     environment:
+      # Bearer-only feature clients call the API directly at this origin (CORS-allowed).
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      # AUTH calls are same-origin (relative) and Vite-proxied to the backend so the httpOnly
+      # refresh cookie (Control C) flows; from inside this container the backend is `backend`.
+      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:8000}
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "${FRONTEND_BIND_HOST:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173"
     volumes:
       - ./frontend:/app
       # Anonymous volume masks node_modules so host files never shadow the image's deps.

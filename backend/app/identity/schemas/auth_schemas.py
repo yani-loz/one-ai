@@ -61,10 +61,13 @@ class TokenPairResponse(BaseModel):
     """An issued access + refresh token pair.
 
     `user` is populated on login (company domain) and omitted on refresh and on the
-    platform domain.
+    platform domain. `refresh_token` is OPTIONAL on the wire: the company `/auth/*` routes
+    move it to an httpOnly cookie (Control C) and serialize it as None (dropped via
+    `response_model_exclude_none`), so it never reaches JS-readable storage; the service
+    layer and the platform routes still populate it with the real token.
     """
 
     access_token: str
-    refresh_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: AuthenticatedUserResponse | None = None

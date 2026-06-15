@@ -25,15 +25,24 @@ export interface AuthUser {
   org_name: string | null;
 }
 
-/** Opaque-refresh + JWT-access pair returned by login / refresh. */
+/** Opaque-refresh + JWT-access pair (PLATFORM login/refresh — token held in memory, AUD-14). */
 export interface TokenPair {
   access_token: string;
   refresh_token: string;
   token_type: "bearer";
 }
 
-/** Raw `/auth/login` response (token pair + the authenticated company user). */
-export interface CompanyLoginResponse extends TokenPair {
+/**
+ * Company `/auth/login` + `/auth/refresh` response body. The refresh token is NOT here —
+ * it rides an httpOnly cookie (Control C), so the body carries only the in-memory access token.
+ */
+export interface AccessTokenResponse {
+  access_token: string;
+  token_type: "bearer";
+}
+
+/** Raw `/auth/login` response (access token + the authenticated company user; refresh in cookie). */
+export interface CompanyLoginResponse extends AccessTokenResponse {
   user: AuthUser;
 }
 

@@ -2,10 +2,11 @@
 Role: FastAPI dependency wiring for the identity module — JWT verification, role
       gates, the tenant-session seam, and service providers.
 Used by: routes.auth_routes / user_routes / platform_routes.
-Depends on: app.core.database (get_session, scoped_session), app.common.erasure_hooks
-            (the registry injected into ErasureService), security.tokens,
-            identity repositories/services, identity.principal, identity.exceptions,
-            identity.enums.
+Depends on: app.core.config (throttle knobs), app.core.database (get_session,
+            scoped_session), app.common.erasure_hooks (the registry injected into
+            ErasureService), security.tokens, security.rate_limit (the login throttle
+            singleton), security.token_denylist (the revocation singleton), identity
+            repositories/services, identity.principal, identity.exceptions, identity.enums.
 Key invariants:
   - get_current_principal verifies signature + audience('company') + expiry, then
     builds a Principal from the claims. Wrong audience / expired / missing token ->
@@ -29,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.erasure_hooks import registered_erasure_hooks
+from app.core.config import get_settings
 from app.core.database import get_session, scoped_session
 from app.identity.enums import SubjectType, UserRole
 from app.identity.exceptions import PermissionDeniedError, TokenInvalidError
@@ -39,6 +41,15 @@ from app.identity.repositories.platform_admin_repository import PlatformAdminRep
 from app.identity.repositories.refresh_token_repository import RefreshTokenRepository
 from app.identity.repositories.support_grant_repository import SupportGrantRepository
 from app.identity.repositories.user_repository import UserRepository
+from app.identity.security.rate_limit import (
+    InProcessRateLimiter,
+    RateLimiter,
+    RateLimitPolicy,
+)
+from app.identity.security.token_denylist import (
+    InProcessTokenDenylist,
+    TokenDenylist,
+)
 from app.identity.security.tokens import (
     COMPANY_AUDIENCE,
     PLATFORM_AUDIENCE,
@@ -58,6 +69,68 @@ from app.identity.services.user_service import UserService
 # auto_error=False: a MISSING Authorization header yields None (we raise 401), instead
 # of HTTPBearer's default 403 — SPEC §4 wants 401 for no/invalid token.
 _bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _build_login_rate_limiter() -> InProcessRateLimiter:
+    """Construct the login throttle from settings (per-IP + per-account policies)."""
+    settings = get_settings()
+    return InProcessRateLimiter(
+        ip_policy=RateLimitPolicy(
+            max_attempts=settings.login_throttle_ip_max_attempts,
+            window_seconds=settings.login_throttle_ip_window_seconds,
+            base_lockout_seconds=settings.login_throttle_base_lockout_seconds,
+            max_lockout_seconds=settings.login_throttle_max_lockout_seconds,
+        ),
+        account_policy=RateLimitPolicy(
+            max_attempts=settings.login_throttle_account_max_attempts,
+            window_seconds=settings.login_throttle_account_window_seconds,
+            base_lockout_seconds=settings.login_throttle_base_lockout_seconds,
+            max_lockout_seconds=settings.login_throttle_max_lockout_seconds,
+        ),
+    )
+
+
+# PROCESS-WIDE SINGLETONS — deliberately module-level, not per-request. The throttle's
+# sliding window and the denylist's revocation set must persist ACROSS requests, so the same
+# instance is shared by every login / token check in the process. In-process by design
+# (single-tenant scale); both sit behind a Protocol so a Redis impl is a drop-in for
+# horizontal scale (FIX_BEFORE_PROD). State is bounded and self-evicting, so the only
+# tradeoff is a counter/denylist reset on process restart — bounded by the <=15min
+# access-token TTL.
+_login_rate_limiter: RateLimiter = _build_login_rate_limiter()
+_token_denylist: TokenDenylist = InProcessTokenDenylist(
+    access_ttl_seconds=get_settings().access_token_ttl_minutes * 60
+)
+
+
+def get_login_rate_limiter() -> RateLimiter:
+    """Return the process-wide login throttle singleton (shared across all login routes)."""
+    return _login_rate_limiter
+
+
+def get_token_denylist() -> TokenDenylist:
+    """Return the process-wide access-token denylist singleton (checked on every request,
+    written by logout / user-deactivate / org-suspend)."""
+    return _token_denylist
+
+
+def _reject_if_revoked(claims: dict[str, object], denylist: TokenDenylist) -> None:
+    """Raise TokenInvalidError (401) if the verified token has been revoked.
+
+    Re-parses sub/org_id/iat from the already-signature-verified claims and consults the
+    denylist's subject/org cutoffs. Malformed claims -> 401 (not a 500); the denylist itself
+    fail-closes on a missing iat.
+    """
+    try:
+        subject_id = UUID(str(claims["sub"]))
+        raw_org = claims.get("org_id")
+        org_id = UUID(str(raw_org)) if raw_org else None
+        raw_iat = claims.get("iat")
+        issued_at = int(raw_iat) if raw_iat is not None else None  # type: ignore[arg-type]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise TokenInvalidError("Access token claims are malformed.") from exc
+    if denylist.is_revoked(subject_id, org_id, issued_at):
+        raise TokenInvalidError("Access token has been revoked.")
 
 
 def _principal_from_claims(claims: dict[str, object], subject_type: SubjectType) -> Principal:
@@ -93,6 +166,7 @@ async def get_current_principal(
     if credentials is None:
         raise TokenInvalidError("Missing bearer token.")
     claims = decode_access_token(credentials.credentials, COMPANY_AUDIENCE)
+    _reject_if_revoked(claims, _token_denylist)
     return _principal_from_claims(claims, SubjectType.user)
 
 
@@ -123,6 +197,7 @@ async def get_current_platform_admin(
     if credentials is None:
         raise TokenInvalidError("Missing bearer token.")
     claims = decode_access_token(credentials.credentials, PLATFORM_AUDIENCE)
+    _reject_if_revoked(claims, _token_denylist)
     return _principal_from_claims(claims, SubjectType.platform_admin)
 
 
@@ -166,6 +241,8 @@ def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthServic
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
         audit=AuditService(AuditRepository(session)),
+        rate_limiter=get_login_rate_limiter(),
+        token_denylist=get_token_denylist(),
     )
 
 
@@ -177,7 +254,9 @@ def get_user_service(session: AsyncSession = Depends(get_tenant_session)) -> Use
     so the tenant-scoped INSERT works once RLS enforcement lands.
     """
     return UserService(
-        users=UserRepository(session), audit=AuditService(AuditRepository(session))
+        users=UserRepository(session),
+        audit=AuditService(AuditRepository(session)),
+        token_denylist=get_token_denylist(),
     )
 
 
@@ -193,6 +272,8 @@ def get_platform_auth_service(
         token_issuer=TokenIssuer(refresh_tokens),
         token_rotator=TokenRotator(refresh_tokens),
         audit=AuditService(AuditRepository(session)),
+        rate_limiter=get_login_rate_limiter(),
+        token_denylist=get_token_denylist(),
     )
 
 
@@ -207,6 +288,7 @@ def get_platform_org_service(
     return PlatformOrgService(
         organizations=OrganizationRepository(session),
         audit=AuditService(AuditRepository(session)),
+        token_denylist=get_token_denylist(),
     )
 
 

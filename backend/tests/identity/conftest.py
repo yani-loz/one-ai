@@ -41,6 +41,8 @@ from app.identity.models.support_grant import SupportGrant
 from app.identity.models.user import User
 from app.identity.principal import Principal
 from app.identity.security.password import hash_password
+from app.identity.security.rate_limit import InProcessRateLimiter, RateLimitPolicy
+from app.identity.security.token_denylist import InProcessTokenDenylist
 from app.identity.security.tokens import (
     COMPANY_AUDIENCE,
     PLATFORM_AUDIENCE,
@@ -196,16 +198,10 @@ async def seed_platform_admin(
 # — Token-minting helpers (production encoder; no mocking) —
 
 
-def company_token(
-    user_id: UUID, org_id: UUID, role: str, ttl_minutes: int = 15
-) -> str:
+def company_token(user_id: UUID, org_id: UUID, role: str, ttl_minutes: int = 15) -> str:
     """Mint a company access token (aud='company') for a user principal."""
-    principal = Principal(
-        subject_id=user_id, org_id=org_id, role=role, subject_type="user"
-    )
-    return encode_access_token(
-        principal, timedelta(minutes=ttl_minutes), COMPANY_AUDIENCE
-    )
+    principal = Principal(subject_id=user_id, org_id=org_id, role=role, subject_type="user")
+    return encode_access_token(principal, timedelta(minutes=ttl_minutes), COMPANY_AUDIENCE)
 
 
 def platform_token(admin_id: UUID | None = None, ttl_minutes: int = 15) -> str:
@@ -216,11 +212,40 @@ def platform_token(admin_id: UUID | None = None, ttl_minutes: int = 15) -> str:
         role="platform_admin",
         subject_type="platform_admin",
     )
-    return encode_access_token(
-        principal, timedelta(minutes=ttl_minutes), PLATFORM_AUDIENCE
-    )
+    return encode_access_token(principal, timedelta(minutes=ttl_minutes), PLATFORM_AUDIENCE)
 
 
 def bearer(token: str) -> dict[str, str]:
     """Return an Authorization header dict for `token`."""
     return {"Authorization": f"Bearer {token}"}
+
+
+def make_test_rate_limiter(*, ip_max: int = 1000, account_max: int = 1000) -> InProcessRateLimiter:
+    """Build a permissive throttle for service tests that don't exercise the limit.
+
+    Defaults are high enough that ordinary login/refresh tests never trip the throttle; a
+    test that DOES want to exercise lockout passes small `ip_max` / `account_max`. A fresh
+    instance per call keeps tests isolated (no shared sliding-window state).
+    """
+    policy = RateLimitPolicy(
+        max_attempts=account_max,
+        window_seconds=60.0,
+        base_lockout_seconds=60.0,
+        max_lockout_seconds=900.0,
+    )
+    ip_policy = RateLimitPolicy(
+        max_attempts=ip_max,
+        window_seconds=60.0,
+        base_lockout_seconds=60.0,
+        max_lockout_seconds=900.0,
+    )
+    return InProcessRateLimiter(ip_policy=ip_policy, account_policy=policy)
+
+
+def make_test_token_denylist() -> InProcessTokenDenylist:
+    """Build a fresh, empty access-token denylist for service tests (15-min TTL).
+
+    A fresh instance per call keeps tests isolated (no shared revocation state); most service
+    tests don't revoke, so the denylist is simply a no-op pass-through for them.
+    """
+    return InProcessTokenDenylist(access_ttl_seconds=900)

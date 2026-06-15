@@ -6,6 +6,12 @@ Depends on: user/organization/refresh-token repositories, security.password,
             security.tokens, services.token_issuer + token_rotator, identity.schemas,
             identity.principal, identity.exceptions.
 Key invariants:
+  - Login is THROTTLED BEFORE bcrypt (FIX_BEFORE_PROD N-01): the per-IP and per-account
+    sliding-window check runs at the very top of login(), so a credential-stuffing /
+    bcrypt-CPU-DoS attacker is blocked at near-zero server cost (RateLimitedError -> 429)
+    and never reaches verify_password_async. Only a VERIFIED failed login registers a
+    failure; a success does not consume the budget. DUMMY_PASSWORD_HASH is untouched —
+    the throttle gates in FRONT of the enumeration defense, it does not replace it.
   - Login verifies the bcrypt password and that the account is active; any failure
     raises InvalidCredentialsError with a GENERIC message (no user enumeration, no
     "wrong password" vs "no such user" distinction). The bcrypt verify runs OFF the
@@ -32,6 +38,8 @@ from app.identity.repositories.organization_repository import OrganizationReposi
 from app.identity.repositories.user_repository import UserRepository
 from app.identity.schemas.auth_schemas import AuthenticatedUserResponse, TokenPairResponse
 from app.identity.security.password import DUMMY_PASSWORD_HASH, verify_password_async
+from app.identity.security.rate_limit import RateLimiter, account_key, ip_key
+from app.identity.security.token_denylist import TokenDenylist
 from app.identity.security.tokens import COMPANY_AUDIENCE
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 from app.identity.services.token_issuer import TokenIssuer
@@ -50,24 +58,45 @@ class AuthService:
         token_issuer: TokenIssuer,
         token_rotator: TokenRotator,
         audit: AuditService,
+        rate_limiter: RateLimiter,
+        token_denylist: TokenDenylist,
     ) -> None:
-        """Wire the repositories, token helpers, and audit writer (one plain session)."""
+        """Wire the repositories, token helpers, audit writer, login throttle, and denylist.
+
+        rate_limiter and token_denylist are process-wide singletons (in-process, behind
+        Protocols so a Redis impl is a drop-in) — the SAME objects across requests by design,
+        so the sliding window and revocation cutoffs survive between requests.
+        """
         self._users = users
         self._organizations = organizations
         self._token_issuer = token_issuer
         self._token_rotator = token_rotator
         self._audit = audit
+        self._rate_limiter = rate_limiter
+        self._token_denylist = token_denylist
 
-    async def login(self, email: str, password: str) -> TokenPairResponse:
+    async def login(
+        self, email: str, password: str, client_ip: str | None = None
+    ) -> TokenPairResponse:
         """Authenticate a company user and issue a fresh token pair.
 
-        Contract: verifies the account exists, is active, and the bcrypt password
-        matches, then returns access+refresh tokens plus the authenticated-user view.
+        Contract: THROTTLES on `client_ip` and `email` BEFORE any bcrypt work, then verifies
+        the account exists, is active, and the bcrypt password matches, then returns
+        access+refresh tokens plus the authenticated-user view.
 
         Raises:
+            RateLimitedError: too many recent attempts from this IP or for this account
+                (-> 429) — raised before bcrypt, so the attacker pays the cost, not us.
             InvalidCredentialsError: any failure (unknown email, wrong password,
                 inactive account) — one generic error to prevent enumeration.
         """
+        # Throttle FIRST — before the DB lookup and the (expensive) bcrypt verify. Both
+        # budgets are checked; either over-limit short-circuits to 429.
+        ip_throttle_key = ip_key(client_ip)
+        account_throttle_key = account_key(email)
+        self._rate_limiter.check(ip_throttle_key)
+        self._rate_limiter.check(account_throttle_key)
+
         user = await self._users.get_by_email(email)
         # Always run bcrypt — against the user's hash, or a dummy when no account
         # matched — so unknown/inactive accounts cost the same as a real login and
@@ -77,6 +106,11 @@ class AuthService:
         password_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
         password_ok = await verify_password_async(password, password_hash)
         if user is None or not user.is_active or not password_ok:
+            # Verified failure -> consume both budgets so repeated guessing backs off into
+            # lockout (the check above will then 429 the NEXT attempt). Registered only here,
+            # never on a success or a 429, so a legit login never erodes its own budget.
+            self._rate_limiter.register_failure(ip_throttle_key)
+            self._rate_limiter.register_failure(account_throttle_key)
             # Failed login is recorded on an INDEPENDENT session: this path raises, so a
             # same-session row would be rolled back. actor_id is null; actor_email is the
             # attempted (already-normalized) email — internal log only, never surfaced to
@@ -163,8 +197,15 @@ class AuthService:
         return TokenPairResponse(access_token=access_token, refresh_token=refresh_token)
 
     async def logout(self, raw_refresh_token: str) -> None:
-        """Revoke the presented refresh token (idempotent — unknown token is a no-op)."""
-        await self._token_rotator.revoke(raw_refresh_token)
+        """Revoke the presented refresh token AND the subject's current access tokens.
+
+        Revoking the refresh token stops NEW access tokens; revoking the subject in the
+        denylist immediately kills the access token still in flight (otherwise it lives out
+        its <=15min TTL). Idempotent — an unknown refresh token is a no-op (subject None).
+        """
+        subject_id = await self._token_rotator.revoke(raw_refresh_token)
+        if subject_id is not None:
+            self._token_denylist.revoke_subject(subject_id)
         # The opaque token is not resolved to a subject here, so the actor is unattributed
         # (enriching it is a tracked follow-up); the event + IP are still recorded. Same
         # session — logout returns 204 and commits.
@@ -172,9 +213,7 @@ class AuthService:
             AuditEvent(action=AuditAction.LOGOUT, actor_type=AuditActorType.user)
         )
 
-    async def build_authenticated_user_by_id(
-        self, user_id: UUID
-    ) -> AuthenticatedUserResponse:
+    async def build_authenticated_user_by_id(self, user_id: UUID) -> AuthenticatedUserResponse:
         """Build the /auth/me view for the verified subject id from the access token.
 
         Contract: `user_id` originates from a signature+audience+expiry-verified JWT,
@@ -223,9 +262,7 @@ class AuthService:
         return organization
 
     @staticmethod
-    def _build_user_view(
-        user: User, organization: Organization
-    ) -> AuthenticatedUserResponse:
+    def _build_user_view(user: User, organization: Organization) -> AuthenticatedUserResponse:
         """Assemble AuthenticatedUserResponse from the user + its (already-loaded) org."""
         return AuthenticatedUserResponse(
             id=user.id,

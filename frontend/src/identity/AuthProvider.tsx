@@ -1,7 +1,8 @@
 /**
  * Role: React auth provider for the Identity module — holds the current user and
  *       auth status, exposes login/platformLogin/logout, and bootstraps the session
- *       on mount via the stored refresh token (GET /auth/me with auto-refresh).
+ *       on mount by always attempting GET /auth/me (auto-refresh on 401 via the httpOnly
+ *       refresh cookie, which JS cannot read — so there is no stored token to gate on).
  * Used by: main.tsx (wraps the app); its context is consumed via useAuth.ts.
  * Depends on: ./authContext (the context object), ./authClient, ./types.
  * Key invariants:
@@ -19,7 +20,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   fetchCurrentPlatformAdmin,
   fetchCurrentUser,
-  getStoredRefreshToken,
   login as loginRequest,
   logout as logoutRequest,
   platformLogin as platformLoginRequest,
@@ -31,10 +31,11 @@ import type { AuthUser } from "./types";
  * Provide the auth context to the tree and run the mount-time session bootstrap.
  *
  * Contract: renders children immediately; consumers read `status` to know whether
- * the session is still resolving. On mount, if a refresh token is stored it calls
- * /auth/me (which auto-refreshes once on 401); any failure resolves to
- * `unauthenticated`. With no stored token it short-circuits to `unauthenticated`
- * with no network call.
+ * the session is still resolving. On mount it always calls /auth/me (which auto-refreshes
+ * once on 401 via the httpOnly cookie) — the company refresh token is an httpOnly cookie
+ * the JS cannot read, so there is no token to gate on: a present cookie rehydrates the
+ * session, its absence (or a platform admin who reloaded — platform tokens are memory-only)
+ * resolves to `unauthenticated`.
  */
 export function AuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -45,11 +46,6 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
   useEffect(() => {
     let cancelled = false;
-
-    if (getStoredRefreshToken() === null) {
-      setStatus("unauthenticated");
-      return;
-    }
 
     fetchCurrentUser()
       .then((currentUser) => {

@@ -40,6 +40,7 @@ from app.identity.schemas.user_schemas import (
     UserUpdateRequest,
 )
 from app.identity.security.password import hash_password_async
+from app.identity.security.token_denylist import TokenDenylist
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 _ENTITY_USER = "user"
@@ -48,10 +49,18 @@ _ENTITY_USER = "user"
 class UserService:
     """Org-scoped CRUD for company users (company_admin only)."""
 
-    def __init__(self, users: UserRepository, audit: AuditService) -> None:
-        """Bind to the user repository + audit writer (one TENANT-scoped session)."""
+    def __init__(
+        self, users: UserRepository, audit: AuditService, token_denylist: TokenDenylist
+    ) -> None:
+        """Bind the user repository + audit writer (one TENANT-scoped session) + denylist.
+
+        token_denylist is the process-wide revocation singleton: deactivating a user must
+        immediately kill their outstanding access tokens (else a deactivated — possibly
+        compromised — account keeps working for up to the <=15min access-token TTL).
+        """
         self._users = users
         self._audit = audit
+        self._token_denylist = token_denylist
 
     async def list_users(self, org_id: UUID) -> list[UserResponse]:
         """Return all users in the caller's org (newest first)."""
@@ -126,6 +135,11 @@ class UserService:
             user.is_active = payload.is_active
 
         await self._users.add(user)
+        revoke_access_tokens = user.role != previous_role or (
+            previous_active and not user.is_active
+        )
+        if revoke_access_tokens:
+            self._token_denylist.revoke_subject(user.id)
         if user.role != previous_role:
             await self._audit.record(
                 self._user_event(
@@ -136,15 +150,11 @@ class UserService:
                 )
             )
         if previous_active and not user.is_active:
-            await self._audit.record(
-                self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {})
-            )
+            await self._audit.record(self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {}))
         if not previous_active and user.is_active:
             # Restoring access (possibly admin access) is as audit-worthy as removing it — a
             # DPO/Betriebsrat must see both directions (mirrors org suspend/reactivate).
-            await self._audit.record(
-                self._user_event(AuditAction.USER_REACTIVATE, actor, user, {})
-            )
+            await self._audit.record(self._user_event(AuditAction.USER_REACTIVATE, actor, user, {}))
         return UserResponse.model_validate(user)
 
     async def deactivate_user(self, org_id: UUID, user_id: UUID, actor: Principal) -> None:
@@ -161,10 +171,11 @@ class UserService:
         already_inactive = not user.is_active
         user.is_active = False
         await self._users.add(user)
+        # Immediately revoke the user's in-flight access tokens (the denylist) — a soft-delete
+        # that left a compromised account's token working for its TTL would defeat the purpose.
+        self._token_denylist.revoke_subject(user_id)
         if not already_inactive:
-            await self._audit.record(
-                self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {})
-            )
+            await self._audit.record(self._user_event(AuditAction.USER_DEACTIVATE, actor, user, {}))
 
     @staticmethod
     def _user_event(

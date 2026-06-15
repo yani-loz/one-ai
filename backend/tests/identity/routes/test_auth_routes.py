@@ -9,13 +9,19 @@ missing/invalid tokens with 401. Requires Postgres (identity_schema fixture).
 
 from __future__ import annotations
 
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.enums import UserRole
 from tests.identity.conftest import bearer, company_token, seed_organization, seed_user
 
 _PASSWORD = "Adm1n-Dev-Only-2026!"
+_REFRESH_COOKIE = "oneai_refresh"
+
+
+def _set_cookie_header(response: Response) -> str:
+    """The response's joined, lower-cased Set-Cookie header(s) for attribute assertions."""
+    return "; ".join(response.headers.get_list("set-cookie")).lower()
 
 
 async def _seed_admin(session: AsyncSession, email: str = "admin@acme.example"):
@@ -44,10 +50,13 @@ async def test_login_valid_returns_pair_and_user(
     assert response.status_code == 200
     body = response.json()
     assert body["access_token"]
-    assert body["refresh_token"]
+    assert "refresh_token" not in body  # Control C: never serialized into the JSON body
     assert body["token_type"] == "bearer"
     assert body["user"]["email"] == "admin@acme.example"
     assert body["user"]["org_name"] == "Acme"
+    # The refresh token rides an httpOnly cookie instead of the body.
+    assert response.cookies.get(_REFRESH_COOKIE)
+    assert "httponly" in _set_cookie_header(response)
 
 
 async def test_login_overlong_password_returns_422(client: AsyncClient) -> None:
@@ -66,8 +75,12 @@ async def test_login_suspended_org_returns_403(
     # PC-03a: valid credentials but a suspended org -> 403 (login blocked), not a token pair.
     org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password=_PASSWORD,
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
     )
     await db_session.commit()
 
@@ -85,8 +98,12 @@ async def test_login_suspended_org_wrong_password_stays_401_no_oracle(
     # suspended org must still be a GENERIC 401, never a 403 (no enumeration oracle).
     org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password=_PASSWORD,
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
     )
     await db_session.commit()
 
@@ -104,18 +121,21 @@ async def test_refresh_blocked_after_org_suspended(
     # is blocked (403) so the session can't be extended.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password=_PASSWORD,
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
     )
     await db_session.commit()
-    login = await client.post(
+    await client.post(
         "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
-    )
-    refresh_token = login.json()["refresh_token"]
+    )  # the refresh cookie is now in the client jar
     org.status = "suspended"
     await db_session.commit()
 
-    response = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    response = await client.post("/auth/refresh")  # cookie auto-sent
 
     assert response.status_code == 403
 
@@ -128,7 +148,10 @@ async def test_me_with_valid_token_succeeds_even_when_org_suspended(
     # "consistency" change can't silently break valid mid-session tokens.
     org = await seed_organization(db_session, name="Acme", slug="acme", status="suspended")
     user = await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
         role=UserRole.company_admin,
     )
     await db_session.commit()
@@ -150,26 +173,30 @@ async def test_refresh_token_survives_suspension_then_rotates_after_reactivation
     # This pins the rollback so the AUD-06 reuse-family work can't silently regress it.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password=_PASSWORD,
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
     )
     await db_session.commit()
     login = await client.post(
         "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
     )
-    refresh_token = login.json()["refresh_token"]
+    original_cookie = login.cookies.get(_REFRESH_COOKIE)
 
     org.status = "suspended"
     await db_session.commit()
-    blocked = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    blocked = await client.post("/auth/refresh")  # cookie auto-sent
 
     org.status = "active"
     await db_session.commit()
-    restored = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    restored = await client.post("/auth/refresh")  # the SAME cookie survived the 403
 
     assert blocked.status_code == 403
-    assert restored.status_code == 200  # the SAME token survived the 403
-    assert restored.json()["refresh_token"] != refresh_token  # and really rotated
+    assert restored.status_code == 200
+    assert restored.cookies.get(_REFRESH_COOKIE) != original_cookie  # and really rotated
 
 
 async def test_login_wrong_password_returns_401_generic(
@@ -253,16 +280,21 @@ async def test_refresh_rotates_old_token_then_reuse_returns_401(
     login = await client.post(
         "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
     )
-    old_refresh = login.json()["refresh_token"]
+    old_refresh = login.cookies.get(_REFRESH_COOKIE)
 
-    rotated = await client.post("/auth/refresh", json={"refresh_token": old_refresh})
+    rotated = await client.post("/auth/refresh")  # rotates via the cookie in the jar
 
     assert rotated.status_code == 200
-    new_refresh = rotated.json()["refresh_token"]
+    new_refresh = rotated.cookies.get(_REFRESH_COOKIE)
     assert new_refresh != old_refresh
+    assert "refresh_token" not in rotated.json()  # never echoed into the body
     assert "user" not in rotated.json()  # refresh excludes the user view
 
-    reuse = await client.post("/auth/refresh", json={"refresh_token": old_refresh})
+    # Reuse the OLD token: isolate it from the jar (now holding the rotated one) so the
+    # server sees the revoked predecessor, not its live successor.
+    client.cookies.clear()
+    client.cookies.set(_REFRESH_COOKIE, old_refresh)
+    reuse = await client.post("/auth/refresh")
     assert reuse.status_code == 401
 
 
@@ -273,14 +305,93 @@ async def test_logout_revokes_refresh_then_refresh_returns_401(
     login = await client.post(
         "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
     )
-    refresh_token = login.json()["refresh_token"]
+    refresh_token = login.cookies.get(_REFRESH_COOKIE)
 
-    logout = await client.post("/auth/logout", json={"refresh_token": refresh_token})
+    logout = await client.post("/auth/logout")  # cookie auto-sent
 
     assert logout.status_code == 204
+    # The logout response clears the cookie (expired Set-Cookie).
+    assert "oneai_refresh=" in _set_cookie_header(logout)
+    assert "max-age=0" in _set_cookie_header(logout) or "expires=" in _set_cookie_header(logout)
 
-    after = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    # The revoked token no longer works even if a client replays it directly.
+    client.cookies.clear()
+    client.cookies.set(_REFRESH_COOKIE, refresh_token)
+    after = await client.post("/auth/refresh")
     assert after.status_code == 401
+
+
+async def test_login_sets_httponly_secure_attributes_on_refresh_cookie(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Control C: the refresh cookie must be httpOnly (never JS-readable) and carry the
+    # configured Path so it is scoped to the /auth endpoints only.
+    await _seed_admin(db_session)
+
+    response = await client.post(
+        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
+    )
+
+    set_cookie = _set_cookie_header(response)
+    assert "oneai_refresh=" in set_cookie
+    assert "httponly" in set_cookie
+    assert "path=/auth" in set_cookie
+    assert "samesite=lax" in set_cookie
+
+
+async def test_refresh_without_cookie_or_body_returns_401(client: AsyncClient) -> None:
+    # No httpOnly cookie and no body token -> 401 (a browser with no session, or a stripped
+    # request), never a 500 from a missing field.
+    response = await client.post("/auth/refresh")
+
+    assert response.status_code == 401
+
+
+async def test_refresh_cross_site_origin_rejected_403(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # CSRF: a cross-site browser POST (disallowed Origin) to the cookie-authenticated refresh
+    # endpoint is refused 403 BEFORE any rotation — even with a valid cookie in the jar.
+    await _seed_admin(db_session)
+    await client.post("/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD})
+
+    response = await client.post("/auth/refresh", headers={"origin": "https://evil.example"})
+
+    assert response.status_code == 403
+
+
+async def test_logout_cross_site_origin_rejected_403(client: AsyncClient) -> None:
+    # The CSRF guard runs ahead of the handler, so logout is refused for a cross-site Origin too.
+    response = await client.post("/auth/logout", headers={"origin": "https://evil.example"})
+
+    assert response.status_code == 403
+
+
+async def test_refresh_same_origin_sec_fetch_site_allowed(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # A first-party browser request (Sec-Fetch-Site: same-origin) rotates normally.
+    await _seed_admin(db_session)
+    await client.post("/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD})
+
+    response = await client.post("/auth/refresh", headers={"sec-fetch-site": "same-origin"})
+
+    assert response.status_code == 200
+
+
+async def test_refresh_allowlisted_cross_origin_allowed(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # An allowlisted cross-origin SPA (Origin in CORS origins, Sec-Fetch-Site: cross-site) works.
+    await _seed_admin(db_session)
+    await client.post("/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD})
+
+    response = await client.post(
+        "/auth/refresh",
+        headers={"origin": "http://localhost:5173", "sec-fetch-site": "cross-site"},
+    )
+
+    assert response.status_code == 200
 
 
 async def test_me_with_platform_token_returns_401(

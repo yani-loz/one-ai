@@ -80,7 +80,10 @@ async def test_orgs_with_company_token_is_rejected(
     # A company-audience token must NOT pass the platform-admin gate.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     admin = await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
         role=UserRole.company_admin,
     )
     await db_session.commit()
@@ -223,23 +226,28 @@ async def test_platform_refresh_rejects_company_refresh_token(
     # Cross-domain: a company refresh token must NOT rotate in the platform domain.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password=_PASSWORD,
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password=_PASSWORD,
     )
     await db_session.commit()
-    company_login = await client.post(
-        "/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD}
-    )
-    company_refresh = company_login.json()["refresh_token"]
+    await client.post("/auth/login", json={"email": "admin@acme.example", "password": _PASSWORD})
+    # The company refresh token rides an httpOnly cookie now (Control C); read it from the jar
+    # to present it cross-domain in the BODY to /platform/refresh (a different Path scope, so
+    # the /auth cookie isn't auto-sent there — the body fallback is the cross-domain hand-off).
+    company_refresh = client.cookies.get("oneai_refresh")
 
     response = await client.post("/platform/refresh", json={"refresh_token": company_refresh})
 
     assert response.status_code == 401
     # Discriminating: the subject_type guard rejects BEFORE revoking, so the company token
-    # is untouched and still rotates at /auth/refresh. If that guard were removed, consume
-    # would have revoked it here and this follow-up would 401 — so this assertion is what
-    # actually proves the domain boundary (not the generic 401 above).
-    still_valid = await client.post("/auth/refresh", json={"refresh_token": company_refresh})
+    # is untouched and still rotates at /auth/refresh (cookie auto-sent). If that guard were
+    # removed, consume would have revoked it here and this follow-up would 401 — so this
+    # assertion is what actually proves the domain boundary (not the generic 401 above).
+    still_valid = await client.post("/auth/refresh")
     assert still_valid.status_code == 200
 
 
@@ -281,9 +289,7 @@ async def test_platform_me_with_company_token_is_rejected(
     # build_admin_view_by_id would resolve this very admin. The org supplies the token's
     # org_id claim; the admin id is what the (mutated) handler would look up.
     org = await seed_organization(db_session, name="Acme", slug="acme")
-    admin = await seed_platform_admin(
-        db_session, email="super@ethera.ai", full_name="Super"
-    )
+    admin = await seed_platform_admin(db_session, email="super@ethera.ai", full_name="Super")
     await db_session.commit()
     headers = bearer(company_token(admin.id, org.id, UserRole.company_admin))
 
@@ -326,7 +332,13 @@ async def test_get_org_detail_returns_metadata_and_legal_hold(
     assert body["legal_hold"] is False
     # Metadata only — no tenant content/cost/token fields.
     assert set(body.keys()) == {
-        "id", "name", "slug", "status", "user_count", "legal_hold", "created_at",
+        "id",
+        "name",
+        "slug",
+        "status",
+        "user_count",
+        "legal_hold",
+        "created_at",
     }
 
 
@@ -444,8 +456,12 @@ async def test_patch_status_endpoint_drives_the_login_gate_end_to_end(
     # login restored (200). A non-committing rewire or a detached-object bug would fail here.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="admin@acme.example", full_name="Admin",
-        role=UserRole.company_admin, password="Adm1n-Dev-Only-2026!",
+        db_session,
+        org_id=org.id,
+        email="admin@acme.example",
+        full_name="Admin",
+        role=UserRole.company_admin,
+        password="Adm1n-Dev-Only-2026!",
     )
     await db_session.commit()
     creds = {"email": "admin@acme.example", "password": "Adm1n-Dev-Only-2026!"}

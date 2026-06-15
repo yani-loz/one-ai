@@ -9,7 +9,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthProvider } from ".";
-import { setTokens } from "./authClient";
+import { clearSession } from "./authClient";
 import { ProtectedRoute } from "./ProtectedRoute";
 import { useAuth } from "./useAuth";
 
@@ -34,20 +34,18 @@ function renderGuarded() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  setTokens(null);
+  clearSession();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  localStorage.clear();
-  setTokens(null);
+  clearSession();
 });
 
 describe("ProtectedRoute", () => {
   it("test_loading_state_shows_skeleton_and_does_not_redirect", () => {
-    // A stored refresh token + a never-resolving /auth/me keeps status === loading.
-    localStorage.setItem("oneai.refresh_token", "r1");
+    // The mount bootstrap always calls /auth/me; a never-resolving fetch keeps it pending,
+    // so status stays === loading (the httpOnly cookie is unreadable — nothing to gate on).
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
 
     renderGuarded();
@@ -58,10 +56,10 @@ describe("ProtectedRoute", () => {
   });
 
   it("test_unauthenticated_redirects_to_login", async () => {
-    // No stored token -> bootstrap short-circuits to unauthenticated, no network call.
+    // No session: /auth/me 401 -> refresh 401 -> bootstrap resolves to unauthenticated.
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.reject(new Error("unused"))) as unknown as typeof fetch,
+      vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch,
     );
 
     renderGuarded();

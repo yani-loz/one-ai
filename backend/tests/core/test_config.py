@@ -13,14 +13,15 @@ _SECURE_DB_PASSWORD = "a-strong-db-password"
 _SECURE_APP_PASSWORD = "a-strong-app-role-password"
 _SECURE_GLOBAL_PASSWORD = "a-strong-global-role-password"
 
-# The full set of non-default secrets a non-dev env must supply — the boot guard checks all four
-# (jwt + the three DB passwords). Spread into every "boots in prod/staging" test so that adding a
-# newly guarded secret is a one-line change here, not a sweep across call sites.
+# The full set of non-default config a non-dev env must supply — the boot guard checks the jwt +
+# the three DB passwords AND requires the refresh cookie to be Secure. Spread into every "boots in
+# prod/staging" test so that adding a newly guarded item is a one-line change here, not a sweep.
 _SECURE_SECRETS = {
     "jwt_secret": _SECURE_JWT,
     "postgres_password": _SECURE_DB_PASSWORD,
     "oneai_app_password": _SECURE_APP_PASSWORD,
     "oneai_global_password": _SECURE_GLOBAL_PASSWORD,
+    "refresh_cookie_secure": True,
 }
 
 
@@ -130,10 +131,39 @@ def test_production_with_default_global_role_password_refuses_to_boot() -> None:
         )
 
 
+def test_production_with_insecure_refresh_cookie_refuses_to_boot() -> None:
+    # Control C: the httpOnly refresh cookie must be Secure outside dev (else it can ride a
+    # plaintext/downgraded request) — the cookie analogue of the JWT-secret gate.
+    with pytest.raises(InsecureConfigurationError, match="REFRESH_COOKIE_SECURE"):
+        Settings(app_env="production", **{**_SECURE_SECRETS, "refresh_cookie_secure": False})
+
+
+def test_samesite_none_without_secure_refuses_to_boot_in_any_env() -> None:
+    # ALWAYS-ON: a SameSite=None cookie without Secure is browser-rejected AND CSRF-exposed — the
+    # guard fires even in a dev env (it is a correctness invariant, not just a prod-secret gate).
+    with pytest.raises(InsecureConfigurationError, match="REFRESH_COOKIE_SAMESITE"):
+        Settings(app_env="local", refresh_cookie_samesite="none", refresh_cookie_secure=False)
+
+
+def test_samesite_none_with_secure_is_allowed() -> None:
+    # The valid cross-origin prod posture (None + Secure) boots fine.
+    settings = Settings(app_env="local", refresh_cookie_samesite="none", refresh_cookie_secure=True)
+
+    assert settings.refresh_cookie_samesite == "none"
+
+
+def test_unknown_samesite_value_refuses_to_boot_in_any_env() -> None:
+    # A typo'd SameSite would otherwise be silently coerced to 'lax' (a hidden CSRF downgrade);
+    # the always-on whitelist guard fails closed on it, even in a dev env.
+    with pytest.raises(InsecureConfigurationError, match="REFRESH_COOKIE_SAMESITE"):
+        Settings(app_env="local", refresh_cookie_samesite="stric")
+
+
 def test_production_with_secure_secrets_boots() -> None:
     settings = Settings(app_env="production", **_SECURE_SECRETS)
 
     assert settings.jwt_secret == _SECURE_JWT
+    assert settings.refresh_cookie_secure is True
 
 
 def test_staging_with_default_jwt_secret_refuses_to_boot() -> None:

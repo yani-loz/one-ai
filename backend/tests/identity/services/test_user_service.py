@@ -1,4 +1,4 @@
-﻿"""
+"""
 DB-backed tests for app.identity.services.user_service.
 
 Covers org-scoped CRUD plus the NON-NEGOTIABLE service-layer cross-tenant isolation
@@ -30,17 +30,21 @@ from app.identity.schemas.user_schemas import (
 )
 from app.identity.services.audit_service import AuditService
 from app.identity.services.user_service import UserService
-from tests.identity.conftest import seed_organization, seed_user
+from tests.identity.conftest import (
+    make_test_token_denylist,
+    seed_organization,
+    seed_user,
+)
 
 # The company_admin performing the action (only subject_id is recorded on the audit row).
-_ACTOR = Principal(
-    subject_id=uuid4(), org_id=None, role="company_admin", subject_type="user"
-)
+_ACTOR = Principal(subject_id=uuid4(), org_id=None, role="company_admin", subject_type="user")
 
 
 def _service(session: AsyncSession) -> UserService:
     return UserService(
-        users=UserRepository(session), audit=AuditService(AuditRepository(session))
+        users=UserRepository(session),
+        audit=AuditService(AuditRepository(session)),
+        token_denylist=make_test_token_denylist(),
     )
 
 
@@ -61,8 +65,11 @@ async def test_create_user_persists_in_caller_org(db_session: AsyncSession) -> N
 async def test_create_user_duplicate_email_raises_duplicate(db_session: AsyncSession) -> None:
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="dupe@acme.example",
-        full_name="Existing", role=UserRole.member,
+        db_session,
+        org_id=org.id,
+        email="dupe@acme.example",
+        full_name="Existing",
+        role=UserRole.member,
     )
     service = _service(db_session)
     payload = UserCreateRequest(
@@ -119,23 +126,84 @@ async def test_list_users_returns_only_caller_org(db_session: AsyncSession) -> N
 async def test_update_user_same_org_applies_changes(db_session: AsyncSession) -> None:
     org = await seed_organization(db_session, name="Acme", slug="acme")
     user = await seed_user(
-        db_session, org_id=org.id, email="u@acme.example",
-        full_name="Old Name", role=UserRole.member,
+        db_session,
+        org_id=org.id,
+        email="u@acme.example",
+        full_name="Old Name",
+        role=UserRole.member,
     )
     service = _service(db_session)
 
     updated = await service.update_user(
         org.id,
         user.id,
-        UserUpdateRequest(
-            full_name="New Name", role=UserRole.company_admin, is_active=False
-        ),
+        UserUpdateRequest(full_name="New Name", role=UserRole.company_admin, is_active=False),
         _ACTOR,
     )
 
     assert updated.full_name == "New Name"
     assert updated.role == UserRole.company_admin
     assert updated.is_active is False
+
+
+async def test_update_user_role_change_revokes_existing_access_tokens(
+    db_session: AsyncSession,
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    target_admin = await seed_user(
+        db_session,
+        org_id=org.id,
+        email="target-admin@acme.example",
+        full_name="Target Admin",
+        role=UserRole.company_admin,
+    )
+    await seed_user(
+        db_session,
+        org_id=org.id,
+        email="peer-admin@acme.example",
+        full_name="Peer Admin",
+        role=UserRole.company_admin,
+    )
+    denylist = make_test_token_denylist()
+    service = UserService(
+        users=UserRepository(db_session),
+        audit=AuditService(AuditRepository(db_session)),
+        token_denylist=denylist,
+    )
+
+    assert denylist.is_revoked(target_admin.id, org.id, issued_at=0) is False
+
+    await service.update_user(
+        org.id,
+        target_admin.id,
+        UserUpdateRequest(role=UserRole.member),
+        _ACTOR,
+    )
+
+    assert denylist.is_revoked(target_admin.id, org.id, issued_at=0) is True
+
+
+async def test_update_user_deactivation_revokes_existing_access_tokens(
+    db_session: AsyncSession,
+) -> None:
+    org = await seed_organization(db_session, name="Acme", slug="acme")
+    member = await seed_user(
+        db_session,
+        org_id=org.id,
+        email="member@acme.example",
+        full_name="Member",
+        role=UserRole.member,
+    )
+    denylist = make_test_token_denylist()
+    service = UserService(
+        users=UserRepository(db_session),
+        audit=AuditService(AuditRepository(db_session)),
+        token_denylist=denylist,
+    )
+
+    await service.update_user(org.id, member.id, UserUpdateRequest(is_active=False), _ACTOR)
+
+    assert denylist.is_revoked(member.id, org.id, issued_at=0) is True
 
 
 async def test_update_user_cross_tenant_raises_not_found(db_session: AsyncSession) -> None:
@@ -199,12 +267,19 @@ async def test_create_user_integrity_error_maps_to_duplicate(
     # violation must surface as DuplicateUserError (-> 409), not a raw 500.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     await seed_user(
-        db_session, org_id=org.id, email="race@acme.example",
-        full_name="Existing", role=UserRole.member,
+        db_session,
+        org_id=org.id,
+        email="race@acme.example",
+        full_name="Existing",
+        role=UserRole.member,
     )
     repo = UserRepository(db_session)
     monkeypatch.setattr(repo, "email_exists", _always_false)
-    service = UserService(users=repo, audit=AuditService(AuditRepository(db_session)))
+    service = UserService(
+        users=repo,
+        audit=AuditService(AuditRepository(db_session)),
+        token_denylist=make_test_token_denylist(),
+    )
     payload = UserCreateRequest(
         email="race@acme.example", full_name="Racer", role=UserRole.member, password="StrongPass1"
     )
@@ -219,8 +294,11 @@ async def test_deactivate_last_active_admin_raises_last_admin(db_session: AsyncS
     # AUD-07: deactivating the org's only active admin would lock the org out -> 409.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     admin = await seed_user(
-        db_session, org_id=org.id, email="solo@acme.example",
-        full_name="Solo Admin", role=UserRole.company_admin,
+        db_session,
+        org_id=org.id,
+        email="solo@acme.example",
+        full_name="Solo Admin",
+        role=UserRole.company_admin,
     )
     service = _service(db_session)
 
@@ -232,27 +310,34 @@ async def test_demote_last_active_admin_raises_last_admin(db_session: AsyncSessi
     # AUD-07: demoting the org's only active admin to member would lock the org out.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     admin = await seed_user(
-        db_session, org_id=org.id, email="solo@acme.example",
-        full_name="Solo Admin", role=UserRole.company_admin,
+        db_session,
+        org_id=org.id,
+        email="solo@acme.example",
+        full_name="Solo Admin",
+        role=UserRole.company_admin,
     )
     service = _service(db_session)
 
     with pytest.raises(LastAdminError):
-        await service.update_user(
-            org.id, admin.id, UserUpdateRequest(role=UserRole.member), _ACTOR
-        )
+        await service.update_user(org.id, admin.id, UserUpdateRequest(role=UserRole.member), _ACTOR)
 
 
 async def test_deactivate_admin_with_a_peer_admin_succeeds(db_session: AsyncSession) -> None:
     # The guard only blocks removing the LAST admin: with a peer admin, it must allow it.
     org = await seed_organization(db_session, name="Acme", slug="acme")
     admin_one = await seed_user(
-        db_session, org_id=org.id, email="a1@acme.example",
-        full_name="Admin One", role=UserRole.company_admin,
+        db_session,
+        org_id=org.id,
+        email="a1@acme.example",
+        full_name="Admin One",
+        role=UserRole.company_admin,
     )
     await seed_user(
-        db_session, org_id=org.id, email="a2@acme.example",
-        full_name="Admin Two", role=UserRole.company_admin,
+        db_session,
+        org_id=org.id,
+        email="a2@acme.example",
+        full_name="Admin Two",
+        role=UserRole.company_admin,
     )
     service = _service(db_session)
 
@@ -373,11 +458,17 @@ async def test_last_admin_guard_serializes_concurrent_removals(db_session: Async
     # FOR UPDATE, so exactly one removal wins and the other gets LastAdminError.
     org = await seed_organization(db_session, name="Race", slug="race-dyn01")
     admin_one = await seed_user(
-        db_session, org_id=org.id, email="a1@race.example", full_name="A1",
+        db_session,
+        org_id=org.id,
+        email="a1@race.example",
+        full_name="A1",
         role=UserRole.company_admin,
     )
     admin_two = await seed_user(
-        db_session, org_id=org.id, email="a2@race.example", full_name="A2",
+        db_session,
+        org_id=org.id,
+        email="a2@race.example",
+        full_name="A2",
         role=UserRole.company_admin,
     )
     await db_session.commit()
@@ -385,7 +476,9 @@ async def test_last_admin_guard_serializes_concurrent_removals(db_session: Async
     async def deactivate(user_id: object) -> str:
         async with scoped_session(org.id) as session:
             service = UserService(
-                users=UserRepository(session), audit=AuditService(AuditRepository(session))
+                users=UserRepository(session),
+                audit=AuditService(AuditRepository(session)),
+                token_denylist=make_test_token_denylist(),
             )
             try:
                 await service.deactivate_user(org.id, user_id, _ACTOR)
@@ -395,8 +488,6 @@ async def test_last_admin_guard_serializes_concurrent_removals(db_session: Async
                 await session.rollback()
                 return "blocked"
 
-    outcomes = sorted(
-        await asyncio.gather(deactivate(admin_one.id), deactivate(admin_two.id))
-    )
+    outcomes = sorted(await asyncio.gather(deactivate(admin_one.id), deactivate(admin_two.id)))
 
     assert outcomes == ["blocked", "ok"]

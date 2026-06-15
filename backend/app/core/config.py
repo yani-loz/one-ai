@@ -109,6 +109,48 @@ class Settings(BaseSettings):
     # MUST equal _INSECURE_CONNECTOR_KEY in that module.
     connector_secret_key: str = "dev-only-insecure-connector-secret-change-me"
 
+    # SSRF egress guard for the connector connection-test / fetch path (CA-CONN-02). When True
+    # (the default, and the ONLY safe production posture), the server resolves a company_admin-
+    # supplied IMAP host and REFUSES to dial any loopback / private (RFC1918) / link-local
+    # (incl. the cloud metadata endpoint 169.254.169.254) / unique-local / unspecified / reserved
+    # address — closing an authenticated-tenant internal-network reachability + port-probe oracle.
+    # Set to False ONLY for local dev/test that must reach a private mail host (e.g. a docker-
+    # network IMAP container); a non-dev environment that disables it is opting into the SSRF
+    # primitive knowingly. Off-by-default-in-prod is honoured by leaving this True everywhere
+    # except an explicit local override.
+    connector_egress_guard_enabled: bool = True
+
+    # — Login throttle (FIX_BEFORE_PROD N-01; app.identity.security.rate_limit) —
+    # An IN-PROCESS sliding-window + exponential-backoff lockout checked BEFORE bcrypt, so a
+    # credential-stuffing / bcrypt-CPU-DoS attacker is blocked at near-zero server cost. Two
+    # budgets: per-IP (broad) and per-account (stricter, then backs off). The store is
+    # process-local (single-tenant scale; a Redis impl is a drop-in via the RateLimiter
+    # Protocol) — counters reset on restart, bounded by the <=15min access-token TTL.
+    login_throttle_ip_max_attempts: int = 10
+    login_throttle_ip_window_seconds: float = 60.0
+    login_throttle_account_max_attempts: int = 5
+    login_throttle_account_window_seconds: float = 60.0
+    # First lockout once a window limit is hit, then it doubles per overflow up to the cap.
+    login_throttle_base_lockout_seconds: float = 60.0
+    login_throttle_max_lockout_seconds: float = 900.0  # 15 min ceiling
+
+    # — Refresh-token cookie (FIX_BEFORE_PROD sec / Control C; company domain only) —
+    # The COMPANY refresh token moves from a JSON body + localStorage (XSS-exfiltratable) to
+    # an httpOnly cookie. Secure + SameSite are config-driven so prod ships hardened and tests
+    # can assert the attrs. DEV CAVEAT: the dev SPA is cross-origin (:5173 -> :8000), which
+    # needs SameSite=None + Secure — and Secure is impossible over plain dev http. So the dev
+    # default below is SameSite=lax + non-Secure (the cookie simply isn't set cross-site in the
+    # browser; tests drive the API directly and still assert it). The httpOnly refresh cookie
+    # fully works in prod behind ONE origin / a reverse proxy, where you set
+    # REFRESH_COOKIE_SECURE=true and REFRESH_COOKIE_SAMESITE=strict (or lax). The PLATFORM
+    # refresh token is in-memory-only on the client and is deliberately NOT cookie-backed.
+    refresh_cookie_name: str = "oneai_refresh"
+    refresh_cookie_secure: bool = False
+    refresh_cookie_samesite: str = "lax"  # 'lax' | 'strict' | 'none'
+    # Path the cookie is scoped to — kept at the company auth surface so it is sent only to
+    # /auth/* (login/refresh/logout), never to unrelated endpoints.
+    refresh_cookie_path: str = "/auth"
+
     # — CORS — origins the browser is allowed to call the API from —
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
 
@@ -204,6 +246,24 @@ class Settings(BaseSettings):
         # Canonicalize first so the value we validate is exactly the value tokens.py will sign with.
         self.jwt_secret = self.jwt_secret.strip()
 
+        # ALWAYS-ON (every env): REFRESH_COOKIE_SAMESITE must be a known value. A typo (e.g.
+        # 'stric', 'noen') would otherwise be SILENTLY coerced to 'lax' by _normalized_samesite
+        # — a hidden strict->lax (or intended-none->lax) CSRF downgrade. Fail closed on the typo.
+        samesite = self.refresh_cookie_samesite.strip().lower()
+        if samesite not in {"lax", "strict", "none"}:
+            raise InsecureConfigurationError(
+                f"REFRESH_COOKIE_SAMESITE={self.refresh_cookie_samesite!r} is invalid — must "
+                "be one of 'lax', 'strict', 'none' (an unknown value silently downgrades to lax)."
+            )
+        # ALWAYS-ON safety invariant: a SameSite=None refresh cookie REQUIRES Secure. Browsers
+        # reject the None-without-Secure pair, and such a cookie is fully CSRF-exposed — the one way
+        # Control C's SameSite-based CSRF defense could silently regress. Refuse it.
+        if samesite == "none" and not self.refresh_cookie_secure:
+            raise InsecureConfigurationError(
+                "REFRESH_COOKIE_SAMESITE=none requires REFRESH_COOKIE_SECURE=true — a "
+                "SameSite=None cookie without Secure is browser-rejected and CSRF-exposed."
+            )
+
         if not self.requires_secure_secrets:
             return self
 
@@ -218,6 +278,13 @@ class Settings(BaseSettings):
             insecure.append("ONEAI_APP_PASSWORD (dev default)")
         if self.oneai_global_password == _INSECURE_ONEAI_GLOBAL_PASSWORD:
             insecure.append("ONEAI_GLOBAL_PASSWORD (dev default)")
+        # The httpOnly refresh cookie (Control C) must be Secure outside dev, or it can ride a
+        # downgraded/plaintext request — the cookie analogue of the JWT-secret gate above.
+        if not self.refresh_cookie_secure:
+            insecure.append(
+                "REFRESH_COOKIE_SECURE (must be true outside dev — the refresh cookie "
+                "would otherwise be sent over plaintext)"
+            )
 
         if insecure:
             raise InsecureConfigurationError(

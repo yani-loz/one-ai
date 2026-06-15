@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { AuthProvider } from ".";
-import { setTokens } from "./authClient";
+import { clearSession } from "./authClient";
 
 interface FetchCall {
   url: string;
@@ -48,8 +48,7 @@ function renderApp() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  setTokens(null);
+  clearSession();
   fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     // Default: health probe ok, everything else rejected (unauthenticated bootstrap).
     if (String(input).includes("/health")) {
@@ -66,8 +65,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  localStorage.clear();
-  setTokens(null);
+  clearSession();
 });
 
 describe("LoginPage", () => {
@@ -166,7 +164,7 @@ describe("LoginPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn't reach the server/);
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Companies" })).not.toBeInTheDocument();
-    expect(localStorage.getItem("oneai.refresh_token")).toBeNull();
+    // The half-open session is torn down: logout was called to revoke the in-memory token.
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).includes("/platform/logout")),
     ).toBe(true);
@@ -286,6 +284,9 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Log out" }));
 
     await waitFor(() => expect(screen.getByText("Sign in to your workspace")).toBeInTheDocument());
-    expect(localStorage.getItem("oneai.refresh_token")).toBeNull();
+    // Logout revoked the session server-side (httpOnly cookie cleared by /auth/logout).
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/auth/logout")),
+    ).toBe(true);
   });
 });

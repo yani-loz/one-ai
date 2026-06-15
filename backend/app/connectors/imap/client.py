@@ -7,12 +7,18 @@ Role: The IMAP vendor ADAPTER BOUNDARY — a thin async wrapper over stdlib imap
 Used by: connectors.imap.connector (calls verify_login); connectors.imap.fetch_session
          (upgrade_to_starttls + the vendor error types).
 Depends on: imaplib + ssl (stdlib), asyncio (to keep blocking IMAP off the event loop),
-            app.connectors.exceptions (ConnectorError base for the vendor errors).
+            app.connectors.exceptions (ConnectorError base for the vendor errors),
+            app.connectors.imap.egress_guard (resolve-then-validate-then-dial SSRF defence).
 Key invariants:
   - CONNECTION-ONLY: login -> NOOP -> logout. No mailbox listing, no fetching (that is point 2).
   - BOUNDED: an explicit connect/socket timeout is always set, so a dead host fails fast with
     ImapConnectionError instead of hanging a worker thread (the "must not affect the whole app"
-    requirement).
+    requirement). Name resolution is bounded SEPARATELY by the egress guard (the socket timeout
+    does not cover getaddrinfo).
+  - SSRF-SAFE: the host is resolved + validated by egress_guard BEFORE connecting, and the connect
+    is pinned to a validated IP (rebind-proof), so an authenticated tenant admin cannot turn this
+    server-side dial into an internal-network probe (incl. cloud metadata 169.254.169.254). A
+    blocked target raises EgressBlockedError, surfaced as the generic connection failure.
   - The blocking imaplib calls run in asyncio.to_thread so they never block the event loop.
   - TRANSPORT SECURITY: the SSL path always passes ssl.create_default_context() (certificate +
     hostname verification — never imaplib's unverified default); the non-SSL path MUST upgrade
@@ -32,6 +38,11 @@ from typing import Protocol
 
 from app.connectors.exceptions import ConnectorError
 from app.connectors.imap.config import ImapConnectionParams
+from app.connectors.imap.egress_guard import (
+    EgressBlockedError,
+    open_guarded_imap4,
+    open_guarded_imap4_ssl,
+)
 
 # Short connect/socket timeout — an interactive "test connection" must fail fast, not hang.
 _CONNECT_TIMEOUT_SECONDS = 15.0
@@ -112,23 +123,25 @@ class DefaultImapClient:
         await asyncio.to_thread(self._blocking_verify, params, secret)
 
     def _blocking_verify(self, params: ImapConnectionParams, secret: str) -> None:
-        """Blocking connect -> (STARTTLS if non-SSL) -> login -> NOOP -> logout.
+        """Blocking resolve+validate -> connect -> (STARTTLS if non-SSL) -> login -> NOOP -> logout.
 
-        Maps vendor failures to our errors. The SSL path verifies the server certificate
-        (default ssl context); the non-SSL path is upgraded via STARTTLS or refused — the
-        password is never transmitted over an unencrypted socket.
+        Maps vendor failures to our errors. The host is SSRF-validated first (egress_guard) and the
+        connect is pinned to a validated IP — a loopback/private/link-local/metadata target is
+        refused before any socket opens. The SSL path verifies the server certificate against the
+        ORIGINAL hostname (default ssl context, rebind-proof IP dial); the non-SSL path is upgraded
+        via STARTTLS or refused — the password is never transmitted over an unencrypted socket.
         """
+        # Resolve + validate then dial the validated IP (defeats DNS-rebind); the openers own the
+        # on/off switch. A blocked target (EgressBlockedError) becomes a generic connection failure
+        # — it never reveals which rule matched, so the verify outcome can't aid an internal probe.
         try:
             client: imaplib.IMAP4 = (
-                imaplib.IMAP4_SSL(
-                    params.host,
-                    params.port,
-                    ssl_context=ssl.create_default_context(),
-                    timeout=self._timeout,
-                )
+                open_guarded_imap4_ssl(params, self._timeout, ssl.create_default_context())
                 if params.use_ssl
-                else imaplib.IMAP4(params.host, params.port, timeout=self._timeout)
+                else open_guarded_imap4(params, self._timeout)
             )
+        except EgressBlockedError as exc:
+            raise ImapConnectionError("Could not reach the IMAP server.") from exc
         except (OSError, imaplib.IMAP4.error) as exc:
             raise ImapConnectionError("Could not reach the IMAP server.") from exc
 

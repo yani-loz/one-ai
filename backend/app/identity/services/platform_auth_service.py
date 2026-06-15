@@ -8,6 +8,11 @@ Depends on: platform-admin/organization/user/refresh-token repositories,
             services.audit_service, identity.schemas, identity.principal,
             identity.exceptions, identity.enums.
 Key invariants:
+  - Platform login is THROTTLED BEFORE bcrypt (FIX_BEFORE_PROD N-01), exactly like the
+    company login: a per-IP + per-account sliding-window check at the top of login() blocks
+    credential stuffing / a bcrypt-CPU-DoS at near-zero cost (RateLimitedError -> 429) before
+    verify_password_async runs. Only a verified failure consumes the budget; DUMMY_PASSWORD_HASH
+    is untouched (the throttle gates in front of the enumeration defense, not instead of it).
   - Platform login verifies the bcrypt password + active flag; failure -> generic
     InvalidCredentialsError (no enumeration). Tokens carry aud='platform' /
     subject_type='platform_admin' — rejected on company endpoints by audience.
@@ -53,6 +58,8 @@ from app.identity.security.password import (
     hash_password_async,
     verify_password_async,
 )
+from app.identity.security.rate_limit import RateLimiter, account_key, ip_key
+from app.identity.security.token_denylist import TokenDenylist
 from app.identity.security.tokens import PLATFORM_AUDIENCE
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 from app.identity.services.token_issuer import TokenIssuer
@@ -72,26 +79,49 @@ class PlatformAuthService:
         token_issuer: TokenIssuer,
         token_rotator: TokenRotator,
         audit: AuditService,
+        rate_limiter: RateLimiter,
+        token_denylist: TokenDenylist,
     ) -> None:
-        """Wire the repositories, token helpers, and audit writer (one plain session)."""
+        """Wire the repositories, token helpers, audit writer, login throttle, and denylist.
+
+        rate_limiter is the process-wide singleton (same instance the company login uses),
+        so a per-IP budget spans both login surfaces — an attacker can't dodge the IP cap by
+        alternating between /auth/login and /platform/login. token_denylist (also shared) lets
+        platform logout immediately revoke a god-mode access token, not wait out its TTL.
+        """
         self._platform_admins = platform_admins
         self._organizations = organizations
         self._users = users
         self._token_issuer = token_issuer
         self._token_rotator = token_rotator
         self._audit = audit
+        self._rate_limiter = rate_limiter
+        self._token_denylist = token_denylist
 
-    async def login(self, email: str, password: str) -> tuple[str, str]:
+    async def login(
+        self, email: str, password: str, client_ip: str | None = None
+    ) -> tuple[str, str]:
         """Authenticate a platform admin; return a fresh (access, refresh) pair.
 
-        Contract: mirrors the company audit wiring (PC-04a) — success is recorded
-        same-transaction (with the issued refresh token); a failure is recorded on an
-        independent committed session before the generic error is raised.
+        Contract: THROTTLES on `client_ip` + `email` BEFORE any bcrypt work, then mirrors the
+        company audit wiring (PC-04a) — success is recorded same-transaction (with the issued
+        refresh token); a failure is recorded on an independent committed session before the
+        generic error is raised.
 
         Raises:
+            RateLimitedError: too many recent attempts from this IP or for this account
+                (-> 429) — raised before bcrypt.
             InvalidCredentialsError: unknown email, wrong password, or inactive
                 account — one generic error to prevent enumeration.
         """
+        # Throttle FIRST — before the DB lookup and the bcrypt verify (same model as the
+        # company login). The platform login is the highest-value target, so the throttle
+        # matters most here.
+        ip_throttle_key = ip_key(client_ip)
+        account_throttle_key = account_key(email)
+        self._rate_limiter.check(ip_throttle_key)
+        self._rate_limiter.check(account_throttle_key)
+
         admin = await self._platform_admins.get_by_email(email)
         # Always run bcrypt (real hash or dummy) so an unknown/inactive admin email is
         # indistinguishable from a real one by response time (no enumeration oracle).
@@ -100,6 +130,10 @@ class PlatformAuthService:
         password_hash = admin.password_hash if admin is not None else DUMMY_PASSWORD_HASH
         password_ok = await verify_password_async(password, password_hash)
         if admin is None or not admin.is_active or not password_ok:
+            # Verified failure -> consume both budgets so the next attempt backs off (429).
+            # Never registered on success or a 429 — mirrors AuthService.login.
+            self._rate_limiter.register_failure(ip_throttle_key)
+            self._rate_limiter.register_failure(account_throttle_key)
             # Failed platform login is recorded on an INDEPENDENT session (this path
             # raises, so a same-session row would roll back). actor_email is the attempted
             # email — internal log only, never surfaced to the generic 401, so it adds no
@@ -172,8 +206,14 @@ class PlatformAuthService:
         return access_token, refresh_token
 
     async def logout(self, raw_refresh_token: str) -> None:
-        """Revoke the presented platform refresh token (idempotent), audited same-tx."""
-        await self._token_rotator.revoke(raw_refresh_token)
+        """Revoke the presented platform refresh token AND the admin's access tokens.
+
+        Revoking the refresh token stops new access tokens; revoking the admin subject in the
+        denylist kills the god-mode access token still in flight. Idempotent (unknown -> None).
+        """
+        subject_id = await self._token_rotator.revoke(raw_refresh_token)
+        if subject_id is not None:
+            self._token_denylist.revoke_subject(subject_id)
         # Mirrors AuthService.logout: the opaque token is not resolved to a subject here,
         # so the actor is unattributed (PC-04a item (c) tracks enriching it); the event +
         # IP are still recorded. Same session — logout returns 204 and commits.

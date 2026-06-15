@@ -23,6 +23,7 @@ from app.identity.models.organization import Organization
 from app.identity.principal import Principal
 from app.identity.repositories.organization_repository import OrganizationRepository
 from app.identity.schemas.platform_schemas import OrganizationDetailResponse
+from app.identity.security.token_denylist import TokenDenylist
 from app.identity.services.audit_service import AuditAction, AuditEvent, AuditService
 
 _ENTITY_ORGANIZATION = "organization"
@@ -37,11 +38,19 @@ class PlatformOrgService:
     """Per-organization lifecycle administration (platform domain, metadata only)."""
 
     def __init__(
-        self, organizations: OrganizationRepository, audit: AuditService
+        self,
+        organizations: OrganizationRepository,
+        audit: AuditService,
+        token_denylist: TokenDenylist,
     ) -> None:
-        """Wire the organization repository + audit writer (one plain platform session)."""
+        """Wire the org repository + audit writer (one plain platform session) + denylist.
+
+        token_denylist is the process-wide revocation singleton: suspending an org must
+        immediately kill its users' in-flight access tokens, not wait out the <=15min TTL.
+        """
         self._organizations = organizations
         self._audit = audit
+        self._token_denylist = token_denylist
 
     async def get_detail(self, org_id: UUID) -> OrganizationDetailResponse:
         """Return one org's lifecycle detail (metadata + legal hold).
@@ -67,6 +76,12 @@ class PlatformOrgService:
         organization, user_count = await self._load(org_id)
         from_status = organization.status
         organization.status = status.value
+        # Suspending an org immediately revokes every user's in-flight access token (the
+        # denylist) — otherwise a suspended org's existing tokens reach /users etc. for the
+        # remaining <=15min TTL (the gap this control closes). Reactivation does NOT un-revoke
+        # (those tokens are already dead); users simply log in afresh.
+        if status == OrganizationStatus.suspended:
+            self._token_denylist.revoke_org(org_id)
         await self._audit.record(
             AuditEvent(
                 action=_STATUS_ACTION.get(status.value, AuditAction.ORG_STATUS_CHANGE),
@@ -115,9 +130,7 @@ class PlatformOrgService:
         return row
 
     @staticmethod
-    def _to_detail(
-        organization: Organization, user_count: int
-    ) -> OrganizationDetailResponse:
+    def _to_detail(organization: Organization, user_count: int) -> OrganizationDetailResponse:
         """Assemble the metadata-only detail view from the org + its user count."""
         return OrganizationDetailResponse(
             id=organization.id,

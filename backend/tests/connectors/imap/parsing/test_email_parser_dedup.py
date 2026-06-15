@@ -250,6 +250,19 @@ def test_parse_reused_message_id_html_only_difference_distinct_dedup_keys() -> N
     assert event_1.dedup_key != event_2.dedup_key
 
 
+def test_parse_html_whitespace_only_difference_keeps_distinct_keys() -> None:
+    # Never-false-dedup regression (the reverted 2026-06-14 whitespace-collapse): two appliance
+    # copies with an IDENTICAL plain stub + REUSED Message-ID whose html differs ONLY in whitespace
+    # (a <pre> column re-alignment) MUST keep DISTINCT keys — the html digest is the sole
+    # differentiator, so collapsing whitespace would silently drop one as a dupe (mail loss). The
+    # html digest must therefore NEVER whitespace-collapse / structure-flatten.
+    aligned = parse_email(_alternative_copy("<pre>Long   500\r\nShort  200</pre>"), MAILBOX)
+    realigned = parse_email(_alternative_copy("<pre>Long 500\r\nShort 200</pre>"), MAILBOX)
+
+    assert aligned.body_text == realigned.body_text  # identical selected plain stub
+    assert aligned.dedup_key != realigned.dedup_key  # html whitespace diff keeps them apart
+
+
 def test_parse_html_alternative_qp_rewrap_same_dedup_key() -> None:
     # The html digest must not re-open H-1: two folder copies whose html alternative is
     # quoted-printable re-wrapped at different soft line breaks decode identically → ONE key.

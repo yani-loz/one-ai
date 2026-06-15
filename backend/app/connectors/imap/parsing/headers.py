@@ -43,11 +43,62 @@ def parse_id_headers(raw_bytes: bytes) -> Message:
 
 
 def build_headers(message: EmailMessage) -> dict[str, str | list[str]]:
-    """The full header set as a JSON-able dict; a repeated header collapses to a list of values."""
+    """The full header set as a JSON-able dict; a repeated header collapses to a list of values.
+
+    This is the FULL set — the derived flags (is_automated_*, threading) read it. Only the
+    `allowlist_headers` subset is STORED (CA-CONN-05 data-minimization); build the full set first
+    so the derivations see every signal, then minimize for retention.
+    """
     accumulated: dict[str, list[str]] = defaultdict(list)
     for key, value in message.items():
         accumulated[key].append(safe_str(value))
     return {key: (vals[0] if len(vals) == 1 else vals) for key, vals in accumulated.items()}
+
+
+# The header names RETAINED in storage (CA-CONN-05 data-minimization allowlist; case-insensitive).
+# Kept: identity + threading, addressing, and the automation/flag SOURCE headers (so a stored
+# is_automated flag stays explainable). Everything else is DROPPED — notably the dense PII + secret
+# surface: Received IP/host chains, Authentication-Results / DKIM-Signature / ARC-*, Authorization,
+# X-API-Key and other X-* vendor headers, Delivered-To, and Bcc. The derived columns
+# (is_automated_*, sent_at/received_at, recipients) already distil what the pipeline needs.
+_RETAINED_HEADERS = frozenset(
+    {
+        "message-id",
+        "in-reply-to",
+        "references",
+        "date",
+        "subject",
+        "from",
+        "to",
+        "cc",
+        "reply-to",
+        "sender",
+        "return-path",
+        "auto-submitted",
+        "precedence",
+        "list-id",
+        "list-unsubscribe",
+        "list-post",
+        "list-archive",
+        "content-type",
+        "content-language",
+        "importance",
+        "priority",
+        "x-priority",
+        "x-auto-response-suppress",
+    }
+)
+
+
+def allowlist_headers(headers: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
+    """Return only the data-minimized header allowlist for STORAGE (CA-CONN-05).
+
+    Drops the dense PII + secret surface (Received chains, Authentication-Results, Authorization,
+    X-* vendor headers, Bcc) that GDPR data-minimization would otherwise require us to justify and
+    that is also where a leaked credential (Authorization/X-API-Key) would land. The derived flags
+    were already computed from the FULL header set, so this only narrows what is RETAINED.
+    """
+    return {key: value for key, value in headers.items() if key.lower() in _RETAINED_HEADERS}
 
 
 def received_at_from_headers(message: EmailMessage) -> datetime | None:

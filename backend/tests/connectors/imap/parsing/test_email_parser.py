@@ -425,3 +425,52 @@ def test_parse_genuinely_deep_multipart_never_raises() -> None:
     parsed = parse_email(raw, MAILBOX)  # never raises (parsed or degraded)
 
     assert parsed.dedup_key.startswith("sha256:")
+
+
+# — EQ-2: the secrets-masking gate runs on body_text (the embeddable substrate) before storage —
+
+
+def test_parse_body_with_pasted_api_key_is_redacted() -> None:
+    # The EQ-2 audit found live keys verbatim in stored content; a key pasted into a body must be
+    # masked in body_text before it can reach embeddings/retrieval. Prose around it is preserved.
+    # Built from parts so no contiguous provider-token literal sits in source (GitHub
+    # push-protection); the runtime value is a full key shape the redactor still matches.
+    secret = "sk-ant-" + "api03-AbCdEf0123456789AbCdEf0123456789"
+    raw = _eml(
+        "From: a@x.com\nTo: me@oneai.com\nSubject: creds\nMessage-ID: <sec1@x>\n"
+        "Content-Type: text/plain; charset=utf-8",
+        f"Here is the key {secret} use it.",
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert "sk-ant-api03" not in parsed.body_text
+    assert "[REDACTED:openai_key]" in parsed.body_text
+    assert "use it." in parsed.body_text  # surrounding prose survives
+
+
+def test_parse_body_without_secrets_is_unchanged() -> None:
+    # The masking gate is a no-op on secret-free bodies — ordinary text stores verbatim.
+    raw = _eml(
+        "From: a@x.com\nTo: me@oneai.com\nSubject: hi\nMessage-ID: <sec2@x>\n"
+        "Content-Type: text/plain; charset=utf-8",
+        "Quarterly report attached. Revenue grew 12 percent.",
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert parsed.body_text == "Quarterly report attached. Revenue grew 12 percent."
+
+
+def test_parse_html_body_with_pasted_aws_key_is_redacted() -> None:
+    # The gate runs AFTER the HTML flatten, so a key inside HTML markup is also masked.
+    raw = _eml(
+        "From: a@x.com\nTo: me@oneai.com\nSubject: H\nMessage-ID: <sec3@x>\n"
+        "Content-Type: text/html; charset=utf-8",
+        "<html><body><p>aws key AKIAIOSFODNN7EXAMPLE for prod</p></body></html>",
+    )
+
+    parsed = parse_email(raw, MAILBOX)
+
+    assert "AKIA" not in parsed.body_text
+    assert "[REDACTED:aws_access_key]" in parsed.body_text

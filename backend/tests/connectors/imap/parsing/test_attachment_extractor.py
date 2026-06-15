@@ -32,6 +32,7 @@ from tests.connectors.extraction.conftest import (
     build_docx,
     build_pdf,
     build_tnef,
+    text_page_stream,
 )
 
 
@@ -237,8 +238,16 @@ def test_extract_text_docx_dispatches_to_docx_extractor() -> None:
 
 @pytest.mark.parametrize(
     "content_type",
-    ["image/png", "image/jpeg", "audio/mpeg", "video/mp4", "application/zip",
-     "application/x-rar-compressed", "application/pkcs7-signature", "message/delivery-status"],
+    [
+        "image/png",
+        "image/jpeg",
+        "audio/mpeg",
+        "video/mp4",
+        "application/zip",
+        "application/x-rar-compressed",
+        "application/pkcs7-signature",
+        "message/delivery-status",
+    ],
 )
 def test_extract_text_nondocument_types_return_skipped_nondocument(content_type: str) -> None:
     result = extract_text(_attachment(content_type, b"\x89PNG... binary"))
@@ -267,6 +276,20 @@ def test_extract_text_unhandled_document_formats_return_unsupported_format(
     assert result.status == STATUS_UNSUPPORTED_FORMAT
 
 
+def test_extract_text_macro_enabled_xlsm_dispatches_to_xlsx_not_unsupported() -> None:
+    # DQ 2026-06-14: the dispatch lowercases the content_type, so the canonical CamelCase
+    # `macroEnabled.12` type silently fell to unsupported_format. The .xlsm type must now route to
+    # the xlsx extractor (here a garbage payload -> a real xlsx status, NOT unsupported_format).
+    result = extract_text(
+        _attachment("application/vnd.ms-excel.sheet.macroEnabled.12", b"not a real spreadsheet")
+    )
+
+    # Routed to the xlsx extractor (which returns 'corrupt' for the garbage zip), NOT skipped as an
+    # unsupported format — before the fix the CamelCase type missed the lowercased match entirely.
+    assert result.status != STATUS_UNSUPPORTED_FORMAT
+    assert result.status == "corrupt"
+
+
 def test_extract_text_oversize_payload_skipped_before_any_parse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -286,3 +309,70 @@ def test_extract_text_corrupt_pdf_payload_never_raises() -> None:
 
     assert result.text is None  # honest absent — and the seam did not raise
     assert result.status == "corrupt"
+
+
+# — EQ-2: the secrets-masking gate runs over every text-bearing result before storage —
+
+
+def test_extract_text_attachment_with_api_key_is_redacted() -> None:
+    # The EQ-2 audit found live keys verbatim in extracted_text (from attached credential files).
+    # A key in a text attachment must be masked at the seam — and the count surfaces in `detail`.
+    payload = b"OPENAI_API_KEY=sk-proj-AbCdEf0123456789AbCdEf0123456789\nhost=api.openai.com"
+
+    result = extract_text(_attachment("text/plain", payload))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text is not None
+    assert "sk-proj-" not in result.text
+    assert "[REDACTED:openai_key]" in result.text
+    assert "host=api.openai.com" in result.text  # surrounding content preserved
+    assert result.detail is not None and "secrets_redacted=1" in result.detail
+
+
+def test_extract_text_attachment_dotenv_multiple_secrets_redacted_and_counted() -> None:
+    # A `.env`-shaped credential file (the audit's verbatim case): an AWS key + a keyed secret are
+    # both masked, and the seam reports the total in `detail` for EQ-7 (count only, not the value).
+    payload = (
+        b"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+        b'SUPABASE_SECRET="Xk9zmQ2vLp7zRt4wByN3Tq"\n'
+        b"# end of file"
+    )
+
+    result = extract_text(_attachment("text/plain", payload))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text is not None
+    assert "AKIA" not in result.text and "Xk9zmQ2vLp7zRt4wByN3Tq" not in result.text
+    assert result.detail is not None and "secrets_redacted=2" in result.detail
+
+
+def test_extract_text_secret_free_attachment_has_no_redaction_marker() -> None:
+    # The gate is a no-op on secret-free text: content is verbatim and no marker is appended.
+    result = extract_text(_attachment("text/plain", b"Quarterly report. Revenue grew 12 percent."))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text == "Quarterly report. Revenue grew 12 percent."
+    assert result.detail is None or "secrets_redacted" not in result.detail
+
+
+def test_extract_text_pdf_attachment_with_secret_is_redacted() -> None:
+    # The gate covers binary formats too: a key in PDF page text is masked after extraction.
+    # Built from parts so no contiguous provider-token literal sits in source (GitHub
+    # push-protection); the runtime value is a full key shape the redactor still matches.
+    secret = "sk-ant-" + "api03-AbCdEf0123456789AbCdEf0123"
+    page = text_page_stream(f"key {secret} here")
+    result = extract_text(_attachment("application/pdf", build_pdf([page])))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text is not None
+    assert "sk-ant-api03" not in result.text
+    assert "[REDACTED:openai_key]" in result.text
+
+
+def test_extract_text_honest_null_result_passes_through_masking_unchanged() -> None:
+    # A non-text-bearing result (text=None) must pass the gate untouched — no crash, no marker.
+    result = extract_text(_attachment("image/png", b"\x89PNG binary"))
+
+    assert result.text is None
+    assert result.status == STATUS_SKIPPED_NONDOCUMENT
+    assert result.detail is None or "secrets_redacted" not in result.detail

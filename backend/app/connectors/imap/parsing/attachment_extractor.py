@@ -5,7 +5,9 @@ Role: Extract searchable TEXT from an attachment's raw bytes (design §4 lean-at
       text/* + text-shaped application/* (charset-chain decode; html/rtf FLATTENED, never stored
       as raw markup source — audit EQ-4), PDF (extractors.pdf), docx (extractors.docx), xlsx/xlsm
       (extractors.xlsx, design §2.5) and TNEF (extractors.tnef, design §2.9); other document
-      formats are honestly marked unsupported_format until their phase lands (design §5).
+      formats are honestly marked unsupported_format until their phase lands (design §5). Every
+      text-bearing result then passes the SECRETS-MASKING GATE (redact_secrets, FIX_BEFORE_PROD
+      EQ-2) so the stored extracted_text is secret-free by construction.
 Used by: the IMAP ingest runner (step 3d) — it calls this per ParsedAttachment, stores text +
          status + detail + extractor provenance in email_attachment, then drops the bytes;
          scripts.backfill_attachment_extraction (re-runs the seam over the disk corpus).
@@ -13,8 +15,9 @@ Depends on: app.connectors.imap.parsing.models (ParsedAttachment); the connector
             app.connectors.extraction package — .extraction_result (the contract), .pdf (PDF path),
             .docx (docx path), .xlsx (xlsx/xlsm path), .tnef (TNEF path), .text_sanitize
             (sanitize_body_text + decode_charset_chain + html_to_text — the SINGLE sanitization/
-            decode/flatten sources, shared with email bodies); striprtf (BSD-3-Clause — RTF
-            flattening, audit EQ-4).
+            decode/flatten sources, shared with email bodies), .redact (redact_secrets — the EQ-2
+            secrets-masking gate applied to every text-bearing result); striprtf (BSD-3-Clause — RTF
+            flattening, audit EQ-4); stdlib dataclasses.replace (re-stamp the masked text/detail).
 Key invariants:
   - NEVER raises: a bad/undecodable attachment yields a degraded ExtractionResult, never an
     exception (per-message error isolation — one attachment must not fail the whole email).
@@ -30,6 +33,14 @@ Key invariants:
   - MARKUP IS FLATTENED, never stored as 'extracted' source (audit EQ-4, 44 rows): text/html
     flattens through email_parser's html_to_text; text/rtf + application/rtf strip through
     striprtf — both AFTER the charset chain.
+  - SECRETS-MASKING GATE (FIX_BEFORE_PROD EQ-2): every text-bearing result (extracted / truncated /
+    extracted_partial_scanned) is run through redact_secrets at the seam boundary — AFTER the
+    per-format extractor sanitized its text, so all formats (text/html/rtf, PDF, docx, xlsx, TNEF)
+    are covered by ONE gate. extracted_text is the embeddable substrate; the 2026-06-10 audit found
+    live API keys verbatim in it (from attached credential files). High-confidence credentials are
+    replaced with typed `[REDACTED:...]` placeholders, and `secrets_redacted=N` is appended to
+    `detail` for EQ-7 (count only — the secret is NEVER logged or embedded). A re-ingest/backfill
+    cleans rows stored before the gate landed.
   - The GLOBAL size ceiling (MAX_PARSE_BYTES, design §2) applies before ANY parsing — payloads
     above it are skipped_oversize on every path (bounded memory, never-raise preserved).
   - Non-document types (images/audio/video/archives/signatures) → skipped_nondocument; document
@@ -39,6 +50,7 @@ Key invariants:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import cache
 from importlib import metadata
 
@@ -55,6 +67,7 @@ from app.connectors.extraction.extraction_result import (
     ExtractionResult,
 )
 from app.connectors.extraction.pdf import extract_pdf_text
+from app.connectors.extraction.redact import redact_secrets
 from app.connectors.extraction.text_sanitize import (
     decode_charset_chain,
     html_to_text,
@@ -88,10 +101,13 @@ _DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessi
 # The OOXML SpreadsheetML content types — dispatched to extractors.xlsx (design §2.5): .xlsx plus
 # macro-enabled .xlsm (same reader; macros ignored, never executed). Legacy application/vnd.ms-excel
 # = .xls is an OLE binary, NOT handled here — it stays unsupported_format at the seam.
+# NOTE: dispatch lowercases the incoming content_type, so EVERY constant here MUST be lowercase —
+# the macro-enabled type's canonical CamelCase `macroEnabled` would otherwise never match and .xlsm
+# silently fell to unsupported_format (DQ 2026-06-14).
 _XLSX_CONTENT_TYPES = frozenset(
     {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "application/vnd.ms-excel.sheet.macroenabled.12",
     }
 )
 
@@ -136,7 +152,31 @@ _NONDOCUMENT_EXACT = frozenset(
 
 
 def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
-    """Extract text from one attachment; never raises.
+    """Extract text from one attachment, then mask any secrets in it; never raises.
+
+    Dispatches per content type (see _dispatch_extract), THEN runs the SECRETS-MASKING GATE
+    (FIX_BEFORE_PROD EQ-2) over the result's `text`: extracted_text is the embeddable substrate
+    (future Ask embeddings + retrieval), and the 2026-06-10 EQ-2 audit found LIVE API credentials
+    verbatim in extracted_text (Anthropic/OpenAI/Gemini/Supabase keys, an AWS key, passwords) —
+    pulled from credential files attached to emails. Every text-bearing result therefore passes
+    through redact_secrets before it leaves this seam, regardless of format (text/html/rtf, PDF,
+    docx, xlsx, TNEF), so the STORED column is secret-free by construction. The redaction count is
+    surfaced in the result's `detail` for EQ-7 logging (count only — the secret itself is NEVER
+    logged or embedded in the placeholder). The per-format extractors already sanitized their text
+    (sanitize_body_text), so this gate runs strictly AFTER sanitize, as designed.
+
+    Args:
+        attachment: the parsed attachment (transient payload bytes + declared content type).
+
+    Returns:
+        An ExtractionResult; `text` is non-None only for the text-bearing statuses
+        (extracted / truncated / extracted_partial_scanned), and is secret-masked when present.
+    """
+    return _mask_secrets(_dispatch_extract(attachment))
+
+
+def _dispatch_extract(attachment: ParsedAttachment) -> ExtractionResult:
+    """Route one attachment to its per-format extractor; never raises (the unmasked result).
 
     Dispatch: empty payload → `empty`; payload above MAX_PARSE_BYTES → `skipped_oversize`
     (nothing oversize is ever parsed); text/html → charset chain + html_to_text (EQ-4);
@@ -147,13 +187,6 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
     (§2.5 — typed grid + text render); application/ms-tnef → extractors.tnef
     (§2.9); image/audio/video/archive/signature classes → `skipped_nondocument`; every other
     format → `unsupported_format` (later phases re-target these).
-
-    Args:
-        attachment: the parsed attachment (transient payload bytes + declared content type).
-
-    Returns:
-        An ExtractionResult; `text` is non-None only for the text-bearing statuses
-        (extracted / truncated / extracted_partial_scanned).
     """
     if not attachment.payload:
         return ExtractionResult(None, STATUS_EMPTY, detail="empty payload")
@@ -179,6 +212,25 @@ def extract_text(attachment: ParsedAttachment) -> ExtractionResult:
     if _is_nondocument(content_type):
         return ExtractionResult(None, STATUS_SKIPPED_NONDOCUMENT)
     return ExtractionResult(None, STATUS_UNSUPPORTED_FORMAT)
+
+
+def _mask_secrets(result: ExtractionResult) -> ExtractionResult:
+    """Run the EQ-2 secrets-masking gate over a result's text; honest-NULL results pass through.
+
+    Only text-bearing results carry text to mask (extracted / truncated / extracted_partial_scanned
+    — every other status has text=None). When ≥1 secret is redacted, the masked text replaces the
+    original and a `secrets_redacted=N` marker is appended to `detail` for EQ-7 (count only — the
+    secret is NEVER logged or embedded). When nothing is redacted the result is returned unchanged
+    (cheap identity path: redact_secrets over secret-free text returns it verbatim, count 0).
+    """
+    if result.text is None:
+        return result
+    redacted, count = redact_secrets(result.text)
+    if count == 0:
+        return result
+    marker = f"secrets_redacted={count}"
+    detail = f"{result.detail} {marker}" if result.detail else marker
+    return replace(result, text=redacted, detail=detail)
 
 
 def _is_text_like(content_type: str) -> bool:

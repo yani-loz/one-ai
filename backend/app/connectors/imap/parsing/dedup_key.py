@@ -195,9 +195,7 @@ def _tnef_interior_digest(payload: bytes) -> str:
         interior = TNEF(payload)
         body_component = _tnef_flattened_body_component(interior)
         parts = sorted(
-            sha256(embedded.data).hexdigest()
-            for embedded in interior.attachments
-            if embedded.data
+            sha256(embedded.data).hexdigest() for embedded in interior.attachments if embedded.data
         )
     except Exception:  # tnefparse raises diverse internals on corrupt blobs — degrade, never fail
         return "unparseable"
@@ -262,5 +260,12 @@ def _html_body_digest(
     html_part = message.get_body(preferencelist=("html",))
     if html_part is None:
         return ""
+    # Hash the DECODED html, line endings normalized only — deliberately NOT whitespace-collapsed
+    # or structure-flattened. The html digest's job is anti-collision: when two emails share an
+    # identical plain stub (appliance senders, or a TC-IM-C02 planted decoy) the html is the SOLE
+    # differentiator, so ANY normalization erasing a real html difference (incl. whitespace inside
+    # <pre>/fixed-width tables) would FALSELY collapse distinct mail = mail loss. Never-lose-mail
+    # outranks the ~0.2% residual cross-route dup the folder blocklist already largely removed.
+    # (A 2026-06-14 whitespace-collapse "optimization" was reverted for exactly this reason.)
     html_text = decode_text_part(html_part).replace("\r\n", "\n").replace("\r", "\n")
     return sha256(html_text.encode("utf-8", "replace")).hexdigest()

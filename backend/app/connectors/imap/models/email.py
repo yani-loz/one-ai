@@ -81,9 +81,7 @@ class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
         UniqueConstraint("org_id", "connection_id", "dedup_key", name="uq_email_message_dedup"),
         # 0014 composite-FK anchor: children FK (org_id, id) so their org_id can never diverge.
         UniqueConstraint("org_id", "id", name="uq_email_message_org_row"),
-        ForeignKeyConstraint(
-            ["org_id"], ["organizations.id"], name="fk_email_message_org_id"
-        ),
+        ForeignKeyConstraint(["org_id"], ["organizations.id"], name="fk_email_message_org_id"),
         ForeignKeyConstraint(
             ["org_id", "connection_id"],
             ["connector_connection.org_id", "connector_connection.id"],
@@ -137,8 +135,10 @@ class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     has_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     word_count: Mapped[int | None] = mapped_column(Integer)
     language: Mapped[str | None] = mapped_column(String(16))
-    # Full header set (cheap; preserves metadata even though raw bytes are discarded). Shape matches
-    # the parser's ParsedEmail.headers: a repeated header collapses to a list of its values.
+    # Data-minimized header allowlist (CA-CONN-05): identity/threading/addressing + the automation
+    # flag-source headers only — the Received/Auth/X-*/Authorization/Bcc PII+secret surface is cut
+    # at parse time (headers.allowlist_headers). Shape matches the parser's ParsedEmail.headers: a
+    # repeated header collapses to a list of its values.
     headers: Mapped[dict[str, str | list[str]]] = mapped_column(
         postgresql.JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
@@ -157,9 +157,7 @@ class EmailRecipient(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
         ),
         # 0014 M-6 guard: one edge per (message, kind, address) — re-ingest can't duplicate.
         UniqueConstraint("email_id", "kind", "address", name="uq_email_recipient_edge"),
-        ForeignKeyConstraint(
-            ["org_id"], ["organizations.id"], name="fk_email_recipient_org_id"
-        ),
+        ForeignKeyConstraint(["org_id"], ["organizations.id"], name="fk_email_recipient_org_id"),
         ForeignKeyConstraint(
             ["org_id", "email_id"],
             ["email_message.org_id", "email_message.id"],
@@ -194,9 +192,7 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "email_attachment"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["org_id"], ["organizations.id"], name="fk_email_attachment_org_id"
-        ),
+        ForeignKeyConstraint(["org_id"], ["organizations.id"], name="fk_email_attachment_org_id"),
         ForeignKeyConstraint(
             ["org_id", "email_id"],
             ["email_message.org_id", "email_message.id"],
@@ -231,9 +227,7 @@ class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     # never ''.
     extracted_text: Mapped[str | None] = mapped_column(Text)
     # WHY extracted_text is (or is not) populated — the 0015 CHECK-pinned vocabulary.
-    extraction_status: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="pending"
-    )
+    extraction_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     # Provenance: which engine + version produced this row (version-aware backfill targeting).
     extractor_name: Mapped[str | None] = mapped_column(Text)
     extractor_version: Mapped[str | None] = mapped_column(Text)

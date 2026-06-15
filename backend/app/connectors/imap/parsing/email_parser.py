@@ -9,8 +9,9 @@ Used by: the IMAP ingest runner (step 3d). The stored-text sanitization, charset
 Depends on: stdlib email (BytesParser, policy.default, getaddresses),
             app.connectors.extraction.text_sanitize (sanitize_body_text / decode_charset_chain /
             html_to_text — the connector-agnostic stored-text rules),
-            app.connectors.imap.parsing.headers (header/identity/date primitives), .dedup_key
-            (content-identity computation — A2 split), .flags, .models.
+            app.connectors.extraction.redact (redact_secrets — the EQ-2 secrets-masking gate applied
+            to body_text before storage), app.connectors.imap.parsing.headers (header/identity/date
+            primitives), .dedup_key (content-identity computation — A2 split), .flags, .models.
 Key invariants:
   - ROBUST by construction: every header/body/charset decode ends in an errors='replace' fallback
     (the body decode first walks a STRICT charset chain — declared → cp1252 → windows-1251 — so a
@@ -46,7 +47,12 @@ Key invariants:
   - `body_text` is text/plain when available, else text/html flattened to text. No HTML is stored.
     Sanitized (sanitize_body_text — guarantee: storable as UTF-8): canonical LF line endings; C0
     control chars stripped EXCEPT tab/LF (audit L-6); lone surrogates U+D800–U+DFFF stripped
-    (broken PDF ToUnicode CMaps would otherwise crash the asyncpg flush — poison message).
+    (broken PDF ToUnicode CMaps would otherwise crash the asyncpg flush — poison message). THEN the
+    SECRETS-MASKING GATE (redact_secrets, FIX_BEFORE_PROD EQ-2): body_text is the embeddable
+    substrate, so high-confidence credentials pasted into a body (provider API keys / PEM blocks /
+    keyed secrets) are replaced with typed `[REDACTED:...]` placeholders BEFORE storage — the future
+    embedding/Ask layer relies on this column being secret-free. A re-ingest/backfill cleans rows
+    stored before the gate landed.
   - Stored `from_address` is addr-spec shaped (contains '@') or None: a bare display token in From
     (Exchange NDR 'System Administrator', audit L-7) is NOT stored as an address — the raw token
     stays in `headers` and still feeds the .flags automation classifiers.
@@ -64,6 +70,7 @@ from email.utils import getaddresses
 from hashlib import sha256
 from typing import cast
 
+from app.connectors.extraction.redact import redact_secrets
 from app.connectors.extraction.text_sanitize import (
     decode_charset_chain,
     html_to_text,
@@ -80,6 +87,7 @@ from app.connectors.imap.parsing.headers import (
     ADDR_MAX,
     CONTENT_TYPE_MAX,
     MSGID_MAX,
+    allowlist_headers,
     build_headers,
     clean_message_id,
     parse_date,
@@ -209,7 +217,9 @@ def _parse_email_strict(
         has_attachments=bool(attachments),
         word_count=len(body_text.split()),
         language=None,
-        headers=headers,
+        # Store only the data-minimized allowlist (CA-CONN-05): the derived flags above already
+        # consumed the FULL header set; retention drops the Received/Auth/X-*/Bcc PII surface.
+        headers=allowlist_headers(headers),
     )
 
 
@@ -231,14 +241,24 @@ def _addr_spec_or_none(address: str | None) -> str | None:
 
 
 def _extract_body_text(message: EmailMessage) -> str:
-    """Return the body as plain text: text/plain if present, else text/html flattened, else ''."""
+    """Return the body as plain text: text/plain if present, else text/html flattened, else ''.
+
+    The finalized body passes the SECRETS-MASKING GATE (redact_secrets) AFTER sanitize_body_text:
+    body_text is the embeddable substrate (future Ask embeddings + retrieval), and the 2026-06-10
+    EQ-2 audit found live API keys verbatim in extracted content — anything stored here must be
+    secret-free. Pasted credentials in an email body are redacted to typed `[REDACTED:...]`
+    placeholders before storage (count discarded here — the EQ-7 surfacing lives at the runner's
+    extracted-text seam; the body redaction is the storage-hardening guarantee, not a log signal).
+    A re-ingest/backfill cleans rows stored before this gate landed.
+    """
     body_part = message.get_body(preferencelist=("plain", "html"))
     if body_part is None:
         return ""
     text = _decode_text_part(body_part)
     if body_part.get_content_type() == "text/html":
         text = html_to_text(text)
-    return sanitize_body_text(text)
+    redacted, _secret_count = redact_secrets(sanitize_body_text(text))
+    return redacted
 
 
 def _decode_text_part(part: EmailMessage) -> str:

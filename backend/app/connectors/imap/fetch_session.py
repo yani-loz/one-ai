@@ -6,7 +6,8 @@ Role: A HELD IMAP connection for incremental fetch — the vendor adapter bounda
 Used by: app.connectors.imap.sync.imap_fetcher (drives the session).
 Depends on: imaplib + ssl (stdlib), asyncio + a single-thread executor (thread affinity for the
             stateful connection), app.connectors.imap.client (the two vendor errors + params),
-            app.connectors.base.incremental_fetch (FetchedMessage).
+            app.connectors.imap.egress_guard (resolve-then-validate-then-dial SSRF defence on the
+            real fetch connect), app.connectors.base.incremental_fetch (FetchedMessage).
 Key invariants:
   - One IMAP connection is held for the whole session; ALL blocking imaplib calls run on the SAME
     worker thread (a max_workers=1 executor), so the stateful socket is never touched concurrently
@@ -19,6 +20,10 @@ Key invariants:
   - TRANSPORT SECURITY: the SSL path verifies certificates (default ssl context); a non-SSL
     connection is upgraded via STARTTLS before LOGIN or refused (client.upgrade_to_starttls) —
     credentials never travel in cleartext.
+  - SSRF-SAFE: _default_client_factory resolves + validates the user host (egress_guard) and pins
+    the connect to a validated IP BEFORE login — a loopback/private/link-local/metadata target is
+    refused, and the rebind-proof IP dial preserves the original hostname for TLS verification. A
+    blocked target surfaces as ImapConnectionError (the existing connection-failure path).
   - LIST responses whose mailbox name arrives as a literal (imaplib yields a 2-tuple) are parsed
     to the REAL name, so folders with quotes/8-bit names are synced, not silently skipped.
   - INTERNALDATE is requested and parsed (authoritative received_at for ingest); a parse miss → None
@@ -41,6 +46,12 @@ from typing import Protocol
 from app.connectors.base.incremental_fetch import FetchedMessage
 from app.connectors.imap.client import ImapAuthError, ImapConnectionError, upgrade_to_starttls
 from app.connectors.imap.config import ImapConnectionParams
+from app.connectors.imap.egress_guard import (
+    EgressBlockedError,
+    open_guarded_imap4,
+    open_guarded_imap4_ssl,
+)
+from app.connectors.imap.folder_policy import is_excluded_folder
 
 # Raise imaplib's per-response-LINE cap (a process-global; default 1 MB on 3.12). A large mailbox's
 # single-line `UID SEARCH <min>:*` reply lists every UID and can top 1 MB; without this it's
@@ -119,6 +130,17 @@ def _chunk_uid_set(uids: list[int], max_chars: int = _MAX_UID_SET_CHARS) -> list
     return chunks
 
 
+def _flags_skip(flags: bytes) -> bool:
+    """True if a folder's LIST flags mark it un-ingestable: \\Noselect (not a real folder) OR an
+    RFC 6154 deleted/spam/draft SPECIAL-USE (\\Trash / \\Junk / \\Drafts) — the locale-independent
+    half of the ingest blocklist (a non-English Trash folder is still caught by its server flag).
+    """
+    lowered = flags.lower()
+    return b"\\noselect" in lowered or any(
+        attr in lowered for attr in (b"\\trash", b"\\junk", b"\\drafts")
+    )
+
+
 def _parse_list_item(item: bytes | tuple[bytes, bytes]) -> str | None:
     """Parse one LIST response item to a selectable folder's RAW name (None = skip).
 
@@ -126,15 +148,16 @@ def _parse_list_item(item: bytes | tuple[bytes, bytes]) -> str | None:
     (prefix_ending_in_{N}, name_bytes) TUPLE — the real name is the literal bytes, UN-escaped.
     Naively taking item[0] would capture the `{N}` marker as the folder name and the folder would
     silently never sync. A plain bytes line carries the name inline (quoted-string or atom).
+    Returns None for \\Noselect AND for SPECIAL-USE deleted/spam/draft folders (ingest blocklist).
     """
     if isinstance(item, tuple):
         prefix, literal_name = item[0], item[1]
         match = _LIST_RE.match(prefix.strip())
-        if not match or b"\\noselect" in match.group("flags").lower():
+        if not match or _flags_skip(match.group("flags")):
             return None
         return literal_name.decode("latin-1")
     match = _LIST_RE.match(item.strip())
-    if not match or b"\\noselect" in match.group("flags").lower():
+    if not match or _flags_skip(match.group("flags")):
         return None
     name = match.group("name").decode("latin-1")
     if name.startswith('"') and name.endswith('"'):
@@ -229,8 +252,18 @@ class DefaultImapFetchSession:
         typ, data = self._client.list()
         if typ != "OK":
             return []
-        names = (_parse_list_item(item) for item in data)
-        return [name for name in names if name is not None]
+        parsed = [name for name in (_parse_list_item(item) for item in data) if name is not None]
+        # Apply the NAME-heuristic half of the ingest blocklist (servers that don't advertise
+        # SPECIAL-USE still name their Trash/Junk/Spam/Drafts in the clear). SPECIAL-USE-flagged
+        # ones were already dropped in _parse_list_item. Exclusion is policy, not mail loss.
+        kept = [name for name in parsed if not is_excluded_folder(name)]
+        excluded = len(parsed) - len(kept)
+        if excluded:
+            logger.info(
+                "IMAP: excluded %d Trash/Junk/Spam/Drafts folder(s) from ingest by name policy.",
+                excluded,
+            )
+        return kept
 
     def _blocking_select(self, folder: str) -> int | None:
         # _blocking_list_folders UN-escapes the mailbox name (strips the wire quoting), so it must
@@ -329,20 +362,23 @@ ClientFactory = Callable[[], imaplib.IMAP4]
 def _default_client_factory(params: ImapConnectionParams, socket_timeout: float) -> ClientFactory:
     """A factory that opens the real imaplib connection (mapping connect failures to our error).
 
-    A non-SSL connection is upgraded via STARTTLS before it is returned (so before any LOGIN);
-    a server without TLS raises ImapTlsUnavailableError — credentials never travel in cleartext.
+    The user host is SSRF-validated first (egress_guard) and the connect is pinned to a validated
+    IP — a loopback/private/link-local/metadata target is refused before any socket opens, and the
+    rebind-proof IP dial preserves the original hostname for TLS verification. A non-SSL connection
+    is upgraded via STARTTLS before it is returned (so before any LOGIN); a server without TLS
+    raises ImapTlsUnavailableError — credentials never travel in cleartext.
     """
 
     def _connect() -> imaplib.IMAP4:
+        # Resolve + validate then dial the validated IP (defeats DNS-rebind); the openers own the
+        # on/off switch. A blocked target (EgressBlockedError) becomes the generic connection
+        # failure — which rule matched is never leaked, so a probe gains no signal.
         try:
             if params.use_ssl:
-                return imaplib.IMAP4_SSL(
-                    params.host,
-                    params.port,
-                    ssl_context=ssl.create_default_context(),
-                    timeout=socket_timeout,
-                )
-            client = imaplib.IMAP4(params.host, params.port, timeout=socket_timeout)
+                return open_guarded_imap4_ssl(params, socket_timeout, ssl.create_default_context())
+            client = open_guarded_imap4(params, socket_timeout)
+        except EgressBlockedError as exc:
+            raise ImapConnectionError("Could not reach the IMAP server.") from exc
         except (OSError, imaplib.IMAP4.error) as exc:
             raise ImapConnectionError("Could not reach the IMAP server.") from exc
         upgrade_to_starttls(client)  # closes the socket + raises rather than allow cleartext LOGIN

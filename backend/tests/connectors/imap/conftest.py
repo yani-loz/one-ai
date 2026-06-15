@@ -1,13 +1,18 @@
 """
 Role: DB fixtures for the IMAP email Layer-1 tests — schema (email tables + their FK targets) +
-      a committed session + a connection seed helper.
-Used by: tests under tests/connectors/imap/ that exercise the email repository against a real DB.
-Depends on: app.core.database, app.connectors.imap.models, app.connectors.models (the FK target
-            connector_connection), app.entities.models (the FK target person).
+      a committed session + a connection seed helper. Also defaults the SSRF egress guard OFF for
+      this package's vendor-boundary tests (the guard's own behaviour is covered separately).
+Used by: tests under tests/connectors/imap/ that exercise the email repository against a real DB,
+         and the client.py / fetch_session.py vendor-boundary tests (the autouse guard default).
+Depends on: app.core.config (Settings, for the guard-off override), app.core.database,
+            app.connectors.imap.models, app.connectors.models (the FK target connector_connection),
+            app.entities.models (the FK target person).
 Key invariants:
   - email_message FKs `connector_connection` + `person`; both needed for the email DDL. They're in
     the create/teardown set (truncated, never seeded with identity data).
   - Function-scoped (per-test event loop); TRUNCATE ... CASCADE clears emails + their parents.
+  - The egress guard is OFF by default here (autouse) so the login/STARTTLS tests reach the
+    monkeypatched imaplib without real DNS; test_egress_guard.py re-enables it explicitly.
 """
 
 from __future__ import annotations
@@ -23,9 +28,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.core.config import Settings
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.person import Person
 from tests.conftest import register_org
+
+
+@pytest.fixture(autouse=True)
+def disable_egress_guard_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the SSRF egress guard OFF for this package's vendor-boundary tests.
+
+    The client.py / fetch_session.py tests exercise the IMAP login + STARTTLS lifecycle against a
+    monkeypatched imaplib and a NON-resolvable example host (`mail.example.com`); the egress guard
+    (on by default in prod) would otherwise resolve that host for real and fail them before the
+    vendor seam runs — a concern those tests do not own. The guard's OWN behaviour is covered by
+    test_egress_guard.py, which re-enables it explicitly (overriding this autouse default) and
+    patches the resolver. Patching get_settings where each dial path reads it keeps the override
+    local to this package and avoids mutating the process-wide lru_cache.
+    """
+    guard_off = Settings(connector_egress_guard_enabled=False)
+    monkeypatch.setattr("app.connectors.imap.egress_guard.get_settings", lambda: guard_off)
+
 
 # Email tables FK connector_connection + person, so those FK targets are in the create set too.
 _EMAIL_SCHEMA_TABLES = [

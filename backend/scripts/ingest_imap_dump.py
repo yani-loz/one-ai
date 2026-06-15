@@ -39,6 +39,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.connectors.imap.folder_policy import is_excluded_folder
 from app.connectors.imap.services.email_ingest_service import EmailIngestService, IngestOutcome
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.security.credential_cipher import CredentialCipher
@@ -173,6 +174,24 @@ async def _ingest_mailbox(mailbox: str, files: list[Path], org_id: UUID) -> Coun
     return tally
 
 
+def _drop_blocklist_folders(root: Path, files: list[Path]) -> tuple[list[Path], int]:
+    """Drop .eml files living in a Trash/Junk/Spam/Drafts folder — the SAME ingest blocklist the
+    production fetch path applies (app.connectors.imap.folder_policy), so the dev corpus matches
+    what a real sync would store. The folder is the path segment directly under <mailbox>
+    (root/<mailbox>/INBOX.Trash.Ciela/cur/msg.eml -> 'INBOX.Trash.Ciela'). Returns (kept, excluded).
+    """
+    kept: list[Path] = []
+    excluded = 0
+    for path in files:
+        parts = path.relative_to(root).parts
+        folder = parts[1] if len(parts) > 2 else ""
+        if folder and is_excluded_folder(folder):
+            excluded += 1
+        else:
+            kept.append(path)
+    return kept, excluded
+
+
 def _group_by_mailbox(root: Path, files: list[Path]) -> dict[str, list[Path]]:
     """Group .eml files by the <mailbox> path segment directly under the dump root."""
     groups: dict[str, list[Path]] = defaultdict(list)
@@ -200,6 +219,11 @@ async def _run(root: Path, limit: int, org_id: UUID) -> int:
     if not files:
         # A typo'd path must exit non-zero, never report a successful DONE stored=0 run.
         raise SystemExit(f"no .eml files found under {root} — is the dump root path right?")
+    files, excluded_blocklist = _drop_blocklist_folders(root, files)
+    if excluded_blocklist:
+        print(f"  excluded {excluded_blocklist} .eml in Trash/Junk/Spam/Drafts folders (policy)")
+    if not files:
+        raise SystemExit("every .eml was in a Trash/Junk/Spam/Drafts folder — nothing to ingest.")
     if limit > 0:
         files = files[:: max(1, len(files) // limit)][:limit]
     groups = _group_by_mailbox(root, files)

@@ -35,11 +35,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors.exceptions import (
     ConnectionNotFoundError,
     ConnectorDisabledError,
+    ConnectorNotEntitledError,
     SyncAlreadyRunningError,
 )
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.repositories.connector_connection_repository import (
     ConnectorConnectionRepository,
+)
+from app.connectors.repositories.connector_entitlement_repository import (
+    ConnectorEntitlementRepository,
 )
 from app.connectors.repositories.connector_sync_run_repository import ConnectorSyncRunRepository
 from app.connectors.sync.connector_sync_runner import STALE_SECONDS, ConnectorSyncRunner
@@ -61,21 +65,33 @@ class SyncService:
         runs: ConnectorSyncRunRepository,
         runner: ConnectorSyncRunner,
         audit: AuditService,
+        entitlements: ConnectorEntitlementRepository,
         *,
         spawn: SyncTaskSpawner = spawn_sync_task,
         stale_seconds: int = STALE_SECONDS,
     ) -> None:
-        """Wire the session (for the claim commit), repositories, runner, audit, and spawner."""
+        """Wire the session (claim commit), repos, runner, audit, entitlement reader, and spawner.
+
+        `entitlements` (global session) is the Tier-1 ceiling: a sync won't start for a connector
+        type the company isn't entitled to — so a revoked entitlement stops ingest on the admin
+        plane too (the /me plane additionally re-checks per-user access in MeConnectorService).
+        """
         self._session = session
         self._connections = connections
         self._runs = runs
         self._runner = runner
         self._audit = audit
+        self._entitlements = entitlements
         self._spawn = spawn
         self._stale_seconds = stale_seconds
 
     async def start_sync(
-        self, org_id: UUID, connection_id: UUID, actor: Principal | None = None
+        self,
+        org_id: UUID,
+        connection_id: UUID,
+        actor: Principal | None = None,
+        *,
+        owner_user_id: UUID | None = None,
     ) -> ConnectorConnection:
         """Claim the sync slot, open the ledger, audit, commit, and spawn the runner.
 
@@ -83,14 +99,22 @@ class SyncService:
         claimed run is never unlogged). `actor` is the triggering Principal where one exists
         (the route); None means a system-triggered sync (actor_type='system'). Returns the row.
 
+        SCOPE (CO-01): owner_user_id None = SHARED-only (the admin plane — a user-owned id 404s, so
+        an admin can never decrypt + ingest an employee's mailbox). A set owner_user_id scopes to
+        that user's own row (the /me plane, after its ownership gate).
+
         Raises:
-            ConnectionNotFoundError: the connection isn't the caller's org (-> 404).
+            ConnectionNotFoundError: the connection isn't in scope (-> 404).
             ConnectorDisabledError: the connection is admin-disabled (-> 409).
             SyncAlreadyRunningError: a live run already holds the claim (-> 409).
         """
-        connection = await self._connections.get_in_org(connection_id, org_id)
+        connection = await self._load_scoped(org_id, connection_id, owner_user_id)
         if connection is None:
             raise ConnectionNotFoundError("Connection not found.")
+        if not await self._entitlements.is_entitled(org_id, connection.connector_type):
+            raise ConnectorNotEntitledError(
+                "This connector is not included in your company's plan."
+            )
         if connection.disabled_at is not None:
             raise ConnectorDisabledError("This connection is disabled — enable it before syncing.")
 
@@ -127,9 +151,23 @@ class SyncService:
         await self._session.refresh(connection)  # reload the sync_* columns the claim UPDATE set
         return connection
 
-    async def get_sync_status(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
-        """Return the connection row with its live sync_* progress, or 404 if not the caller's."""
-        connection = await self._connections.get_in_org(connection_id, org_id)
+    async def get_sync_status(
+        self, org_id: UUID, connection_id: UUID, *, owner_user_id: UUID | None = None
+    ) -> ConnectorConnection:
+        """Return the connection row with its live sync_* progress, or 404 if not in scope.
+
+        SCOPE (CO-01): owner_user_id None = SHARED-only (admin plane); set = that user's own row
+        (the /me plane). Mirrors start_sync so an admin can't poll a user-owned connection's sync.
+        """
+        connection = await self._load_scoped(org_id, connection_id, owner_user_id)
         if connection is None:
             raise ConnectionNotFoundError("Connection not found.")
         return connection
+
+    async def _load_scoped(
+        self, org_id: UUID, connection_id: UUID, owner_user_id: UUID | None
+    ) -> ConnectorConnection | None:
+        """Load a connection by plane: NULL owner = shared (admin); set owner = that user's own."""
+        if owner_user_id is None:
+            return await self._connections.get_shared_in_org(connection_id, org_id)
+        return await self._connections.get_for_owner(connection_id, org_id, owner_user_id)

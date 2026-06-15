@@ -27,11 +27,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.connectors.models.connector_consent import ConnectorConsent
+from app.connectors.models.connector_entitlement import ConnectorEntitlement
+from app.connectors.models.connector_policy import ConnectorPolicy
+from app.connectors.models.connector_policy_override import ConnectorPolicyOverride
 from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
 from app.connectors.models.connector_sync_run import ConnectorSyncRun
 
 # Children before parents (email_* FK email_message FK connector_connection; sync_* FK
-# connector_connection), so the explicit deletes never trip an FK even without CASCADE.
+# connector_connection), so the explicit deletes never trip an FK even without CASCADE. The CO-01
+# authorization tables (consent / per-user override / org-wide policy / entitlement) are
+# independent of connector_connection — appended so an org's governance + consent data is erased
+# too (each FKs organizations/users; explicit deletes give honest certificate counts).
 _CONNECT_TABLES_CHILDREN_FIRST = (
     EmailRecipient,
     EmailAttachment,
@@ -39,6 +46,10 @@ _CONNECT_TABLES_CHILDREN_FIRST = (
     ConnectorSyncCursor,
     ConnectorSyncRun,
     ConnectorConnection,
+    ConnectorConsent,
+    ConnectorPolicyOverride,
+    ConnectorPolicy,
+    ConnectorEntitlement,
 )
 
 
@@ -47,9 +58,10 @@ async def erase_connector_data_for_org(org_id: UUID, session: AsyncSession) -> d
 
     The Connect erasure hook (registered in app.main). Deletes, children-first:
     email_recipient, email_attachment, email_message, connector_sync_cursor,
-    connector_sync_run, connector_connection. Each DELETE filters by org_id — the sole
-    containment on the RLS-exempt session (see module invariants). Idempotent: an org with
-    no Connect data returns all-zero counts.
+    connector_sync_run, connector_connection, then the CO-01 authorization tables
+    (connector_consent, connector_policy_override, connector_policy, connector_entitlement).
+    Each DELETE filters by org_id — the sole containment on the RLS-exempt session (see module
+    invariants). Idempotent: an org with no Connect data returns all-zero counts.
     """
     rows_deleted: dict[str, int] = {}
     for model in _CONNECT_TABLES_CHILDREN_FIRST:

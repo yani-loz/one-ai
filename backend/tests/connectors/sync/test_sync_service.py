@@ -54,6 +54,14 @@ class _CapturingSpawn:
         return None
 
 
+class _AlwaysEntitled:
+    """Stub entitlement reader (always entitled) — the Tier-1 sync ceiling is exercised in the
+    route/CO-01 tests; these service-unit tests focus on the claim/ledger/audit logic."""
+
+    async def is_entitled(self, _org_id: UUID, _connector_type: str) -> bool:
+        return True
+
+
 def _service(session: AsyncSession, spawn: _CapturingSpawn) -> SyncService:
     """Build a SyncService whose spawned runner is inert (cipher/registry never exercised)."""
     cipher = CredentialCipher("svc-test-key-not-secure-but-long-enough", require_secure=False)
@@ -64,15 +72,14 @@ def _service(session: AsyncSession, spawn: _CapturingSpawn) -> SyncService:
         runs=ConnectorSyncRunRepository(session),
         runner=runner,
         audit=AuditService(AuditRepository(session)),
+        entitlements=_AlwaysEntitled(),  # type: ignore[arg-type]  # test stub, only is_entitled used
         spawn=spawn,
     )
 
 
 def _actor(org_id: UUID) -> Principal:
     """The company_admin triggering the sync (subject_id lands on the sync.started row)."""
-    return Principal(
-        subject_id=uuid4(), org_id=org_id, role="company_admin", subject_type="user"
-    )
+    return Principal(subject_id=uuid4(), org_id=org_id, role="company_admin", subject_type="user")
 
 
 async def _audit_rows(session: AsyncSession, org_id: UUID, action: str) -> list[AuditLog]:

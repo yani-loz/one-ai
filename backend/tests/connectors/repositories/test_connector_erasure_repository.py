@@ -2,10 +2,11 @@
 Repo-layer tests for the Connect erasure hook (erase_connector_data_for_org) — real DB.
 
 The cross-tenant negative is the headline: deleting org A's Connect rows must not touch ONE
-org B row in ANY of the six tables (the hook's own org-scoped SQL is the only containment on
+org B row in ANY of the ten tables (the hook's own org-scoped SQL is the only containment on
 the RLS-exempt erasure session), and the returned per-table counts must be exactly A's rows.
 Defines its own schema fixture (the suite conftest manages only connector_connection; this
-hook also spans the sync + email tables, whose FKs need `person` to exist). Requires Postgres.
+hook also spans the sync + email + CO-01 authorization tables, whose FKs need `person` and
+`users` to exist). Requires Postgres.
 """
 
 from __future__ import annotations
@@ -22,23 +23,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.connectors.models.connector_consent import ConnectorConsent
+from app.connectors.models.connector_entitlement import ConnectorEntitlement
+from app.connectors.models.connector_policy import ConnectorPolicy
+from app.connectors.models.connector_policy_override import ConnectorPolicyOverride
 from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
 from app.connectors.models.connector_sync_run import ConnectorSyncRun
 from app.connectors.repositories.connector_erasure_repository import erase_connector_data_for_org
 from app.core.database import GlobalSessionLocal, engine, runtime_roles_present
 from app.entities.models.person import Person
+from app.identity.models.user import User
+from app.identity.security.password import hash_password
 from tests.conftest import register_org
 
-# `person` is included only as an FK target of the email tables (created if missing; no rows
-# are seeded into it here — the entity graph has its own erasure hook + tests).
+# `person` is an FK target of the email tables; `users` is the composite-FK target of the CO-01
+# consent + per-user override tables (both created if missing). The CO-01 authorization tables
+# (consent / override / policy / entitlement) were added to the hook by CO-01 — they must be in the
+# schema + the seed + the expected counts, or an org's governance/consent data leaks past erasure.
 _ERASURE_TABLES = [
     Person.__table__,
+    User.__table__,
     ConnectorConnection.__table__,
     ConnectorSyncCursor.__table__,
     ConnectorSyncRun.__table__,
     EmailMessage.__table__,
     EmailRecipient.__table__,
     EmailAttachment.__table__,
+    ConnectorConsent.__table__,
+    ConnectorPolicyOverride.__table__,
+    ConnectorPolicy.__table__,
+    ConnectorEntitlement.__table__,
 ]
 
 _CONNECT_TABLE_NAMES = (
@@ -48,6 +62,10 @@ _CONNECT_TABLE_NAMES = (
     "connector_sync_cursor",
     "connector_sync_run",
     "connector_connection",
+    "connector_consent",
+    "connector_policy_override",
+    "connector_policy",
+    "connector_entitlement",
 )
 
 
@@ -100,9 +118,22 @@ async def _seed_connect_rows(session: AsyncSession, org_id: UUID, tag: str) -> N
     """Seed ONE row per Connect table for `org_id` (values distinct per `tag`).
 
     Registers the org row first (0014 org-root FK); the succeeded sync run carries
-    finished_at (0014 ck_sync_run_terminal_finished: terminal status => finished).
+    finished_at (0014 ck_sync_run_terminal_finished: terminal status => finished). A user is seeded
+    too — the CO-01 consent + per-user override rows FK users(org_id, id).
     """
     await register_org(session, org_id)
+    user_id = uuid4()
+    session.add(
+        User(
+            id=user_id,
+            org_id=org_id,
+            email=f"owner-{user_id.hex}@{tag}.example",
+            full_name=f"{tag} Owner",
+            password_hash=hash_password("Test-Pass-123"),
+            role="member",
+        )
+    )
+    await session.flush()
     connection = ConnectorConnection(
         org_id=org_id,
         connector_type="imap",
@@ -144,6 +175,18 @@ async def _seed_connect_rows(session: AsyncSession, org_id: UUID, tag: str) -> N
             EmailAttachment(
                 org_id=org_id, email_id=message.id, filename=f"{tag}.txt", content_type="text/plain"
             ),
+            ConnectorConsent(
+                org_id=org_id,
+                user_id=user_id,
+                connector_type="imap",
+                scope="mailbox:read",
+                method="app_password",
+            ),
+            ConnectorPolicyOverride(
+                org_id=org_id, user_id=user_id, connector_type="imap", override_type="grant"
+            ),
+            ConnectorPolicy(org_id=org_id, connector_type="imap", org_wide_enabled=True),
+            ConnectorEntitlement(org_id=org_id, connector_type="imap", enabled=True),
         ]
     )
     await session.flush()

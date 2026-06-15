@@ -62,7 +62,12 @@ class ConnectorConnectionRepository:
         return result.scalar_one_or_none() is not None
 
     async def list_for_org(self, org_id: UUID) -> list[ConnectorConnection]:
-        """Return all of one org's connections, newest-first."""
+        """Return all of one org's connections (any owner), newest-first.
+
+        Used by the §7 governance roll-up (metadata only) and org erasure. The ADMIN lifecycle
+        plane must NOT use this (it would expose user-owned mailbox params) — it uses
+        list_shared_for_org / get_shared_in_org instead.
+        """
         result = await self._session.execute(
             select(ConnectorConnection)
             .where(ConnectorConnection.org_id == org_id)
@@ -70,11 +75,92 @@ class ConnectorConnectionRepository:
         )
         return list(result.scalars().all())
 
+    # ── Shared-only reads (CO-01: the admin lifecycle plane governs ORG-OWNED/shared mailboxes
+    #    only — owner_user_id IS NULL — so user-owned mailbox params/credentials never surface to
+    #    an admin via /admin/connectors; user-owned rows go through the owner-scoped /me plane). ──
+    async def get_shared_in_org(
+        self, connection_id: UUID, org_id: UUID
+    ) -> ConnectorConnection | None:
+        """Load a SHARED (owner_user_id IS NULL) connection by id in `org_id`, else None.
+
+        The admin-lifecycle boundary: a user-owned connection resolves to None -> 404, so an admin
+        can never load/test/sync/delete an employee's self-connected mailbox (§7).
+        """
+        result = await self._session.execute(
+            select(ConnectorConnection).where(
+                ConnectorConnection.id == connection_id,
+                ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_shared_for_org(self, org_id: UUID) -> list[ConnectorConnection]:
+        """Return one org's SHARED (owner_user_id NULL) connections, newest-first (admin plane)."""
+        result = await self._session.execute(
+            select(ConnectorConnection)
+            .where(
+                ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id.is_(None),
+            )
+            .order_by(ConnectorConnection.created_at.desc(), ConnectorConnection.id.desc())
+        )
+        return list(result.scalars().all())
+
     async def exists(self, org_id: UUID, connector_type: str, username: str) -> bool:
-        """Return True iff this org already has a connection for (connector_type, username)."""
+        """Return True iff this org already has a SHARED connection for (connector_type, username).
+
+        Scoped to shared rows (owner_user_id IS NULL) — matches the partial unique index for the
+        legacy admin/org-owned create path; user-owned duplicates are checked by exists_for_owner.
+        """
         result = await self._session.execute(
             select(ConnectorConnection.id).where(
                 ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id.is_(None),
+                ConnectorConnection.connector_type == connector_type,
+                ConnectorConnection.username == username,
+            )
+        )
+        return result.first() is not None
+
+    # ── Owner-scoped reads (CO-01 Tier 3 /me plane): a user sees ONLY their own connections ──
+    async def get_for_owner(
+        self, connection_id: UUID, org_id: UUID, owner_user_id: UUID
+    ) -> ConnectorConnection | None:
+        """Load a connection by id iff it is owned by `owner_user_id` in `org_id`, else None.
+
+        The per-user boundary: another user's (or a shared) connection resolves to None -> 404, so
+        a member can never read/act on a connection that is not their own — even in the same org.
+        """
+        result = await self._session.execute(
+            select(ConnectorConnection).where(
+                ConnectorConnection.id == connection_id,
+                ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id == owner_user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_owner(self, org_id: UUID, owner_user_id: UUID) -> list[ConnectorConnection]:
+        """Return all of one user's OWN connections in their org, newest-first."""
+        result = await self._session.execute(
+            select(ConnectorConnection)
+            .where(
+                ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id == owner_user_id,
+            )
+            .order_by(ConnectorConnection.created_at.desc(), ConnectorConnection.id.desc())
+        )
+        return list(result.scalars().all())
+
+    async def exists_for_owner(
+        self, org_id: UUID, owner_user_id: UUID, connector_type: str, username: str
+    ) -> bool:
+        """True iff this user already owns a connection for (connector_type, username)."""
+        result = await self._session.execute(
+            select(ConnectorConnection.id).where(
+                ConnectorConnection.org_id == org_id,
+                ConnectorConnection.owner_user_id == owner_user_id,
                 ConnectorConnection.connector_type == connector_type,
                 ConnectorConnection.username == username,
             )

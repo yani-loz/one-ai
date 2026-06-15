@@ -29,13 +29,26 @@ from app.connectors.base.registry import ConnectorRegistry, build_default_regist
 from app.connectors.repositories.connector_connection_repository import (
     ConnectorConnectionRepository,
 )
+from app.connectors.repositories.connector_consent_repository import ConnectorConsentRepository
+from app.connectors.repositories.connector_entitlement_repository import (
+    ConnectorEntitlementRepository,
+)
+from app.connectors.repositories.connector_policy_override_repository import (
+    ConnectorPolicyOverrideRepository,
+)
+from app.connectors.repositories.connector_policy_repository import ConnectorPolicyRepository
 from app.connectors.repositories.connector_sync_run_repository import ConnectorSyncRunRepository
 from app.connectors.security.credential_cipher import CredentialCipher
+from app.connectors.services.connector_consent_service import ConnectorConsentService
+from app.connectors.services.connector_entitlement_service import ConnectorEntitlementService
+from app.connectors.services.connector_governance_service import ConnectorGovernanceService
 from app.connectors.services.connector_service import ConnectorService
+from app.connectors.services.me_connector_service import MeConnectorService
 from app.connectors.sync.connector_sync_runner import ConnectorSyncRunner
 from app.connectors.sync.sync_service import SyncService
 from app.connectors.sync.sync_task_registry import SyncTaskSpawner, spawn_sync_task
 from app.core.config import get_settings
+from app.core.database import get_session
 from app.identity.dependencies import get_tenant_session
 from app.identity.repositories.audit_repository import AuditRepository
 from app.identity.services.audit_service import AuditService
@@ -51,12 +64,15 @@ def get_connector_registry() -> ConnectorRegistry:
 
 def get_connector_service(
     session: AsyncSession = Depends(get_tenant_session),
+    global_session: AsyncSession = Depends(get_session),
     registry: ConnectorRegistry = Depends(get_connector_registry),
 ) -> ConnectorService:
     """Provide ConnectorService on the caller's TENANT-scoped session.
 
     The credential cipher is built from settings and fails closed (503) in any non-dev env that
-    still uses the dev/weak key — but only here, on actual connector use, never at boot.
+    still uses the dev/weak key — but only here, on actual connector use, never at boot. The
+    entitlement reader is on the GLOBAL session (Tier-1 platform plane) so create/test enforce the
+    company's entitlement ceiling on the admin plane too.
     """
     settings = get_settings()
     cipher = CredentialCipher(
@@ -67,6 +83,7 @@ def get_connector_service(
         cipher=cipher,
         registry=registry,
         audit=AuditService(AuditRepository(session)),
+        entitlements=ConnectorEntitlementRepository(global_session),
     )
 
 
@@ -77,6 +94,7 @@ def get_sync_task_spawner() -> SyncTaskSpawner:
 
 def get_sync_service(
     session: AsyncSession = Depends(get_tenant_session),
+    global_session: AsyncSession = Depends(get_session),
     registry: ConnectorRegistry = Depends(get_connector_registry),
     spawn: SyncTaskSpawner = Depends(get_sync_task_spawner),
 ) -> SyncService:
@@ -99,5 +117,64 @@ def get_sync_service(
         runs=ConnectorSyncRunRepository(session),
         runner=runner,
         audit=AuditService(AuditRepository(session)),
+        entitlements=ConnectorEntitlementRepository(global_session),
         spawn=spawn,
+    )
+
+
+def get_me_connector_service(
+    session: AsyncSession = Depends(get_tenant_session),
+    global_session: AsyncSession = Depends(get_session),
+    connector_service: ConnectorService = Depends(get_connector_service),
+    sync_service: SyncService = Depends(get_sync_service),
+) -> MeConnectorService:
+    """Provide MeConnectorService (CO-01 Tier 3) — self-connect on the caller's tenant session.
+
+    Reuses the request's ConnectorService + SyncService (FastAPI caches get_tenant_session, so they
+    share ONE tenant session — connection + consent + audit commit atomically). Entitlement (the
+    Tier-1 ceiling) is read on the GLOBAL session, since it's the platform plane (no tenant grant).
+    """
+    audit = AuditService(AuditRepository(session))
+    consent_service = ConnectorConsentService(ConnectorConsentRepository(session), audit)
+    return MeConnectorService(
+        connections=ConnectorConnectionRepository(session),
+        connector_service=connector_service,
+        sync_service=sync_service,
+        policies=ConnectorPolicyRepository(session),
+        overrides=ConnectorPolicyOverrideRepository(session),
+        entitlements=ConnectorEntitlementRepository(global_session),
+        consent_service=consent_service,
+        audit=audit,
+    )
+
+
+def get_connector_governance_service(
+    session: AsyncSession = Depends(get_tenant_session),
+    global_session: AsyncSession = Depends(get_session),
+) -> ConnectorGovernanceService:
+    """Provide ConnectorGovernanceService (CO-01 Tier 2) on the caller's tenant session.
+
+    Policy/override/connection reads + writes are tenant-scoped; the entitlement ceiling is read on
+    the GLOBAL session (platform plane). Audit + writes commit with the request unit-of-work.
+    """
+    return ConnectorGovernanceService(
+        policies=ConnectorPolicyRepository(session),
+        overrides=ConnectorPolicyOverrideRepository(session),
+        connections=ConnectorConnectionRepository(session),
+        entitlements=ConnectorEntitlementRepository(global_session),
+        audit=AuditService(AuditRepository(session)),
+    )
+
+
+def get_connector_entitlement_service(
+    global_session: AsyncSession = Depends(get_session),
+) -> ConnectorEntitlementService:
+    """Provide ConnectorEntitlementService (CO-01 Tier 1) on the GLOBAL session (platform plane).
+
+    Entitlement is not a tenant table; a platform admin grants/revokes it across orgs on the
+    BYPASSRLS global engine. The audit row is written on the same global session.
+    """
+    return ConnectorEntitlementService(
+        ConnectorEntitlementRepository(global_session),
+        AuditService(AuditRepository(global_session)),
     )

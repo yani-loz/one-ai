@@ -35,6 +35,14 @@ class UnknownConnectorError(ConnectorError):
     """No connector is registered for the requested type (unsupported / not loaded)."""
 
 
+class ConnectorConsentRequiredError(ConnectorError):
+    """Self-connect was attempted without an accepted consent (HITL gate) (-> 400).
+
+    The Art. 7 consent step is mandatory before any credential is stored — the server enforces it
+    even though the UI gates the button.
+    """
+
+
 # — 404 Not Found —
 class ConnectionNotFoundError(ConnectorError):
     """No connection with the given id is visible in the caller's org scope (-> 404).
@@ -59,6 +67,24 @@ class SyncAlreadyRunningError(ConnectorError):
 
 class ConnectorDisabledError(ConnectorError):
     """The connection is disabled (admin paused it) and cannot be synced until enabled (-> 409)."""
+
+
+# — 403 Forbidden (CO-01 authorization) —
+class ConnectorNotEntitledError(ConnectorError):
+    """The company is not entitled to this connector type (Tier 1 ceiling) (-> 403).
+
+    The outermost gate: a non-entitled company cannot self-connect or be granted the type at all.
+    Message is plan-friendly ("not included in your plan") — never reveals other orgs' entitlement.
+    """
+
+
+class ConnectorAccessDeniedError(ConnectorError):
+    """A user may not self-connect this type under the company's governance (-> 403).
+
+    Either an explicit per-user deny, or org-wide-off with no per-user grant (CO-01 §10.1).
+    Raised BEFORE any credential/OAuth work; message is friendly ("your administrator hasn't
+    enabled this for you").
+    """
 
 
 # — Internal (not HTTP-mapped) —

@@ -21,9 +21,12 @@ from fastapi.responses import JSONResponse
 
 from app.connectors.exceptions import (
     ConnectionNotFoundError,
+    ConnectorAccessDeniedError,
     ConnectorConfigurationError,
+    ConnectorConsentRequiredError,
     ConnectorDisabledError,
     ConnectorError,
+    ConnectorNotEntitledError,
     DuplicateConnectionError,
     SyncAlreadyRunningError,
     UnknownConnectorError,
@@ -31,7 +34,10 @@ from app.connectors.exceptions import (
 
 _STATUS_BY_EXCEPTION: dict[type[ConnectorError], int] = {
     UnknownConnectorError: status.HTTP_400_BAD_REQUEST,
+    ConnectorConsentRequiredError: status.HTTP_400_BAD_REQUEST,
     ConnectionNotFoundError: status.HTTP_404_NOT_FOUND,
+    ConnectorNotEntitledError: status.HTTP_403_FORBIDDEN,
+    ConnectorAccessDeniedError: status.HTTP_403_FORBIDDEN,
     DuplicateConnectionError: status.HTTP_409_CONFLICT,
     SyncAlreadyRunningError: status.HTTP_409_CONFLICT,
     ConnectorDisabledError: status.HTTP_409_CONFLICT,

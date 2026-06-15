@@ -68,6 +68,14 @@ class AuditAction:
     CONNECTOR_DELETED = "connector.deleted"
     SYNC_STARTED = "sync.started"
     SYNC_FINISHED = "sync.finished"
+    # CO-01 authorization (Tier 1/2/3): entitlement, governance, consent + self-connect lifecycle.
+    ENTITLEMENT_GRANTED = "entitlement.granted"
+    ENTITLEMENT_REVOKED = "entitlement.revoked"
+    CONNECTOR_POLICY_CHANGED = "connector.policy_changed"
+    CONNECTOR_CONSENTED = "connector.consented"
+    CONNECTOR_CONSENT_WITHDRAWN = "connector.consent_withdrawn"
+    CONNECTOR_CONNECTED = "connector.connected"
+    CONNECTOR_DISCONNECTED = "connector.disconnected"
 
 
 @dataclass(frozen=True, slots=True)

@@ -61,9 +61,15 @@ def _request(username: str = "sales@example.com") -> CreateConnectionRequest:
 
 def _actor(org_id: UUID) -> Principal:
     """The company_admin performing the action (subject_id lands on the audit row)."""
-    return Principal(
-        subject_id=uuid4(), org_id=org_id, role="company_admin", subject_type="user"
-    )
+    return Principal(subject_id=uuid4(), org_id=org_id, role="company_admin", subject_type="user")
+
+
+class _AlwaysEntitled:
+    """Stub entitlement reader (always entitled) — the Tier-1 ceiling is exercised end-to-end in
+    the route/CO-01 tests; these service-unit tests focus on the create/verify/audit logic."""
+
+    async def is_entitled(self, _org_id: UUID, _connector_type: str) -> bool:
+        return True
 
 
 def _service(session: AsyncSession, registry: ConnectorRegistry) -> ConnectorService:
@@ -72,6 +78,7 @@ def _service(session: AsyncSession, registry: ConnectorRegistry) -> ConnectorSer
         cipher=CredentialCipher(_TEST_KEY, require_secure=False),
         registry=registry,
         audit=AuditService(AuditRepository(session)),
+        entitlements=_AlwaysEntitled(),  # type: ignore[arg-type]  # test stub, only is_entitled used
     )
 
 

@@ -38,3 +38,16 @@ class ConnectionStatus(StrEnum):
     configured = "configured"
     connected = "connected"
     error = "error"
+
+
+class OverrideType(StrEnum):
+    """A company admin's per-user connector decision (connector_policy_override).
+
+    grant: this user MAY self-connect the type even when org-wide is off (an upgrade) ·
+    deny: this user may NOT, even when org-wide is on (an exclusion). Per CO-01 §10.1 a
+    per-user override always wins over the org-wide policy; entitlement (Tier 1) is the
+    hard ceiling above both.
+    """
+
+    grant = "grant"
+    deny = "deny"

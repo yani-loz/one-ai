@@ -32,7 +32,7 @@ from app.connectors.sync.sync_service import SyncService
 from app.identity.dependencies import require_company_admin
 from app.identity.principal import Principal
 
-router = APIRouter(prefix="/connectors", tags=["connectors"])
+router = APIRouter(prefix="/admin/connectors", tags=["connectors-admin"])
 
 
 @router.post("", response_model=ConnectionResponse, status_code=status.HTTP_201_CREATED)

@@ -16,11 +16,13 @@ Key invariants:
     is missing/inactive, so no timing oracle) → legal hold (409).
   - ATOMIC: all deletes/scrubs + every erasure hook + the org.erased audit row commit in ONE
     request transaction (get_session) — a partial erasure can't be left behind.
-  - COMPLETE across tenant PII: deletes users + refresh tokens (tokens FIRST — they key on
-    the users' ids), SCRUBS support_grant.decided_by_email (a tenant subject), then runs
-    EVERY registered erasure hook (Connect tables + the entity graph — CA-CONN-01/03) on the
-    same session; the certificate reports each hook's per-table counts. The hooks run on the
-    RLS-EXEMPT global session BY DESIGN, so each hook's own org-scoped SQL is the only
+  - COMPLETE across tenant PII: deletes refresh tokens (they key on the users' ids), SCRUBS
+    support_grant.decided_by_email (a tenant subject), runs EVERY registered erasure hook
+    (Connect tables + the entity graph — CA-CONN-01/03) on the same session, THEN deletes the
+    users — hooks-before-users so a CO-01 user-owned connector_connection's ON DELETE CASCADE
+    can't erase the connector corpus before the hook counts it (the certificate would otherwise
+    underreport it as zero). The certificate reports each hook's per-table counts. The hooks run
+    on the RLS-EXEMPT global session BY DESIGN, so each hook's own org-scoped SQL is the only
     containment. FAIL-CLOSED: a registry missing ANY required module (REQUIRED_ERASURE_HOOKS —
     empty AND partial configurations both) refuses to erase at all
     (ErasureNotConfiguredError -> 500) — a process that skipped create_app()'s hook
@@ -113,8 +115,10 @@ class ErasureService:
         Order: LOCK the org (FOR UPDATE) → confirm slug (400) → re-auth password (403; a
         missing OR deactivated admin fails identically, against a dummy hash so timing can't
         tell which) → legal-hold guard (409, touch nothing) → delete tokens → scrub support
-        emails → delete users → run every registered erasure hook (Connect + entity graph) →
-        offboard → audit. All atomic. The row lock closes a TOCTOU: a concurrent
+        emails → run every registered erasure hook (Connect + entity graph) → delete users →
+        offboard → audit. All atomic. (Hooks run BEFORE the user delete so a user-owned
+        connection's ON DELETE CASCADE can't erase the connector corpus uncounted — see below.)
+        The row lock closes a TOCTOU: a concurrent
         set_legal_hold can't slip a hold in between the legal_hold read and the deletes — it
         blocks until this transaction commits, so a hold placed as a purge looms is never
         overwritten by an in-flight erase.
@@ -145,9 +149,7 @@ class ErasureService:
         if organization is None:
             raise OrganizationNotFoundError("Organization not found.")
         if payload.confirm_slug != organization.slug:
-            raise ErasureConfirmationError(
-                "Confirmation does not match the organization's slug."
-            )
+            raise ErasureConfirmationError("Confirmation does not match the organization's slug.")
         admin = await self._platform_admins.get_by_id(actor.subject_id)
         # Always pay the bcrypt cost (dummy hash when the admin is missing/deactivated) so the
         # generic 403 can't be told apart by response time; async so it never blocks the loop.
@@ -163,14 +165,21 @@ class ErasureService:
 
         tokens_deleted = await self._refresh_tokens.delete_for_org_users(org_id)
         emails_scrubbed = await self._support_grants.scrub_decider_emails(org_id)
-        users_erased = await self._users.delete_all_in_org(org_id)
         # Feature-module erasure (Connect tables + the entity graph — CA-CONN-01/03): every
         # registered hook runs in THIS transaction on the shared session; each hook's SQL is
         # org-scoped (the only containment on the RLS-exempt session). Counts merge into one
         # per-table report (hooks own disjoint tables).
+        #
+        # RUN BEFORE deleting users (cross-vendor review P2): a CO-01 user-owned
+        # connector_connection FKs users(org_id, id) ON DELETE CASCADE, so deleting users FIRST
+        # would cascade-remove the connection + its email/sync children before the Connect hook
+        # could count them — the certificate would then UNDERREPORT the connector corpus as zero
+        # for the default self-connect path. Erasing the feature tables explicitly first counts
+        # them honestly; the user delete below then has nothing connector-related left to cascade.
         erased_rows_by_table: dict[str, int] = {}
         for hook in self._erasure_hooks.values():
             erased_rows_by_table.update(await hook(org_id, self._session))
+        users_erased = await self._users.delete_all_in_org(org_id)
         organization.status = OrganizationStatus.offboarded.value
         erased_at = datetime.now(UTC)
 

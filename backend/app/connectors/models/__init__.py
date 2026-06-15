@@ -13,7 +13,19 @@ Key invariants:
 from __future__ import annotations
 
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.connectors.models.connector_consent import ConnectorConsent
+from app.connectors.models.connector_entitlement import ConnectorEntitlement
+from app.connectors.models.connector_policy import ConnectorPolicy
+from app.connectors.models.connector_policy_override import ConnectorPolicyOverride
 from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
 from app.connectors.models.connector_sync_run import ConnectorSyncRun
 
-__all__ = ["ConnectorConnection", "ConnectorSyncCursor", "ConnectorSyncRun"]
+__all__ = [
+    "ConnectorConnection",
+    "ConnectorConsent",
+    "ConnectorEntitlement",
+    "ConnectorPolicy",
+    "ConnectorPolicyOverride",
+    "ConnectorSyncCursor",
+    "ConnectorSyncRun",
+]

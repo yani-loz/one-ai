@@ -1,6 +1,6 @@
 """
-Role: HTTP contract + tenancy tests for the /connectors/{id}/sync endpoints — POST triggers (202)
-      and GET polls the live status, the cross-tenant 404 (the non-negotiable), the disabled/
+Role: HTTP contract + tenancy tests for the /admin/connectors/{id}/sync endpoints — POST triggers
+      (202) and GET polls the live status, the cross-tenant 404 (the non-negotiable), the disabled/
       already-running 409s, and the role + auth gates. The background runner is NEVER actually
       spawned: get_sync_task_spawner is overridden with a capture, so these tests exercise the real
       route → service → claim/ledger → DB path while asserting the spawn happened, not running it.
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors.dependencies import get_sync_task_spawner
 from app.identity.models.audit_log import AuditLog
 from app.main import app
-from tests.conftest import seed_org
+from tests.connectors.co01_seed import seed_entitled_org
 from tests.connectors.conftest import bearer, company_token
 
 
@@ -70,7 +70,7 @@ async def sync_client(sync_schema: None, spawn_calls: list[str]) -> AsyncIterato
 
 async def _create(client: AsyncClient, token: str) -> str:
     """Create a connection via the real API and return its id."""
-    created = await client.post("/connectors", json=_payload(), headers=bearer(token))
+    created = await client.post("/admin/connectors", json=_payload(), headers=bearer(token))
     assert created.status_code == 201
     return created.json()["id"]
 
@@ -78,10 +78,12 @@ async def _create(client: AsyncClient, token: str) -> str:
 async def test_start_sync_returns_202_running_and_spawns(
     sync_client: AsyncClient, spawn_calls: list[str]
 ) -> None:
-    token = company_token(uuid4(), await seed_org())
+    token = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, token)
 
-    response = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    response = await sync_client.post(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(token)
+    )
 
     assert response.status_code == 202
     body = response.json()
@@ -94,11 +96,13 @@ async def test_start_sync_returns_202_running_and_spawns(
 async def test_start_sync_on_a_disabled_connection_returns_409(
     sync_client: AsyncClient, spawn_calls: list[str]
 ) -> None:
-    token = company_token(uuid4(), await seed_org())
+    token = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, token)
-    await sync_client.post(f"/connectors/{connection_id}/disable", headers=bearer(token))
+    await sync_client.post(f"/admin/connectors/{connection_id}/disable", headers=bearer(token))
 
-    response = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    response = await sync_client.post(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(token)
+    )
 
     assert response.status_code == 409
     assert spawn_calls == []  # never spawned a runner for a disabled connection
@@ -107,11 +111,13 @@ async def test_start_sync_on_a_disabled_connection_returns_409(
 async def test_start_sync_when_already_running_returns_409(
     sync_client: AsyncClient, spawn_calls: list[str]
 ) -> None:
-    token = company_token(uuid4(), await seed_org())
+    token = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, token)
-    first = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    first = await sync_client.post(f"/admin/connectors/{connection_id}/sync", headers=bearer(token))
 
-    second = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    second = await sync_client.post(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(token)
+    )
 
     assert first.status_code == 202
     assert second.status_code == 409  # the fresh claim is still held
@@ -122,11 +128,13 @@ async def test_start_sync_cross_tenant_returns_404(
     sync_client: AsyncClient, spawn_calls: list[str]
 ) -> None:
     # NON-NEGOTIABLE: org B triggering a sync on org A's connection is a 404, never a leak/spawn.
-    org_a = company_token(uuid4(), await seed_org())
+    org_a = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, org_a)
-    org_b = company_token(uuid4(), await seed_org())
+    org_b = company_token(uuid4(), await seed_entitled_org())
 
-    response = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(org_b))
+    response = await sync_client.post(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(org_b)
+    )
 
     assert response.status_code == 404
     assert spawn_calls == []
@@ -134,10 +142,12 @@ async def test_start_sync_cross_tenant_returns_404(
 
 
 async def test_get_sync_status_returns_idle_for_a_new_connection(sync_client: AsyncClient) -> None:
-    token = company_token(uuid4(), await seed_org())
+    token = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, token)
 
-    response = await sync_client.get(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    response = await sync_client.get(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(token)
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -149,11 +159,13 @@ async def test_get_sync_status_returns_idle_for_a_new_connection(sync_client: As
 
 async def test_get_sync_status_cross_tenant_returns_404(sync_client: AsyncClient) -> None:
     # NON-NEGOTIABLE: org B reading org A's sync status is a 404, never a cross-org peek.
-    org_a = company_token(uuid4(), await seed_org())
+    org_a = company_token(uuid4(), await seed_entitled_org())
     connection_id = await _create(sync_client, org_a)
-    org_b = company_token(uuid4(), await seed_org())
+    org_b = company_token(uuid4(), await seed_entitled_org())
 
-    response = await sync_client.get(f"/connectors/{connection_id}/sync", headers=bearer(org_b))
+    response = await sync_client.get(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(org_b)
+    )
 
     assert response.status_code == 404
     assert "sales@example.com" not in response.text
@@ -164,19 +176,19 @@ async def test_start_sync_audit_row_carries_the_jwt_actor(
 ) -> None:
     # H-5 end to end: the route plumbs the verified principal into start_sync, so the
     # sync.started row records WHO triggered the run (never 'system' for a human trigger).
-    user_id, org_id = uuid4(), await seed_org()
+    user_id, org_id = uuid4(), await seed_entitled_org()
     token = company_token(user_id, org_id)
     connection_id = await _create(sync_client, token)
 
-    response = await sync_client.post(f"/connectors/{connection_id}/sync", headers=bearer(token))
+    response = await sync_client.post(
+        f"/admin/connectors/{connection_id}/sync", headers=bearer(token)
+    )
 
     assert response.status_code == 202
     rows = (
         (
             await db_session.execute(
-                select(AuditLog).where(
-                    AuditLog.org_id == org_id, AuditLog.action == "sync.started"
-                )
+                select(AuditLog).where(AuditLog.org_id == org_id, AuditLog.action == "sync.started")
             )
         )
         .scalars()
@@ -192,12 +204,12 @@ async def test_start_sync_audit_row_carries_the_jwt_actor(
 async def test_start_sync_as_member_returns_403(sync_client: AsyncClient) -> None:
     token = company_token(uuid4(), uuid4(), role="member")
 
-    response = await sync_client.post(f"/connectors/{uuid4()}/sync", headers=bearer(token))
+    response = await sync_client.post(f"/admin/connectors/{uuid4()}/sync", headers=bearer(token))
 
     assert response.status_code == 403
 
 
 async def test_get_sync_status_missing_token_returns_401(sync_client: AsyncClient) -> None:
-    response = await sync_client.get(f"/connectors/{uuid4()}/sync")
+    response = await sync_client.get(f"/admin/connectors/{uuid4()}/sync")
 
     assert response.status_code == 401

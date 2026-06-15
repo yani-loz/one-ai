@@ -25,6 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
+from app.connectors.models.connector_consent import ConnectorConsent
+from app.connectors.models.connector_entitlement import ConnectorEntitlement
+from app.connectors.models.connector_policy import ConnectorPolicy
+from app.connectors.models.connector_policy_override import ConnectorPolicyOverride
 from app.connectors.models.connector_sync_cursor import ConnectorSyncCursor
 from app.connectors.models.connector_sync_run import ConnectorSyncRun
 from app.core.database import engine
@@ -55,11 +59,24 @@ _CONNECT_ENTITY_TABLES = [
     EmailMessage.__table__,
     EmailRecipient.__table__,
     EmailAttachment.__table__,
+    # CO-01 authorization tables — the Connect erasure hook now deletes these too, so the
+    # certificate counts include them; seed one row per org so the cross-tenant negative is real.
+    ConnectorConsent.__table__,
+    ConnectorPolicyOverride.__table__,
+    ConnectorPolicy.__table__,
+    ConnectorEntitlement.__table__,
 ]
 
-# One seeded row per PII table per org (see _seed_connect_entity_rows): the erase-A certificate
-# must report EXACTLY these per-table counts.
+# One seeded row per PII table per org (see _seed_connect_entity_rows). Used for the row-SURVIVAL
+# loop: after erasing A, every one of these tables must have 0 A-rows and 1 (untouched) B-row.
 _ONE_ROW_PER_PII_TABLE = {table.name: 1 for table in _CONNECT_ENTITY_TABLES}
+
+# The deletion CERTIFICATE now counts EVERY PII table honestly (one row each): the ErasureService
+# runs the feature erasure hooks BEFORE deleting users (2026-06-15 cross-vendor review P2), so the
+# Connect hook explicitly deletes + counts connector_consent / connector_policy_override itself,
+# rather than having them cascade-erased uncounted by the user delete. The user delete then has
+# nothing connector-related left to cascade.
+_EXPECTED_CERTIFICATE_COUNTS = dict(_ONE_ROW_PER_PII_TABLE)
 
 
 def _missing_connect_entity_tables(sync_connection: object) -> list[object]:
@@ -100,9 +117,12 @@ async def connect_entity_schema(db_session: AsyncSession) -> AsyncIterator[None]
 
 
 async def _seed_org(session: AsyncSession, slug: str):
-    """Seed an org + its company_admin + a platform admin; return (org, platform_admin)."""
+    """Seed an org + its company_admin + a platform admin; return (org, platform_admin, admin_id).
+
+    The returned admin id is reused as the CO-01 consent/override FK target (one user per org).
+    """
     org = await seed_organization(session, name=slug.title(), slug=slug)
-    await seed_user(
+    admin = await seed_user(
         session,
         org_id=org.id,
         email=f"admin@{slug}.example",
@@ -112,11 +132,17 @@ async def _seed_org(session: AsyncSession, slug: str):
     platform_admin = await seed_platform_admin(
         session, email=f"staff-{slug}@ethera.example", full_name="Staff"
     )
-    return org, platform_admin
+    return org, platform_admin, admin.id
 
 
-async def _seed_connect_entity_rows(session: AsyncSession, org_id: UUID, tag: str) -> None:
-    """Seed ONE row per Connect + entity-graph PII table for `org_id` (values distinct per tag)."""
+async def _seed_connect_entity_rows(
+    session: AsyncSession, org_id: UUID, tag: str, user_id: UUID
+) -> None:
+    """Seed ONE row per Connect + entity-graph PII table for `org_id` (values distinct per tag).
+
+    `user_id` is the org's existing company_admin (NOT a new user — the certificate asserts exactly
+    one users row per org), reused as the FK target for the CO-01 consent + per-user override rows.
+    """
     person = Person(org_id=org_id, display_name=f"{tag} Person")
     company = Company(org_id=org_id, name=f"{tag} GmbH")
     connection = ConnectorConnection(
@@ -170,6 +196,18 @@ async def _seed_connect_entity_rows(session: AsyncSession, org_id: UUID, tag: st
             EmailAttachment(
                 org_id=org_id, email_id=message.id, filename=f"{tag}.txt", content_type="text/plain"
             ),
+            ConnectorConsent(
+                org_id=org_id,
+                user_id=user_id,
+                connector_type="imap",
+                scope="mailbox:read",
+                method="app_password",
+            ),
+            ConnectorPolicyOverride(
+                org_id=org_id, user_id=user_id, connector_type="imap", override_type="grant"
+            ),
+            ConnectorPolicy(org_id=org_id, connector_type="imap", org_wide_enabled=True),
+            ConnectorEntitlement(org_id=org_id, connector_type="imap", enabled=True),
         ]
     )
     await session.flush()
@@ -187,10 +225,10 @@ async def _org_row_count(session: AsyncSession, table: str, org_id: UUID) -> int
 async def test_erase_purges_every_org_a_pii_table_and_spares_every_org_b_row(
     client: AsyncClient, db_session: AsyncSession, connect_entity_schema: None
 ) -> None:
-    org_a, platform_admin = await _seed_org(db_session, "acme")
-    org_b, _admin_b = await _seed_org(db_session, "globex")
-    await _seed_connect_entity_rows(db_session, org_a.id, "acme")
-    await _seed_connect_entity_rows(db_session, org_b.id, "globex")
+    org_a, platform_admin, admin_a = await _seed_org(db_session, "acme")
+    org_b, _admin_b, admin_b = await _seed_org(db_session, "globex")
+    await _seed_connect_entity_rows(db_session, org_a.id, "acme", admin_a)
+    await _seed_connect_entity_rows(db_session, org_b.id, "globex", admin_b)
     await db_session.commit()
 
     response = await client.post(
@@ -200,8 +238,12 @@ async def test_erase_purges_every_org_a_pii_table_and_spares_every_org_b_row(
     )
 
     assert response.status_code == 200
-    # The certificate reports the hook deletes truthfully — exactly org A's rows, never B's.
-    assert response.json()["erased_rows_by_table"] == _ONE_ROW_PER_PII_TABLE
+    # The certificate reports the hook deletes truthfully — exactly org A's rows (one per table),
+    # never B's. Hooks run BEFORE the user delete, so every connector table is counted honestly
+    # (no more cascade-erased-uncounted CO-01 rows).
+    assert response.json()["erased_rows_by_table"] == _EXPECTED_CERTIFICATE_COUNTS
+    # Row survival is the real proof of erasure: A's rows are GONE (whether by the hook or the user
+    # cascade) and B's survive — for EVERY table, including the cascaded CO-01 ones.
     for table in [*_ONE_ROW_PER_PII_TABLE, "users"]:
         assert await _org_row_count(db_session, table, org_a.id) == 0, (
             f"{table}: an org A row survived erasure"

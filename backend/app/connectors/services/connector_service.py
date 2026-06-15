@@ -46,11 +46,15 @@ from app.connectors.base.registry import ConnectorRegistry
 from app.connectors.enums import AuthMethod, ConnectionStatus, ConnectorType
 from app.connectors.exceptions import (
     ConnectionNotFoundError,
+    ConnectorNotEntitledError,
     DuplicateConnectionError,
 )
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.connectors.repositories.connector_connection_repository import (
     ConnectorConnectionRepository,
+)
+from app.connectors.repositories.connector_entitlement_repository import (
+    ConnectorEntitlementRepository,
 )
 from app.connectors.schemas.connector_schemas import CreateConnectionRequest
 from app.connectors.security.credential_cipher import CredentialCipher
@@ -61,21 +65,28 @@ from app.identity.services.audit_service import AuditAction, AuditEvent, AuditSe
 logger = logging.getLogger(__name__)
 
 _ENTITY_CONNECTION = "connector_connection"
-_IDENTITY_CONSTRAINT = "uq_connector_connection_identity"
+# CO-01 (0018) replaced the single uq_connector_connection_identity with two owner-partitioned
+# partial unique indexes (shared rows vs user-owned rows); a duplicate hits one of these.
+_IDENTITY_CONSTRAINTS = frozenset(
+    {
+        "uq_connector_connection_shared_identity",
+        "uq_connector_connection_owned_identity",
+    }
+)
 
 
 def _violates_connection_identity(exc: IntegrityError) -> bool:
-    """True iff `exc` is the uq_connector_connection_identity unique violation.
+    """True iff `exc` is a connection-identity unique violation (shared or owned partial index).
 
     Prefers the driver's structured constraint name (asyncpg chains the original
-    UniqueViolationError as exc.orig.__cause__ with .constraint_name); falls back to
-    matching the constraint name in the database error message.
+    UniqueViolationError as exc.orig.__cause__ with .constraint_name); falls back to matching the
+    constraint name in the database error message.
     """
     cause = getattr(exc.orig, "__cause__", None)
     constraint_name = getattr(cause, "constraint_name", None)
     if constraint_name is not None:
-        return constraint_name == _IDENTITY_CONSTRAINT
-    return _IDENTITY_CONSTRAINT in str(exc.orig)
+        return constraint_name in _IDENTITY_CONSTRAINTS
+    return any(name in str(exc.orig) for name in _IDENTITY_CONSTRAINTS)
 
 
 class ConnectorService:
@@ -87,15 +98,34 @@ class ConnectorService:
         cipher: CredentialCipher,
         registry: ConnectorRegistry,
         audit: AuditService,
+        entitlements: ConnectorEntitlementRepository,
     ) -> None:
-        """Wire the repository, credential cipher, connector registry, and audit writer."""
+        """Wire the repo, cipher, registry, audit writer, and the Tier-1 entitlement reader.
+
+        `entitlements` (global session) is the hard ceiling: create + test of a SHARED connection
+        require the company to be entitled to the type (CO-01 invariant b — entitlement is checked
+        before any credential work, on the admin plane too, not just /me).
+        """
         self._connections = connections
         self._cipher = cipher
         self._registry = registry
         self._audit = audit
+        self._entitlements = entitlements
+
+    async def _require_entitled(self, org_id: UUID, connector_type: str) -> None:
+        """Raise ConnectorNotEntitledError (-> 403) unless the company is entitled to the type."""
+        if not await self._entitlements.is_entitled(org_id, connector_type):
+            raise ConnectorNotEntitledError(
+                "This connector is not included in your company's plan."
+            )
 
     async def create_connection(
-        self, org_id: UUID, request: CreateConnectionRequest, actor: Principal
+        self,
+        org_id: UUID,
+        request: CreateConnectionRequest,
+        actor: Principal,
+        owner_user_id: UUID | None = None,
+        audit_action: str = AuditAction.CONNECTOR_CREATED,
     ) -> ConnectorConnection:
         """Store a new connection with its credential encrypted at rest, audited same-tx.
 
@@ -103,15 +133,31 @@ class ConnectorService:
         the insert). Content-blind: connector_type + host only — never the credential, never
         the mailbox username.
 
+        `owner_user_id` NULL = org-owned/shared (the legacy admin path); set = user-owned (the
+        CO-01 self-connect path). The duplicate pre-check is scoped to match: shared rows collide
+        per org, owned rows per owner.
+
         Raises:
-            DuplicateConnectionError: this org already has a connection for
-                (connector_type, username) (-> 409) — caught both up-front and on the insert race.
+            ConnectorNotEntitledError: the company is not entitled to this connector type (-> 403)
+                — the Tier-1 ceiling, checked before any credential is stored.
+            DuplicateConnectionError: a connection for (connector_type, username) already exists in
+                the matching scope (-> 409) — caught both up-front and on the insert race.
         """
-        if await self._connections.exists(org_id, request.connector_type.value, request.username):
+        await self._require_entitled(org_id, request.connector_type.value)
+        if owner_user_id is None:
+            duplicate = await self._connections.exists(
+                org_id, request.connector_type.value, request.username
+            )
+        else:
+            duplicate = await self._connections.exists_for_owner(
+                org_id, owner_user_id, request.connector_type.value, request.username
+            )
+        if duplicate:
             raise DuplicateConnectionError("A connection for this mailbox already exists.")
         connection = ConnectorConnection(
             org_id=org_id,
             connector_type=request.connector_type.value,
+            owner_user_id=owner_user_id,
             display_name=request.display_name,
             auth_method=AuthMethod.app_password.value,
             username=request.username,
@@ -132,7 +178,7 @@ class ConnectorService:
             raise DuplicateConnectionError("A connection for this mailbox already exists.") from exc
         await self._audit.record(
             self._connection_event(
-                AuditAction.CONNECTOR_CREATED,
+                audit_action,
                 actor,
                 created,
                 {"connector_type": created.connector_type, "host": request.host},
@@ -141,19 +187,35 @@ class ConnectorService:
         return created
 
     async def list_connections(self, org_id: UUID) -> list[ConnectorConnection]:
-        """Return all of the caller's org connections, newest-first."""
-        return await self._connections.list_for_org(org_id)
+        """Return the org's SHARED connections, newest-first (the admin lifecycle plane).
+
+        Shared-only (owner_user_id IS NULL): user-owned mailboxes never surface here — an admin
+        sees those only as §7 metadata via the governance roll-up, never their params/credential.
+        """
+        return await self._connections.list_shared_for_org(org_id)
 
     async def get_connection(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
-        """Load one of the caller's connections, or raise ConnectionNotFoundError (-> 404)."""
-        connection = await self._connections.get_in_org(connection_id, org_id)
+        """Load one of the org's SHARED connections, or 404 (the admin lifecycle plane).
+
+        Shared-only: a user-owned connection id resolves to ConnectionNotFoundError (-> 404), so an
+        admin can never reach an employee's self-connected mailbox via /admin/connectors (§7).
+        """
+        return await self._load_scoped(org_id, connection_id, owner_user_id=None)
+
+    async def _load_scoped(
+        self, org_id: UUID, connection_id: UUID, *, owner_user_id: UUID | None
+    ) -> ConnectorConnection:
+        """Load a connection scoped to its plane, or 404. NULL owner_user_id = shared (admin plane);
+        a set owner_user_id = that user's own row (the /me plane). The scope IS the isolation."""
+        if owner_user_id is None:
+            connection = await self._connections.get_shared_in_org(connection_id, org_id)
+        else:
+            connection = await self._connections.get_for_owner(connection_id, org_id, owner_user_id)
         if connection is None:
             raise ConnectionNotFoundError("Connection not found.")
         return connection
 
-    async def delete_connection(
-        self, org_id: UUID, connection_id: UUID, actor: Principal
-    ) -> None:
+    async def delete_connection(self, org_id: UUID, connection_id: UUID, actor: Principal) -> None:
         """Delete one of the caller's connections (404 if it isn't theirs), audited same-tx.
 
         The DELETE cascades the connection's ingested corpus away (codebase-review H-7), so the
@@ -210,12 +272,18 @@ class ConnectorService:
             )
         return connection
 
-    async def test_connection(self, org_id: UUID, connection_id: UUID) -> ConnectorConnection:
+    async def test_connection(
+        self, org_id: UUID, connection_id: UUID, *, owner_user_id: UUID | None = None
+    ) -> ConnectorConnection:
         """Verify a stored connection and persist the outcome (status/last_checked_at/last_error).
 
         A failed verification is a SUCCESSFUL test reporting a negative result: the row's status
         becomes 'error' with a sanitized last_error, and the (updated) row is returned. Raises
-        only ConnectionNotFoundError (-> 404) when the connection isn't the caller's.
+        only ConnectionNotFoundError (-> 404) when the connection isn't in scope.
+
+        SCOPE (CO-01): owner_user_id None = SHARED-only (the admin plane — a user-owned id 404s, so
+        an admin can never decrypt + IMAP-login an employee's mailbox). A set owner_user_id scopes
+        to that user's own row (the /me plane, after its ownership gate).
 
         Transaction shape (pool hygiene): the request transaction is COMMITTED after the read,
         BEFORE the up-to-15s network verify — otherwise every concurrent test pins one pooled DB
@@ -223,7 +291,8 @@ class ConnectorService:
         row stays usable across the commit (expire_on_commit=False); the status mutation below
         autobegins a fresh transaction that the request unit-of-work commits.
         """
-        connection = await self.get_connection(org_id, connection_id)
+        connection = await self._load_scoped(org_id, connection_id, owner_user_id=owner_user_id)
+        await self._require_entitled(org_id, connection.connector_type)
         # Release the DB connection back to the pool before the slow network verify. The session
         # is reached via the loaded row (a deliberate, narrow exception to "services hold no
         # transaction logic" — the route's unit-of-work still owns the final commit). Reads only

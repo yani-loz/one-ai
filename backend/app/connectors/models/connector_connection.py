@@ -16,7 +16,15 @@ Key invariants:
     encrypted it (for later rotation). `config` (JSONB) holds ONLY non-secret params
     (host/port/use_ssl) — never the password. `last_error` holds only sanitized messages.
   - `connector_type`, `auth_method`, and `status` are pinned by DB CHECKs to the enum values
-    (app.connectors.enums); a (org_id, connector_type, username) is unique per org.
+    (app.connectors.enums).
+  - OWNER DIMENSION (CO-01, migration 0018): `owner_user_id` NULL = org-owned/shared (the legacy
+    admin-provisioned mailbox); set = USER-OWNED (self-connect, the CO-01 default). Uniqueness is
+    PARTIAL: shared rows are unique per (org_id, type, username); owned rows per (org_id,
+    owner_user_id, type, username) — so two employees may each connect the same shared address,
+    but one employee can't connect it twice. The composite FK (org_id, owner_user_id) ->
+    users(org_id, id) ON DELETE CASCADE means offboarding a user cascades their connections
+    (per-user erasure). §7: only owner_user_id == principal may reach credential/content surfaces;
+    admins/platform see metadata only.
   - 0014 guards: org_id FKs organizations(id) (no phantom tenants), and UNIQUE (org_id, id)
     anchors the composite child FKs (email_message / sync run / sync cursor reference
     (org_id, connection_id) so a child's org_id can never diverge from its connection's).
@@ -33,6 +41,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     SmallInteger,
     String,
@@ -62,17 +71,46 @@ class ConnectorConnection(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin
             "sync_status IN ('idle', 'running', 'error')",
             name="ck_connector_connection_sync_status",
         ),
-        UniqueConstraint(
-            "org_id", "connector_type", "username", name="uq_connector_connection_identity"
+        # PARTIAL uniqueness by owner (CO-01 0018): shared (owner NULL) rows are unique per org;
+        # user-owned rows are unique per owner. Lets two employees connect the same address while
+        # stopping one employee connecting it twice.
+        Index(
+            "uq_connector_connection_shared_identity",
+            "org_id",
+            "connector_type",
+            "username",
+            unique=True,
+            postgresql_where=text("owner_user_id IS NULL"),
+        ),
+        Index(
+            "uq_connector_connection_owned_identity",
+            "org_id",
+            "owner_user_id",
+            "connector_type",
+            "username",
+            unique=True,
+            postgresql_where=text("owner_user_id IS NOT NULL"),
         ),
         # 0014 composite-FK anchor: children FK (org_id, id) so their org_id can never diverge.
         UniqueConstraint("org_id", "id", name="uq_connector_connection_org_row"),
         ForeignKeyConstraint(
             ["org_id"], ["organizations.id"], name="fk_connector_connection_org_id"
         ),
+        # Owner dimension (CO-01 0018): a user-owned connection's owner MUST belong to its org;
+        # offboarding the user cascades the connection (per-user erasure). NULL owner = shared:
+        # the composite FK is not enforced for shared rows (MATCH SIMPLE), which is intended.
+        ForeignKeyConstraint(
+            ["org_id", "owner_user_id"],
+            ["users.org_id", "users.id"],
+            ondelete="CASCADE",
+            name="fk_connector_connection_owner",
+        ),
     )
 
     connector_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Owner dimension (CO-01): NULL = org-owned/shared (legacy admin-provisioned); set = user-owned
+    # (self-connect). Only the owner reaches credential/content surfaces (§7); admins see metadata.
+    owner_user_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True))
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     auth_method: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="app_password"

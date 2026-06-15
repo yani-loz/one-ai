@@ -7,4 +7,5 @@
  *   swappable.
  */
 export { AdminConsolePage } from "./AdminConsolePage";
+export { ConnectorGovernancePage } from "./ConnectorGovernancePage";
 export { AdminRoute } from "./AdminRoute";

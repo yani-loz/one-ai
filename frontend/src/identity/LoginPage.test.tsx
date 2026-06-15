@@ -34,6 +34,11 @@ const DEMO_USER = {
   org_name: "One AI Demo GmbH",
 };
 
+const DEV_DEMO_ADMIN_EMAIL = "dev-admin@example.test";
+const DEV_DEMO_ADMIN_PASSWORD = "admin-test-password";
+const DEV_DEMO_MEMBER_EMAIL = "dev-member@example.test";
+const DEV_DEMO_MEMBER_PASSWORD = "member-test-password";
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 /** Default router: a failing /auth/me so bootstrap resolves to unauthenticated. */
@@ -49,6 +54,10 @@ function renderApp() {
 
 beforeEach(() => {
   clearSession();
+  vi.stubEnv("VITE_DEV_DEMO_ADMIN_EMAIL", DEV_DEMO_ADMIN_EMAIL);
+  vi.stubEnv("VITE_DEV_DEMO_ADMIN_PASSWORD", DEV_DEMO_ADMIN_PASSWORD);
+  vi.stubEnv("VITE_DEV_DEMO_MEMBER_EMAIL", DEV_DEMO_MEMBER_EMAIL);
+  vi.stubEnv("VITE_DEV_DEMO_MEMBER_PASSWORD", DEV_DEMO_MEMBER_PASSWORD);
   fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     // Default: health probe ok, everything else rejected (unauthenticated bootstrap).
     if (String(input).includes("/health")) {
@@ -65,6 +74,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   clearSession();
 });
 
@@ -76,7 +86,7 @@ describe("LoginPage", () => {
     renderApp();
 
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
-    expect(screen.getByText("Dev test accounts — remove before production")).toBeInTheDocument();
+    expect(screen.getByText("Dev test accounts")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Demo admin/ })).toBeInTheDocument();
   });
 
@@ -86,8 +96,8 @@ describe("LoginPage", () => {
 
     await user.click(await screen.findByRole("button", { name: /Demo member/ }));
 
-    expect(screen.getByLabelText<HTMLInputElement>("Email").value).toBe("member@demo.oneai");
-    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe("Memb3r-Dev-Only-2026!");
+    expect(screen.getByLabelText<HTMLInputElement>("Email").value).toBe(DEV_DEMO_MEMBER_EMAIL);
+    expect(screen.getByLabelText<HTMLInputElement>("Password").value).toBe(DEV_DEMO_MEMBER_PASSWORD);
   });
 
   it("test_platform_toggle_switches_to_platform_login_endpoint_and_lands_on_console", async () => {

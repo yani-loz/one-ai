@@ -1,7 +1,10 @@
 /**
  * Role: Shared types for the Connect (connectors) feature — a stored connection as the backend
- *       returns it, and the create-connection request body.
- * Used by: connectClient, useConnectors, ConnectorsPage, AddMailboxDrawer.
+ *       returns it, the admin create-connection request, and the Tier-3 self-connect shapes
+ *       (allowed-type, consent, self-connect request).
+ * Used by: connectClient, useConnectors, ConnectorsPage, AddMailboxDrawer (admin plane);
+ *          meConnectorClient, useMyConnections, MyConnectionsPage, ConnectorDetailPage,
+ *          ConnectorCard, ConsentModal (Tier-3 self-connect plane).
  * Depends on: nothing (leaf).
  * Key invariants:
  *   - `Connection` mirrors the backend ConnectionResponse EXACTLY (no secret field exists there).
@@ -56,4 +59,40 @@ export interface CreateConnectionRequest {
   use_ssl: boolean;
   username: string;
   password: string;
+}
+
+/**
+ * Whether the calling user may self-connect a connector type — drives the panel cards.
+ * Mirrors the backend AllowedConnectorTypeResponse (GET /me/connectors/types).
+ */
+export interface AllowedConnectorType {
+  connector_type: string;
+  allowed: boolean;
+  /** Friendly denial reason when not allowed (e.g. "not in your company's plan"); null if allowed. */
+  reason: string | null;
+}
+
+/**
+ * The Art. 7 consent a user gives at self-connect (HITL gate). `accepted` MUST be true for the
+ * backend to create the connection. Mirrors the backend ConsentInput.
+ */
+export interface ConsentInput {
+  accepted: boolean;
+  scope: string;
+  consent_version: string;
+}
+
+/**
+ * Body for POST /me/connectors — self-connect MY OWN mailbox (Tier 3). Identical to the admin
+ * create request plus the mandatory consent block. `password` is write-only.
+ */
+export interface SelfConnectRequest {
+  connector_type: "imap";
+  display_name: string;
+  host: string;
+  port: number;
+  use_ssl: boolean;
+  username: string;
+  password: string;
+  consent: ConsentInput;
 }

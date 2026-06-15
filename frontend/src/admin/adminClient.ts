@@ -15,10 +15,11 @@
  *   - deactivateCompanyUser hits DELETE which returns 204 with NO body — it must not parse
  *     JSON; success is the 2xx status alone.
  */
+import { getApiBaseUrl } from "../api/apiBase";
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type { CompanyUser, CreateUserRequest, UpdateUserRequest } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = getApiBaseUrl();
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {

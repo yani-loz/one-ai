@@ -11,10 +11,11 @@
  *     token — the same function, domain-appropriate by who is signed in.
  *   - Every response is metadata only (a SupportGrant), never tenant content.
  */
+import { getApiBaseUrl } from "../api/apiBase";
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type { SupportGrant } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = getApiBaseUrl();
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {

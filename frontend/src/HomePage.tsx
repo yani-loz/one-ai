@@ -1,25 +1,28 @@
 /**
  * Role: Minimal authenticated landing screen — greets the signed-in user (name +
- *       role + org), shows the backend /health status, links a company_admin to their
- *       admin console (/admin), and offers logout.
+ *       role + org), shows the backend /health status, links EVERY user to their personal
+ *       self-connect plane (/connections), links a company_admin to their admin console
+ *       (/admin), and offers logout.
  * Used by: src/App.tsx (the protected "/" route).
  * Depends on: ./identity (useAuth), react-router-dom (Link), motion (entrance), the aurora
  *             Tailwind theme, import.meta.env.VITE_API_URL.
  * Key invariants: rendered only inside <ProtectedRoute>, so `user` is non-null here;
  *   the health probe is read-only and unauthenticated (mirrors the original App probe).
- *   The "/admin" link is the company_admin's entry point — the console is otherwise only
- *   reachable by URL (there is no global nav yet); other roles never see it.
+ *   "/connections" (the per-user self-connect plane) is shown to ALL roles — it's the
+ *   personal plane everyone owns. The "/admin" link is the company_admin's console entry
+ *   point — other roles never see it; the connector governance panel lives inside /admin.
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
 
+import { getApiBaseUrl } from "./api/apiBase";
 import { AgentInsignia } from "./components/AgentInsignia";
 import { BrandMark } from "./components/BrandMark";
 import { seedFromString, type AgentRank } from "./components/insignia/generateInsignia";
 import { useAuth } from "./identity";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = getApiBaseUrl();
 
 type HealthState = "checking" | "online" | "offline";
 
@@ -119,27 +122,28 @@ export function HomePage(): React.JSX.Element {
           </span>
         </div>
 
+        {/* The self-connect plane is universal — every authenticated user (member OR admin) owns
+            their personal connections. */}
+        <Link
+          to="/connections"
+          className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-teal to-brand-blue px-8 py-3 font-semibold text-white transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_10px_25px_-5px_rgba(13,148,136,0.3)] active:scale-[0.98]"
+        >
+          My connections
+        </Link>
+
         {user?.role === "company_admin" && (
-          <>
-            <Link
-              to="/connectors"
-              className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-teal to-brand-blue px-8 py-3 font-semibold text-white transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_10px_25px_-5px_rgba(13,148,136,0.3)] active:scale-[0.98]"
-            >
-              Connect your sources
-            </Link>
-            <Link
-              to="/admin"
-              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/50 bg-white/50 px-8 py-3 font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]"
-            >
-              Manage organisation
-            </Link>
-          </>
+          <Link
+            to="/admin"
+            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/50 bg-white/50 px-8 py-3 font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]"
+          >
+            Manage organisation
+          </Link>
         )}
 
         <button
           type="button"
           onClick={() => void logout()}
-          className={`${user?.role === "company_admin" ? "mt-3" : "mt-8"} inline-flex w-full items-center justify-center rounded-xl border border-white/50 bg-white/50 px-8 py-3 font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]`}
+          className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-white/50 bg-white/50 px-8 py-3 font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]"
         >
           Log out
         </button>

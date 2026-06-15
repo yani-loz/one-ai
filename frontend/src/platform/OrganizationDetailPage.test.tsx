@@ -270,7 +270,7 @@ describe("OrganizationDetailPage", () => {
 
     await user.type(screen.getByLabelText(/to confirm/), "acme");
     await user.type(screen.getByLabelText("Reason"), "Customer offboarding");
-    await user.type(screen.getByLabelText("Your password"), "Sup3r-Dev-Only-2026!");
+    await user.type(screen.getByLabelText("Your password"), "test-platform-password");
     await user.click(screen.getByRole("button", { name: "Erase permanently" }));
 
     // The org reloads as offboarded; the panel reflects the erasure.

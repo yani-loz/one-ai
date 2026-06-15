@@ -90,6 +90,12 @@ export function AdminConsolePage(): React.JSX.Element {
             >
               Home
             </Link>
+            <Link
+              to="/admin/connectors"
+              className="rounded-xl border border-white/50 bg-white/50 px-4 py-2.5 text-sm font-medium text-text-primary transition-all duration-200 hover:scale-[1.02] hover:border-brand-teal/50 active:scale-[0.98]"
+            >
+              Connector access
+            </Link>
             <button
               type="button"
               onClick={() => setDrawerOpen(true)}

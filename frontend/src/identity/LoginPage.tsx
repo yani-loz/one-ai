@@ -6,10 +6,8 @@
  * Depends on: ./useAuth, ./DevCredentialsPanel, ./types, react-router-dom (useNavigate),
  *             motion (entrance), the aurora Tailwind theme.
  * Key invariants:
- *   - The DevCredentialsPanel (hardcoded seeded credentials) renders ONLY when
- *     import.meta.env.DEV — Vite statically replaces DEV with false in production
- *     builds and dead-code-eliminates both the render and the import, so prod
- *     bundles cannot ship the credentials by construction.
+ *   - The DevCredentialsPanel renders ONLY when import.meta.env.DEV, and it reads optional
+ *     local VITE_DEV_* values instead of committing seeded passwords.
  *   - On success the page navigates to "/" (replace) — already-authenticated users
  *     are redirected away by the effect so /login is never a dead end.
  *   - A 401 surfaces a GENERIC "Invalid email or password." (no user enumeration,
@@ -181,8 +179,7 @@ export function LoginPage(): React.JSX.Element {
           </button>
         </section>
 
-        {/* Dev-only by construction (Vite DCEs the false branch + import in prod builds);
-            full deletion before prod remains tracked in docs/FIX_BEFORE_PROD.md. */}
+        {/* Dev-only by construction; accounts render only when local VITE_DEV_* values exist. */}
         {import.meta.env.DEV && <DevCredentialsPanel onFill={fillFromDevAccount} />}
       </div>
     </motion.main>

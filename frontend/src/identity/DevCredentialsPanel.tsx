@@ -1,11 +1,10 @@
 /**
- * Role: Dev-only glass panel listing the three demo accounts as click-to-fill
- *       buttons. ISOLATED in its own file so deleting it before production is a
- *       single-file delete + one import removal in LoginPage.
+ * Role: Dev-only credential picker for locally configured demo accounts.
  * Used by: LoginPage.tsx.
- * Depends on: ../identity/types (Role/AuthScope), the aurora Tailwind theme.
- * Key invariants: these are DEV credentials only — the header says so, and the whole
- *   file must be removed before production (see FIX_BEFORE_PROD.md).
+ * Depends on: ./types, the aurora Tailwind theme.
+ * Key invariants:
+ *   - No password is committed in this file.
+ *   - The panel renders only accounts supplied via VITE_DEV_* env variables.
  */
 import type { AuthScope } from "./types";
 
@@ -16,60 +15,74 @@ interface DemoAccount {
   scope: AuthScope;
 }
 
-/** The seeded demo accounts — dev only, never ship to production. Two companies
- *  (`demo`, `globex`) let you exercise cross-tenant isolation in the UI. */
-const DEMO_ACCOUNTS: readonly DemoAccount[] = [
-  {
-    label: "Platform admin",
-    email: "super@ethera.ai",
-    password: "Sup3r-Dev-Only-2026!",
-    scope: "platform",
-  },
-  {
-    label: "Demo admin",
-    email: "admin@demo.oneai",
-    password: "Adm1n-Dev-Only-2026!",
-    scope: "company",
-  },
-  {
-    label: "Demo member",
-    email: "member@demo.oneai",
-    password: "Memb3r-Dev-Only-2026!",
-    scope: "company",
-  },
-  {
-    label: "Globex admin",
-    email: "admin@globex.oneai",
-    password: "Adm1n-Dev-Only-2026!",
-    scope: "company",
-  },
-  {
-    label: "Globex member",
-    email: "member@globex.oneai",
-    password: "Memb3r-Dev-Only-2026!",
-    scope: "company",
-  },
-];
+interface EnvAccount {
+  label: string;
+  email: string | undefined;
+  password: string | undefined;
+  scope: AuthScope;
+}
 
-/**
- * Render the dev credential picker.
- *
- * Contract: each row is a button that, on click, calls `onFill` with the account's
- * email/password/scope so the login form can prefill and switch endpoint. Purely
- * presentational beyond that callback.
- */
+function configuredAccounts(): DemoAccount[] {
+  const accounts: EnvAccount[] = [
+    {
+      label: "Platform admin",
+      email: import.meta.env.VITE_DEV_PLATFORM_EMAIL,
+      password: import.meta.env.VITE_DEV_PLATFORM_PASSWORD,
+      scope: "platform",
+    },
+    {
+      label: "Demo admin",
+      email: import.meta.env.VITE_DEV_DEMO_ADMIN_EMAIL,
+      password: import.meta.env.VITE_DEV_DEMO_ADMIN_PASSWORD,
+      scope: "company",
+    },
+    {
+      label: "Demo member",
+      email: import.meta.env.VITE_DEV_DEMO_MEMBER_EMAIL,
+      password: import.meta.env.VITE_DEV_DEMO_MEMBER_PASSWORD,
+      scope: "company",
+    },
+    {
+      label: "Globex admin",
+      email: import.meta.env.VITE_DEV_GLOBEX_ADMIN_EMAIL,
+      password: import.meta.env.VITE_DEV_GLOBEX_ADMIN_PASSWORD,
+      scope: "company",
+    },
+    {
+      label: "Globex member",
+      email: import.meta.env.VITE_DEV_GLOBEX_MEMBER_EMAIL,
+      password: import.meta.env.VITE_DEV_GLOBEX_MEMBER_PASSWORD,
+      scope: "company",
+    },
+  ];
+
+  return accounts.flatMap((account) => {
+    const email = account.email?.trim();
+    const password = account.password ?? "";
+    if (email === undefined || email === "" || password === "") {
+      return [];
+    }
+    return [{ label: account.label, email, password, scope: account.scope }];
+  });
+}
+
 export function DevCredentialsPanel({
   onFill,
 }: {
   onFill: (email: string, password: string, scope: AuthScope) => void;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
+  const accounts = configuredAccounts();
+  if (accounts.length === 0) {
+    return null;
+  }
+
   return (
     <section className="mt-6 animate-fade-in rounded-xl border border-white/50 bg-white/65 p-4 shadow-sm backdrop-blur-xl">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-brand-purple">
-        Dev test accounts — remove before production
+        Dev test accounts
       </h2>
       <ul className="mt-3 space-y-2">
-        {DEMO_ACCOUNTS.map((account) => (
+        {accounts.map((account) => (
           <li key={account.email}>
             <button
               type="button"

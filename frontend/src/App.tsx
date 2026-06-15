@@ -1,6 +1,8 @@
 /**
  * Role: Root route shell — wires the public /login, the protected company home "/", the
- *       company-admin console "/admin", and the platform-admin console "/platform" with the
+ *       company-admin console "/admin", the company-admin connector governance "/admin/connectors",
+ *       the legacy org-shared connectors console "/connectors", the per-user self-connect plane
+ *       "/connections" (+ "/connections/:type"), and the platform-admin console "/platform" with the
  *       iOS-style directional page transitions, wrapped in AnimatePresence.
  * Used by: src/main.tsx (inside BrowserRouter + AuthProvider).
  * Depends on: react-router-dom (Routes/Route/Navigate), motion (AnimatePresence),
@@ -15,8 +17,8 @@
 import { AnimatePresence, motion } from "motion/react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
-import { AdminConsolePage, AdminRoute } from "./admin";
-import { ConnectorsPage } from "./connect";
+import { AdminConsolePage, AdminRoute, ConnectorGovernancePage } from "./admin";
+import { ConnectorDetailPage, ConnectorsPage, MyConnectionsPage } from "./connect";
 import { HomePage } from "./HomePage";
 import { LoginPage, ProtectedRoute, useAuth } from "./identity";
 import { OrganizationDetailPage, PlatformConsolePage, PlatformRoute } from "./platform";
@@ -90,6 +92,36 @@ export function App(): React.JSX.Element {
                 <AdminRoute>
                   <ConnectorsPage />
                 </AdminRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/admin/connectors"
+            element={
+              <AnimatedScreen>
+                <AdminRoute>
+                  <ConnectorGovernancePage />
+                </AdminRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/connections"
+            element={
+              <AnimatedScreen>
+                <ProtectedRoute>
+                  <MyConnectionsPage />
+                </ProtectedRoute>
+              </AnimatedScreen>
+            }
+          />
+          <Route
+            path="/connections/:type"
+            element={
+              <AnimatedScreen>
+                <ProtectedRoute>
+                  <ConnectorDetailPage />
+                </ProtectedRoute>
               </AnimatedScreen>
             }
           />

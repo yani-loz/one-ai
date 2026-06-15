@@ -1,7 +1,8 @@
 /**
- * Role: Thin HTTP client for the connectors backend (/connectors/*) — list / create / test /
- *       enable / disable / delete a mailbox connection in the caller's own org, via the shared
- *       authorizedFetch (Bearer attach + one refresh-on-401).
+ * Role: Thin HTTP client for the company-admin connectors backend (/admin/connectors/*) — list /
+ *       create / test / enable / disable / delete an ORG-OWNED (shared) mailbox connection in the
+ *       caller's own org, via the shared authorizedFetch (Bearer attach + one refresh-on-401). This
+ *       is the legacy Tier-2 admin plane; the per-user self-connect plane is meConnectorClient.ts.
  * Used by: useConnectors (list + lifecycle) and AddMailboxDrawer (create + test).
  * Depends on: ../identity (authorizedFetch, AuthRequestError), ./types, import.meta.env.VITE_API_URL.
  * Key invariants:
@@ -9,11 +10,14 @@
  *     logs out. org scope is NEVER sent (the backend derives org from the JWT; a cross-org id is a
  *     404, never an existence leak). The credential is write-only — no response ever returns it.
  *   - delete returns 204 with NO body — never parse JSON; success is the 2xx alone.
+ *   - CO-01 MOVED these routes from /connectors/* to /admin/connectors/*; this client targets the
+ *     new admin prefix.
  */
+import { getApiBaseUrl } from "../api/apiBase";
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type { Connection, CreateConnectionRequest, SyncStatus } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = getApiBaseUrl();
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -24,7 +28,7 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
 
 /** List the caller's org connections (newest-first, metadata only). */
 export async function listConnections(): Promise<Connection[]> {
-  return parseJsonOrThrow<Connection[]>(await authorizedFetch(`${API_URL}/connectors`));
+  return parseJsonOrThrow<Connection[]>(await authorizedFetch(`${API_URL}/admin/connectors`));
 }
 
 /**
@@ -34,7 +38,7 @@ export async function listConnections(): Promise<Connection[]> {
  * already has a connection for this mailbox, 503 when the server's connector key is mis-set.
  */
 export async function createConnection(payload: CreateConnectionRequest): Promise<Connection> {
-  const response = await authorizedFetch(`${API_URL}/connectors`, {
+  const response = await authorizedFetch(`${API_URL}/admin/connectors`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -46,7 +50,7 @@ export async function createConnection(payload: CreateConnectionRequest): Promis
  *  on a failed verification — that's a 200 with status='error'). */
 export async function testConnection(connectionId: string): Promise<Connection> {
   return parseJsonOrThrow<Connection>(
-    await authorizedFetch(`${API_URL}/connectors/${connectionId}/test`, { method: "POST" }),
+    await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}/test`, { method: "POST" }),
   );
 }
 
@@ -58,34 +62,34 @@ export async function testConnection(connectionId: string): Promise<Connection> 
  */
 export async function startSync(connectionId: string): Promise<SyncStatus> {
   return parseJsonOrThrow<SyncStatus>(
-    await authorizedFetch(`${API_URL}/connectors/${connectionId}/sync`, { method: "POST" }),
+    await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}/sync`, { method: "POST" }),
   );
 }
 
 /** Poll a connection's live sync progress (GET /connectors/{id}/sync). */
 export async function getSyncStatus(connectionId: string): Promise<SyncStatus> {
   return parseJsonOrThrow<SyncStatus>(
-    await authorizedFetch(`${API_URL}/connectors/${connectionId}/sync`),
+    await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}/sync`),
   );
 }
 
 /** Disable a connection (reversible) — stops sync + revokes AI access. Returns the updated row. */
 export async function disableConnection(connectionId: string): Promise<Connection> {
   return parseJsonOrThrow<Connection>(
-    await authorizedFetch(`${API_URL}/connectors/${connectionId}/disable`, { method: "POST" }),
+    await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}/disable`, { method: "POST" }),
   );
 }
 
 /** Re-enable a disabled connection. Returns the updated row. */
 export async function enableConnection(connectionId: string): Promise<Connection> {
   return parseJsonOrThrow<Connection>(
-    await authorizedFetch(`${API_URL}/connectors/${connectionId}/enable`, { method: "POST" }),
+    await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}/enable`, { method: "POST" }),
   );
 }
 
 /** Delete a connection via DELETE /connectors/{id} (204, no body — do not parse). */
 export async function deleteConnection(connectionId: string): Promise<void> {
-  const response = await authorizedFetch(`${API_URL}/connectors/${connectionId}`, {
+  const response = await authorizedFetch(`${API_URL}/admin/connectors/${connectionId}`, {
     method: "DELETE",
   });
   if (!response.ok) {

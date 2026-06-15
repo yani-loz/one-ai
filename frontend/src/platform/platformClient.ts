@@ -16,6 +16,7 @@
  *     session survives in-tab — but NOT a hard refresh (platform tokens are in-memory
  *     only by design). A genuinely lapsed session surfaces as a re-login.
  */
+import { getApiBaseUrl } from "../api/apiBase";
 import { authorizedFetch, AuthRequestError } from "../identity";
 import type {
   AuditLogEntry,
@@ -28,7 +29,7 @@ import type {
   OrganizationSummary,
 } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = getApiBaseUrl();
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {

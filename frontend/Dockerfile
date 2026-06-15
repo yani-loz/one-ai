@@ -19,11 +19,11 @@ COPY . .
 EXPOSE 5173
 CMD ["pnpm", "dev", "--host"]
 
-# ---- build: produce static assets. VITE_API_URL is inlined at BUILD time, so it
-#      must be injected here — default keeps dev parity:
+# ---- build: produce static assets. Omit VITE_API_URL for same-origin API paths, or
+#      inject an HTTPS non-localhost API URL:
 #      docker build --target prod --build-arg VITE_API_URL=https://api.example.com ./frontend
 FROM deps AS build
-ARG VITE_API_URL=http://localhost:8000
+ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 COPY . .
 RUN pnpm build

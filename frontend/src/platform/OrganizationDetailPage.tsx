@@ -24,6 +24,7 @@ import { seedFromString } from "../components/insignia/generateInsignia";
 import { AuthRequestError, useAuth } from "../identity";
 import { SupportAccessPanel } from "../support";
 import { AuditTrail } from "./AuditTrail";
+import { ConnectorEntitlementsPanel } from "./ConnectorEntitlementsPanel";
 import { formatShortDate } from "./format";
 import { OrgErasurePanel } from "./OrgErasurePanel";
 import {
@@ -217,6 +218,10 @@ export function OrganizationDetailPage(): React.JSX.Element {
                   </div>
                 ))}
               </div>
+            </Section>
+
+            <Section title="Connector entitlements">
+              <ConnectorEntitlementsPanel orgId={org.id} onAuthExpired={handleAuthExpired} />
             </Section>
 
             <Section title="Support access">

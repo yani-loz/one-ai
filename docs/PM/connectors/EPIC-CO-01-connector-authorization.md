@@ -131,7 +131,7 @@ The current `/connectors/*` admin routes **move** to `/admin/connectors/*` (no b
 ## 9. Phasing
 
 - **Phase 1 (NOW) — model + governance + self-connect (app-password) + the Connectors panel.** Data model + `can_user_self_connect` + `/me/connectors/*` (app-password) + admin governance (org-wide + per-user) + the **Connectors panel** (§5.1: cards → detail with Status/Actions/History/Settings, IMAP only) + per-user erasure (raw-tier). **Lowest risk; delivers the whole model end-to-end** without OAuth. Entitlement stubbed (platform-admin manual / assume-entitled).
-- **Phase 2 (deferred) — OAuth (xoauth2).** Provider registry (Google/Microsoft), `oauth-start`/`oauth-callback`, encrypted token storage + on-demand refresh, OAuth-first in the connect step. Narrows the legacy admin app-password create to org-owned/shared only.
+- **Phase 2 (deferred) — OAuth (xoauth2).** Provider registry (Google/Microsoft), `oauth-start`/`oauth-callback`, encrypted token storage + on-demand refresh, OAuth-first in the connect step. Narrows the legacy admin app-password create to org-owned/shared only. **Build notes + urgency captured 2026-07-03 in `docs/FIX_BEFORE_PROD.md` (CO-01 section):** M365 tenants have basic-auth IMAP disabled → app-password fallback doesn't work there at all; Google's IMAP scope is restricted (app verification + CASA assessment — long-lead, start before GA); store refresh tokens + revoke at the provider on disconnect.
 - **Phase 3 — platform entitlement UI + billing seam.** Platform-console entitlement toggles wired to a real plan/subscription source; optional bulk governance actions; more connector types (Fathom/Slack/Local Folders — the archive already shows the multi-connector panel shape).
 
 ## 10. Resolved decisions (2026-06-15)

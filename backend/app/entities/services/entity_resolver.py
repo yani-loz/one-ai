@@ -36,6 +36,12 @@ Key invariants:
     address gains a name later; this is intra-person enrichment, NOT a cross-person merge.
   - get-or-create is race-safe: a concurrent insert that wins the UNIQUE(org_id,email|domain|alias)
     is caught at a SAVEPOINT and resolved by re-reading the winner — so parallel ingest is correct.
+  - PER-RUN CACHE (perf lane #2): a ResolutionCache memoizes resolved ids + recorded facts so a
+    participant seen ~20x per run costs one full resolution, not twenty (measured 2026-07-03: the
+    resolver was ~a third of DB round-trip time). The cache is transaction-aware — entries stage
+    per email-transaction and confirm only on commit (rollback discards them), so a person minted
+    in a failed email can never leak a dangling id into later emails. The race-safe get-or-create
+    stays untouched underneath; the cache only skips repeats WITHIN this run/process.
   - Provenance: person_email.source / company_domain.source record the originating connector.
 """
 
@@ -59,6 +65,7 @@ from app.entities.services.address_rules import (
     is_suspicious_idn_domain,
 )
 from app.entities.services.email_normalizer import extract_domain, normalize_email
+from app.entities.services.resolution_cache import ResolutionCache
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +105,7 @@ class EntityResolver:
         self._session = session
         self._people = PersonRepository(session)
         self._companies = CompanyRepository(session)
+        self._cache = ResolutionCache(session)
         self._mailbox_address = normalize_email(mailbox_address)
         self._mailbox_domain = extract_domain(self._mailbox_address)
         # The mailbox's COMPANY key (eTLD+1, M-9) — what an observed company key is compared
@@ -140,8 +148,9 @@ class EntityResolver:
             return None
 
         person_id = await self._get_or_create_person(org_id, normalized, display_name)
-        if seen_at is not None:
+        if seen_at is not None and not self._cache.seen_window_covers(org_id, person_id, seen_at):
             await self._people.extend_seen_window(org_id, person_id, seen_at)
+            self._cache.stage_seen_window(org_id, person_id, seen_at)
         if company_id is not None:
             await self._link_person_company(org_id, person_id, company_id)
         return person_id
@@ -158,9 +167,12 @@ class EntityResolver:
         first seen as a bare address gains a name from a later sighting.
         """
         cleaned_name = _clean_display_name(display_name)
-        person_id = await self._people.get_person_id_by_email(org_id, normalized_email)
+        person_id = self._cache.person_id(org_id, normalized_email)
         if person_id is None:
-            person_id = await self._insert_person(org_id, normalized_email, cleaned_name)
+            person_id = await self._people.get_person_id_by_email(org_id, normalized_email)
+            if person_id is None:
+                person_id = await self._insert_person(org_id, normalized_email, cleaned_name)
+            self._cache.stage_person(org_id, normalized_email, person_id)
         await self._enrich_person(org_id, person_id, cleaned_name)
         return person_id
 
@@ -203,11 +215,18 @@ class EntityResolver:
         """DQ-K04: back-fill a blank display_name from this sighting + record a deduped alias.
 
         `cleaned_name` arrives already normalized by `_get_or_create_person` (H-3 quote-strip) —
-        both the backfill and the alias write store the cleaned form.
+        both the backfill and the alias write store the cleaned form. Both writes are skipped when
+        this run already ensured them (per-run cache): after ONE backfill with a non-empty name the
+        person is definitely named (the UPDATE either found a name or set this one), and after one
+        alias write the exact (person, alias) row definitely exists.
         """
         if not cleaned_name:
             return
-        await self._people.backfill_display_name(org_id, person_id, cleaned_name)
+        if not self._cache.has_person_name(org_id, person_id):
+            await self._people.backfill_display_name(org_id, person_id, cleaned_name)
+            self._cache.stage_person_name(org_id, person_id)
+        if self._cache.has_alias(org_id, person_id, cleaned_name):
+            return
         try:
             async with self._session.begin_nested():
                 await self._people.add_alias(
@@ -217,6 +236,7 @@ class EntityResolver:
                 )
         except IntegrityError:
             pass  # this exact alias is already recorded for the person (UNIQUE) — idempotent
+        self._cache.stage_alias(org_id, person_id, cleaned_name)
 
     async def _observe_company(self, org_id: UUID, normalized_email: str) -> UUID | None:
         """Get-or-create the Company for the address's domain; return its id (None when skipped).
@@ -256,9 +276,12 @@ class EntityResolver:
         recorded as an idempotent company_domain evidence row (M-9: key folds, evidence stays
         full-fidelity).
         """
-        company_id = await self._companies.get_company_id_by_domain(org_id, company_key)
+        company_id = self._cache.company_id(org_id, company_key)
         if company_id is None:
-            company_id = await self._insert_company(org_id, company_key)
+            company_id = await self._companies.get_company_id_by_domain(org_id, company_key)
+            if company_id is None:
+                company_id = await self._insert_company(org_id, company_key)
+            self._cache.stage_company(org_id, company_key, company_id)
         if observed_host != company_key:
             await self._record_observed_host(org_id, company_id, observed_host)
         return company_id
@@ -291,7 +314,13 @@ class EntityResolver:
     async def _record_observed_host(
         self, org_id: UUID, company_id: UUID, observed_host: str
     ) -> None:
-        """Idempotently record a full observed host as evidence for a folded company (M-9)."""
+        """Idempotently record a full observed host as evidence for a folded company (M-9).
+
+        Skipped when this run already ensured the row (per-run cache) — the savepoint round-trip
+        for an already-recorded host was the M-9 evidence path's repeat cost.
+        """
+        if self._cache.has_company_host(org_id, company_id, observed_host):
+            return
         try:
             async with self._session.begin_nested():
                 await self._companies.add_domain(
@@ -304,11 +333,18 @@ class EntityResolver:
                 )
         except IntegrityError:
             pass  # this host is already recorded (UNIQUE(org_id, domain)) — idempotent
+        self._cache.stage_company_host(org_id, company_id, observed_host)
 
     async def _link_person_company(
         self, org_id: UUID, person_id: UUID, company_id: UUID
     ) -> None:
-        """Idempotently link a person to a company (UNIQUE(org_id, person_id, company_id))."""
+        """Idempotently link a person to a company (UNIQUE(org_id, person_id, company_id)).
+
+        Skipped when this run already ensured the link (per-run cache) — this savepoint attempt
+        ran once per participant per email before, deliberately failing on the UNIQUE each time.
+        """
+        if self._cache.has_person_company_link(org_id, person_id, company_id):
+            return
         try:
             async with self._session.begin_nested():
                 await self._companies.link_person(
@@ -316,6 +352,7 @@ class EntityResolver:
                 )
         except IntegrityError:
             pass  # link already exists — get-or-create is idempotent
+        self._cache.stage_person_company_link(org_id, person_id, company_id)
 
     def _is_internal(self, normalized_email: str, domain: str | None) -> bool:
         """True if this address belongs to the tenant itself (own-domain colleague, or the mailbox).

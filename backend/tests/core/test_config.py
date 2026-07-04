@@ -12,15 +12,17 @@ _SECURE_JWT = "a-strong-random-secret-value-32-bytes-long!!"
 _SECURE_DB_PASSWORD = "a-strong-db-password"
 _SECURE_APP_PASSWORD = "a-strong-app-role-password"
 _SECURE_GLOBAL_PASSWORD = "a-strong-global-role-password"
+_SECURE_READER_PASSWORD = "a-strong-reader-role-password"
 
 # The full set of non-default config a non-dev env must supply — the boot guard checks the jwt +
-# the three DB passwords AND requires the refresh cookie to be Secure. Spread into every "boots in
+# the four DB passwords AND requires the refresh cookie to be Secure. Spread into every "boots in
 # prod/staging" test so that adding a newly guarded item is a one-line change here, not a sweep.
 _SECURE_SECRETS = {
     "jwt_secret": _SECURE_JWT,
     "postgres_password": _SECURE_DB_PASSWORD,
     "oneai_app_password": _SECURE_APP_PASSWORD,
     "oneai_global_password": _SECURE_GLOBAL_PASSWORD,
+    "oneai_reader_password": _SECURE_READER_PASSWORD,
     "refresh_cookie_secure": True,
 }
 
@@ -128,6 +130,16 @@ def test_production_with_default_global_role_password_refuses_to_boot() -> None:
         Settings(
             app_env="production",
             **{**_SECURE_SECRETS, "oneai_global_password": "dev-only-oneai-global-pw-change-me"},
+        )
+
+
+def test_production_with_default_reader_role_password_refuses_to_boot() -> None:
+    # PF-01 (0019) added the SELECT-only retrieval role — its dev-default password is guarded
+    # exactly like the app/global roles' (a public credential must never reach a non-dev env).
+    with pytest.raises(InsecureConfigurationError, match="ONEAI_READER_PASSWORD"):
+        Settings(
+            app_env="production",
+            **{**_SECURE_SECRETS, "oneai_reader_password": "dev-only-oneai-reader-pw-change-me"},
         )
 
 

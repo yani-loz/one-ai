@@ -1,54 +1,32 @@
 """permission fidelity (PF-01) — ACL-at-ingest + within-tenant visibility RLS
 
-Org-level RLS (0009) isolates TENANTS; this migration closes the WITHIN-tenant hole before any
-retrieval table exists (EPIC-PF-01's gate): today every employee's AI could read every other
-employee's mailbox the moment a chunk table lands. Mirrors the app.access.models:
+Org-level RLS (0009) isolates TENANTS; this closes the WITHIN-tenant hole before any retrieval
+table exists (EPIC-PF-01's gate). Mirrors app.access.models: acl_grant (retrieval right;
+revocation = tombstone that stops matching immediately) · visibility_promotion (the ONLY
+widening path: append-only, human approver + audit anchor NOT NULL — AC5) ·
+principal_source_identity (ONLY verified rows authorize — AC8, UNKNOWN ⇒ DENY) ·
+fact_provenance (fail-closed anchor schema for future Learn facts — AC6).
 
-  - acl_grant                 — one principal's right to retrieve one content object; revocation
-                                is a tombstone (revoked_at) that stops matching immediately.
-  - visibility_promotion      — the ONLY audience-widening path: append-only (UPDATE-rejected),
-                                human approver + audit anchor NOT NULL (AC5).
-  - principal_source_identity — verified external-identity → person mapping; grants resolve ONLY
-                                through verified rows (AC8, UNKNOWN ⇒ DENY).
-  - fact_provenance           — fail-closed anchor schema for future Learn facts (AC6).
+THE READER PLANE (load-bearing, discovered live): PostgreSQL applies SELECT policies to the
+rows RETURNED by INSERT ... RETURNING, so a restrictive visibility policy on the WRITE role
+breaks person-less ingest inserting the very restricted rows it creates. One role cannot be
+both the person-less write plane and the person-scoped fail-closed read plane — hence
+`oneai_reader` (NOSUPERUSER, NO BYPASSRLS, SELECT-only + policy-scoped audit_log INSERT+SELECT
+for telemetry RETURNING): the retrieval plane, physically unable to write or widen.
 
-THE READER PLANE (the load-bearing design decision, discovered live): PostgreSQL applies
-SELECT policies to the rows RETURNED by INSERT ... RETURNING — so a restrictive SELECT
-visibility policy on the WRITE role would make person-less ingest unable to insert the very
-restricted rows it creates (every ORM insert RETURNINGs server defaults). One role cannot be
-both the person-less system/write plane and the person-scoped fail-closed read plane. This
-migration therefore creates the fourth role the epic back-pocketed (§2, B's graft):
+Content tables (email_message/_recipient/_attachment) gain visibility_scope ('restricted'
+default) + IMMUTABLE origin_scope (CHECK-pinned 'restricted': email is never born org-visible)
++ container_id, under a RESTRICTIVE `visibility` policy FOR SELECT TO oneai_reader:
+visible ⇔ scope='org' OR a live acl_grant for app.current_person_id matches (children match on
+the PARENT's id — the AC22 contract). Person GUC unset ⇒ NULL ⇒ org-scope rows only (AC3, on
+the reader plane). oneai_app keeps org-RLS-only visibility (trusted write/system code;
+ownership enforced in services, like the CO-01 admin plane) — but loses UPDATE+DELETE on
+visibility_promotion (append-only as a privilege; erasure runs on the bypass global role).
 
-    oneai_reader — NOLOGIN-until-provisioned, NOSUPERUSER, NO BYPASSRLS, SELECT-only on the
-    tenant surface (plus INSERT on audit_log for decision telemetry). The person-scoped
-    retrieval plane: agents/tools/retrieval run HERE and physically cannot write or widen.
-
-Content tables (email_message / email_recipient / email_attachment) gain
-visibility_scope ('restricted' default) + IMMUTABLE origin_scope + container_id, and a
-RESTRICTIVE `visibility` policy FOR SELECT TO oneai_reader:
-
-    visible ⇔ visibility_scope = 'org' OR a live acl_grant for app.current_person_id matches
-    (children match on their PARENT's id — the AC22 chunk→grant contract, exercised today).
-
-The person GUC is read with NULLIF(current_setting(...), '') — unset ⇒ NULL ⇒ only org-scope
-rows (AC3, fail-closed ON THE READER PLANE). oneai_app (ingest/admin/system writes) keeps
-org-RLS-only visibility — trusted first-party service code, exactly as before this migration;
-within-tenant rules on that plane are enforced in services (ownership checks), as the CO-01
-admin plane already does.
-
-Lifecycle note (AC4): pause (= disabled_at) deliberately keeps rows visible; disconnect is a
-row DELETE today (children cascade away), so no status predicate is needed in the policy yet —
-if a retained 'disconnected' state is ever introduced, its predicate MUST be added here.
-
-Triggers:
-  - <table>_origin_immutable    — origin_scope is set once at ingest, never updated.
-  - <table>_lineage_guard       — INSERT and UPDATE: a restricted-origin row reaching
-                                  visibility_scope='org' without promotion lineage is rejected.
-  - visibility_promotion_no_update — append-only (DELETE stays allowed: the GDPR erasure hook;
-                                  lineage survives in the retained audit_log, Art. 17(3)).
-
-Per 0013's convention every new TenantMixin table is ENABLE + FORCE RLS with org_isolation AND
-an explicit oneai_app DML grant.
+Lifecycle (AC4): pause (disabled_at) keeps rows visible; disconnect is a row DELETE today — a
+future retained 'disconnected' state MUST add its predicate here. Triggers: per-table
+origin-immutability + the AC5 lineage guard (INSERT AND UPDATE) + promotion no-UPDATE. Per
+0013, every new TenantMixin table is ENABLE + FORCE RLS + org_isolation + explicit app grant.
 
 Revision ID: 0019_permission_fidelity
 Revises: 0018_connector_authorization
@@ -181,9 +159,7 @@ def upgrade() -> None:
         # passes born-org rows (public-Slack territory), so a writer LYING about origin could
         # widen without lineage. Email content is recipient-granted by design — pin its origin
         # to 'restricted' at the DB, closing the org-born side door for these tables entirely.
-        op.create_check_constraint(
-            f"ck_{table}_origin_scope", table, "origin_scope = 'restricted'"
-        )
+        op.create_check_constraint(f"ck_{table}_origin_scope", table, "origin_scope = 'restricted'")
     # Backfill container_id (email's container = the connection/mailbox).
     op.execute("UPDATE email_message SET container_id = connection_id")
     for child in ("email_recipient", "email_attachment"):

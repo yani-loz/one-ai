@@ -126,6 +126,19 @@ class Settings(BaseSettings):
     # except an explicit local override.
     connector_egress_guard_enabled: bool = True
 
+    # — Ask layer (app.ask) — the retrieval reader model —
+    # The Ask agent's reader LLM is served via the Together AI chat-completions API; the adapter
+    # in app.ask.adapters is the ONLY file that knows the wire format (provider-agnostic seam).
+    # together_api_key is env-only (TOGETHER_API_KEY in the gitignored .env) and deliberately NOT
+    # part of the boot guard — a deployment without the Ask layer still boots; the adapter fails
+    # lazily with a clear error when a key is actually needed. Model identity is pinned here;
+    # changing it is an experiment-arm decision, never a silent config tweak.
+    together_api_key: str = ""
+    ask_reader_model: str = "Qwen/Qwen3.5-9B"
+    ask_reader_base_url: str = "https://api.together.xyz/v1"
+    ask_max_tool_turns: int = 8
+    ask_reader_timeout_seconds: float = 120.0
+
     # — Login throttle (FIX_BEFORE_PROD N-01; app.identity.security.rate_limit) —
     # An IN-PROCESS sliding-window + exponential-backoff lockout checked BEFORE bcrypt, so a
     # credential-stuffing / bcrypt-CPU-DoS attacker is blocked at near-zero server cost. Two

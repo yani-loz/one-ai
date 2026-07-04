@@ -62,3 +62,37 @@ def test_received_at_derives_from_received_header_even_though_it_is_dropped() ->
 
     assert parsed.received_at is not None  # derived from the (full) Received header
     assert "received" not in {key.lower() for key in parsed.headers}  # but not retained
+
+
+# — M1 (2026-07-03 audit): stored header keys are canonical-cased, never wire-case —
+
+
+def test_stored_header_keys_are_canonical_cased() -> None:
+    # Senders emit `Message-Id`, `CC`, `Return-path` — wire-case storage split one logical header
+    # across JSONB key variants, so `headers->>'Message-ID'` silently missed variant rows.
+    raw = _eml(
+        "From: a@x.com\nTo: me@oneai.com\nCC: c@x.com\nSubject: Hi\nMessage-Id: <m@x.com>\n"
+        "Return-path: <bounce@x.com>\nDate: Mon, 1 Jun 2026 10:00:00 +0000",
+        "body",
+    )
+
+    stored = parse_email(raw, MAILBOX).headers
+
+    assert "Message-ID" in stored and "Message-Id" not in stored
+    assert "Cc" in stored and "CC" not in stored
+    assert "Return-Path" in stored and "Return-path" not in stored
+
+
+def test_case_variant_repeats_of_one_header_merge_into_list() -> None:
+    # Two case-variants of the same header within ONE message must merge under the canonical key
+    # (first-seen order), not shadow each other.
+    raw = _eml(
+        "From: a@x.com\nTo: me@oneai.com\nMessage-ID: <m@x.com>\n"
+        "Cc: first@x.com\nCC: second@x.com",
+        "body",
+    )
+
+    stored = parse_email(raw, MAILBOX).headers
+
+    assert stored["Cc"] == ["first@x.com", "second@x.com"]
+    assert "CC" not in stored

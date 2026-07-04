@@ -376,3 +376,39 @@ def test_extract_text_honest_null_result_passes_through_masking_unchanged() -> N
     assert result.text is None
     assert result.status == STATUS_SKIPPED_NONDOCUMENT
     assert result.detail is None or "secrets_redacted" not in result.detail
+
+
+# — M2 (2026-07-03 audit): undeclared cp1251 whose bytes are ALL valid cp1252 must not mojibake —
+
+
+def test_extract_text_undeclared_cp1251_all_cp1252_valid_bytes_recovered() -> None:
+    # The M2 corpus class ('Äîñòàâ÷èê' instead of 'Доставчик'): common Bulgarian text encodes to
+    # cp1251 bytes that are ALL valid cp1252 code points, so the fixed cp1252-first order can never
+    # reach the windows-1251 link — only coherence detection recovers it. The fixture deliberately
+    # avoids the cp1252 holes (0x90/0x98…) that would have rescued the static chain by accident.
+    original = "Доставчик;ЕИК доставчик;Клиент — фактура 123 от Варна"
+    payload = original.encode("windows-1251")
+    assert all(byte not in payload for byte in (0x81, 0x8D, 0x8F, 0x90, 0x9D))  # no cp1252 holes
+
+    result = extract_text(_attachment("text/plain", payload))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text == original  # Cyrillic, not the cp1252 mojibake rendering
+
+
+def test_extract_text_rtf_attachment_lying_ansicpg_recovered() -> None:
+    # M2 corpus case (Zapoved_zaKomandirovka.rtf): the RTF source is pure ASCII but DECLARES
+    # \ansicpg1252 while its \'xx escapes are cp1251 — striprtf obeys the lie and mojibakes,
+    # invisible to the byte-level charset chain. The post-flatten redecode must recover it.
+    rtf = (
+        rb"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss\fcharset204 Tahoma;}}"
+        rb"\f0 \'cf\'f0\'e8 \'ef\'fa\'f2\'f3\'e2\'e0\'ed\'e5 \'f1 \'cb\'cc\'cf\'d1 "
+        rb"\'e4\'ee \'c2\'e0\'f0\'ed\'e0 \'f1\'e5 \'ef\'f0\'e8\'e7\'ed\'e0\'e2\'e0\'f2 100}"
+    )
+
+    result = extract_text(_attachment("application/rtf", rtf))
+
+    assert result.status == STATUS_EXTRACTED
+    assert result.text is not None
+    assert "При пътуване с ЛМПС до Варна" in result.text  # Cyrillic, not 'Ïðè ïúòóâàíå'
+    assert "Ïðè" not in result.text

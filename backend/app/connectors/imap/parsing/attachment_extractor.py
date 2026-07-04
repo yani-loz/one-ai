@@ -26,10 +26,11 @@ Key invariants:
   - ONE sanitization source: every stored text (the text/* decode path included) passes through
     sanitize_body_text (CRLF→LF, C0 strip, lone-surrogate strip — storable as UTF-8, period);
     text that sanitizes to '' is stored as honest NULL with status `empty`.
-  - ONE charset-decode source (audit EQ-3): text-shaped payloads decode via email_parser's
-    decode_charset_chain (utf-8 strict → cp1252 strict → windows-1251 strict → utf-8
-    errors='replace'), never a bare utf-8-replace decode — the audit measured 9 rows / 564K
-    mojibake chars from windows-1251 files under the old utf-8-only decode.
+  - ONE charset-decode source (audit EQ-3): text-shaped payloads decode via
+    decode_charset_chain (utf-8 strict → coherence-arbitrated detection → cp1252 strict →
+    windows-1251 strict → utf-8 errors='replace'), never a bare utf-8-replace decode — the audit
+    measured 9 rows / 564K mojibake chars from windows-1251 files under the old utf-8-only decode;
+    the detection step (audit M2) recovers undeclared cp1251 that cp1252 would mojibake.
   - MARKUP IS FLATTENED, never stored as 'extracted' source (audit EQ-4, 44 rows): text/html
     flattens through email_parser's html_to_text; text/rtf + application/rtf strip through
     striprtf — both AFTER the charset chain.
@@ -71,6 +72,7 @@ from app.connectors.extraction.redact import redact_secrets
 from app.connectors.extraction.text_sanitize import (
     decode_charset_chain,
     html_to_text,
+    redecode_single_byte_text,
     sanitize_body_text,
 )
 from app.connectors.extraction.tnef import extract_tnef_text
@@ -257,9 +259,12 @@ def _decode_text(payload: bytes) -> ExtractionResult:
 
 def _decode_html(payload: bytes) -> ExtractionResult:
     """text/html attachments: charset chain, THEN the email-body HTML flattener (EQ-4 — raw
-    markup source must never store as 'extracted'); flattened-to-blank → honest `empty`."""
+    markup source must never store as 'extracted'), THEN the wrong-declared-codepage redecode
+    (M2 — a lying charset can materialize mojibake only post-flatten); blank → honest `empty`."""
     try:
-        text = sanitize_body_text(html_to_text(decode_charset_chain(payload)))
+        text = sanitize_body_text(
+            redecode_single_byte_text(html_to_text(decode_charset_chain(payload)))
+        )
     except Exception as flatten_error:  # belt-and-braces: the seam must never raise
         return ExtractionResult(
             None, STATUS_CORRUPT, detail=f"html-flatten:{type(flatten_error).__name__}"
@@ -270,9 +275,15 @@ def _decode_html(payload: bytes) -> ExtractionResult:
 def _decode_rtf(payload: bytes) -> ExtractionResult:
     """text/rtf + application/rtf attachments: charset chain, THEN striprtf (EQ-4 — RTF control
     words must never store as 'extracted'; errors='replace' so a broken \\'xx escape degrades
-    instead of raising); stripped-to-blank → honest `empty`."""
+    instead of raising), THEN the wrong-declared-codepage redecode (M2 — striprtf obeys a LYING
+    \\ansicpg and mojibakes cp1251 escapes declared Latin, from a pure-ASCII source the byte
+    chain cannot see); stripped-to-blank → honest `empty`."""
     try:
-        text = sanitize_body_text(rtf_to_text(decode_charset_chain(payload), errors="replace"))
+        text = sanitize_body_text(
+            redecode_single_byte_text(
+                rtf_to_text(decode_charset_chain(payload), errors="replace")
+            )
+        )
     except Exception as strip_error:  # belt-and-braces: the seam must never raise
         return ExtractionResult(
             None, STATUS_CORRUPT, detail=f"rtf-strip:{type(strip_error).__name__}"

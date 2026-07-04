@@ -55,7 +55,13 @@ Key invariants:
     stored before the gate landed.
   - Stored `from_address` is addr-spec shaped (contains '@') or None: a bare display token in From
     (Exchange NDR 'System Administrator', audit L-7) is NOT stored as an address — the raw token
-    stays in `headers` and still feeds the .flags automation classifiers.
+    stays in `headers` and still feeds the .flags automation classifiers. Recipients mirror the
+    rule (2026-07-03 audit O3): a non-addr-spec To/Cc token ('undisclosed-recipients:;' group
+    constructs, malformed 'mailto') yields NO recipient row.
+  - A NON-multipart message whose single part is not served as the body is captured as ONE
+    attachment (2026-07-03 audit H1): bare application/pdf scanner/ERP mail (and single-part
+    text/csv-class documents) previously stored as an empty shell — no body, no attachment row —
+    a silent whole-document loss.
   - direction/is_reply/is_automated are computed in .flags; header decode lives in .headers; this
     module only orchestrates.
 """
@@ -279,24 +285,41 @@ def _decoded_content(part: EmailMessage) -> str:
 
 
 def _extract_attachments(message: EmailMessage) -> list[ParsedAttachment]:
-    """Collect every non-body part as a ParsedAttachment (metadata + transient raw bytes)."""
-    attachments: list[ParsedAttachment] = []
-    for part in message.iter_attachments():
-        payload = _attachment_bytes(part)
-        content_id = sanitize(clean_message_id(safe_header(part, "Content-ID")), MSGID_MAX)
-        attachments.append(
-            ParsedAttachment(
-                # `or None` coalesces '' → None: ONE absent-filename encoding (audit L-8).
-                filename=sanitize(part.get_filename(), MSGID_MAX) or None,
-                content_type=sanitize(part.get_content_type(), CONTENT_TYPE_MAX),
-                size_bytes=len(payload),
-                content_hash=sha256(payload).hexdigest(),
-                is_inline=part.get_content_disposition() == "inline",
-                content_id=content_id,
-                payload=payload,
-            )
-        )
-    return attachments
+    """Collect every non-body part as a ParsedAttachment (metadata + transient raw bytes).
+
+    A NON-multipart message whose single part is NOT served as the body IS its own attachment
+    (2026-07-03 audit H1 + review fixup): a bare `application/pdf` email (scanner / fax-to-email /
+    ERP senders) — and equally a single-part `text/csv` / `text/calendar` / disposition-attachment
+    text part, none of which get_body(("plain","html")) serves — has no subparts for
+    iter_attachments(), so without this branch it stored as an empty shell: silent whole-document
+    loss. The guard is the SAME get_body call _extract_body_text uses, so body and attachment are
+    mutually exclusive and exhaustive by construction (a part is one or the other, never both,
+    never neither). A defective non-multipart claiming `multipart/*` keeps the old empty behavior
+    rather than storing its unparseable serialization as a fake document.
+    """
+    if not message.is_multipart():
+        if message.get_content_maintype() == "multipart":
+            return []
+        if message.get_body(preferencelist=("plain", "html")) is not None:
+            return []  # this single part IS the body — never doubled as an attachment
+        return [_part_as_attachment(message)]
+    return [_part_as_attachment(part) for part in message.iter_attachments()]
+
+
+def _part_as_attachment(part: EmailMessage) -> ParsedAttachment:
+    """Map one MIME part (or a single-part message itself — audit H1) to a ParsedAttachment."""
+    payload = _attachment_bytes(part)
+    content_id = sanitize(clean_message_id(safe_header(part, "Content-ID")), MSGID_MAX)
+    return ParsedAttachment(
+        # `or None` coalesces '' → None: ONE absent-filename encoding (audit L-8).
+        filename=sanitize(part.get_filename(), MSGID_MAX) or None,
+        content_type=sanitize(part.get_content_type(), CONTENT_TYPE_MAX),
+        size_bytes=len(payload),
+        content_hash=sha256(payload).hexdigest(),
+        is_inline=part.get_content_disposition() == "inline",
+        content_id=content_id,
+        payload=payload,
+    )
 
 
 def _attachment_bytes(part: EmailMessage) -> bytes:
@@ -316,14 +339,17 @@ def _extract_recipients(message: EmailMessage) -> list[ParsedRecipient]:
     Deduplicated WITHIN the message per (kind, case-folded address) — clients repeat one mailbox in
     a header (audit M-6: 199 redundant edges stored); the FIRST occurrence wins, keeping its as-seen
     address spelling and display name. The same address under DIFFERENT kinds (to + cc) is kept:
-    those are distinct roles, not duplicates.
+    those are distinct roles, not duplicates. Only addr-spec-shaped addresses ('@' present) become
+    rows (2026-07-03 audit O3, the recipient mirror of L-7): RFC group constructs
+    ('undisclosed-recipients:;') and malformed tokens ('mailto') name no real addressee — the raw
+    header survives in the stored `headers` JSONB.
     """
     recipients: list[ParsedRecipient] = []
     seen_edges: set[tuple[str, str]] = set()
     for header_name, kind in _RECIPIENT_HEADERS:
         raw_values = message.get_all(header_name, [])
         for name, address in getaddresses([str(v) for v in raw_values]):
-            if not address:
+            if not address or "@" not in address:
                 continue
             stored_address = sanitize(address, ADDR_MAX) or ""
             edge = (kind, stored_address.lower())

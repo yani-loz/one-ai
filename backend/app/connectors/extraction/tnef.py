@@ -106,6 +106,7 @@ from app.connectors.extraction.sniff import (
 from app.connectors.extraction.text_sanitize import (
     decode_charset_chain,
     html_to_text,
+    redecode_single_byte_text,
     sanitize_body_text,
 )
 from app.connectors.extraction.tnef_rtf import (
@@ -311,7 +312,11 @@ def _rtf_body_text(container: TNEF) -> str:
         flattened = flatten_tnef_rtf_body(container, MAX_COMPRESSED_RTF_BYTES)
         if not flattened:
             return ""
-        return sanitize_body_text(flattened)
+        # redecode: striprtf obeys the RTF's declared \ansicpg — a LYING declaration (cp1251
+        # escapes declared cp1252) mojibakes here, invisible to the byte chain (2026-07-04 M2).
+        # Applied EXTRACTOR-side only, never inside flatten_tnef_rtf_body: the dedup key shares
+        # that primitive and needs STABLE text, not corrected text (KEY-CONSISTENCY).
+        return sanitize_body_text(redecode_single_byte_text(flattened))
     except Exception:  # over-bound / decompress / strip raise diverse internals — next body layer
         return ""
 
@@ -319,26 +324,35 @@ def _rtf_body_text(container: TNEF) -> str:
 def _html_body_text(container: TNEF) -> str:
     """The HTML body flattened to text, or '' when absent/over-bound/corrupt (tnefparse hands
     back str when the container declared an internet codepage, raw bytes otherwise —
-    chain-decoded). The SOURCE is bounded at MAX_BODY_SOURCE_BYTES before flattening: html2text
-    over a pathological body is unbounded CPU plus a second full copy."""
+    chain-decoded). A handed-back STR is re-chained through _rechain_single_byte_text (audit M2
+    residual): tnefparse decodes with the container's DECLARED codepage, and a wrong declaration
+    (cp1251 bytes declared Latin) mojibakes INSIDE the library — before our chain ever runs.
+    The SOURCE is bounded at MAX_BODY_SOURCE_BYTES before flattening: html2text over a
+    pathological body is unbounded CPU plus a second full copy."""
     try:
         html = container.htmlbody
         if not html or len(html) > MAX_BODY_SOURCE_BYTES:
             return ""
-        html_text = html if isinstance(html, str) else decode_charset_chain(html)
-        return sanitize_body_text(html_to_text(html_text))
+        html_text = redecode_single_byte_text(html) if isinstance(html, str) else (
+            decode_charset_chain(html)
+        )
+        return sanitize_body_text(redecode_single_byte_text(html_to_text(html_text)))
     except Exception:
         return ""
 
 
 def _plain_body_text(container: TNEF) -> str:
-    """The plain-text body, or '' when absent/over-bound/corrupt (str or chain-decoded bytes;
-    the SOURCE is bounded at MAX_BODY_SOURCE_BYTES, same as the html layer)."""
+    """The plain-text body, or '' when absent/over-bound/corrupt (str re-chained via
+    text_sanitize.redecode_single_byte_text — the M2 wrong-declared-codepage repair — or
+    chain-decoded bytes; the SOURCE is bounded at MAX_BODY_SOURCE_BYTES, same as the html layer)."""
     try:
         body = container.body
         if not body or len(body) > MAX_BODY_SOURCE_BYTES:
             return ""
-        return sanitize_body_text(body if isinstance(body, str) else decode_charset_chain(body))
+        body_text = redecode_single_byte_text(body) if isinstance(body, str) else (
+            decode_charset_chain(body)
+        )
+        return sanitize_body_text(body_text)
     except Exception:
         return ""
 
@@ -418,10 +432,14 @@ def _printable_ratio(text: str) -> float:
 def _flatten_embedded_markup(decoded: str) -> str:
     """html/rtf-opening text flattened (markup source is never stored); anything else as-is."""
     head = decoded.lstrip(_LEADING_TEXT_NOISE)[:16].lower()
+    # redecode after the flatten: an embedded RTF/HTML document whose ASCII source LIES about
+    # its codepage (\ansicpg1252 over cp1251 escapes — the 2026-07-04 corpus case
+    # 'Zapoved_zaKomandirovka.rtf') materializes mojibake ONLY here, where striprtf/html2text
+    # obeyed the declaration; the byte chain upstream saw pure ASCII and could not intervene.
     if head.startswith(_HTML_TEXT_PREFIXES):
-        return html_to_text(decoded)
+        return redecode_single_byte_text(html_to_text(decoded))
     if head.startswith(_RTF_TEXT_PREFIX):
-        return rtf_to_text(decoded, errors="replace")
+        return redecode_single_byte_text(rtf_to_text(decoded, errors="replace"))
     return decoded
 
 

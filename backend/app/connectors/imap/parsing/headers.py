@@ -55,50 +55,70 @@ def build_headers(message: EmailMessage) -> dict[str, str | list[str]]:
     return {key: (vals[0] if len(vals) == 1 else vals) for key, vals in accumulated.items()}
 
 
-# The header names RETAINED in storage (CA-CONN-05 data-minimization allowlist; case-insensitive).
-# Kept: identity + threading, addressing, and the automation/flag SOURCE headers (so a stored
+# The header names RETAINED in storage (CA-CONN-05 data-minimization allowlist), mapping the
+# case-folded lookup key → the ONE canonical spelling stored (RFC-conventional case). Kept:
+# identity + threading, addressing, and the automation/flag SOURCE headers (so a stored
 # is_automated flag stays explainable). Everything else is DROPPED — notably the dense PII + secret
 # surface: Received IP/host chains, Authentication-Results / DKIM-Signature / ARC-*, Authorization,
 # X-API-Key and other X-* vendor headers, Delivered-To, and Bcc. The derived columns
 # (is_automated_*, sent_at/received_at, recipients) already distil what the pipeline needs.
-_RETAINED_HEADERS = frozenset(
-    {
-        "message-id",
-        "in-reply-to",
-        "references",
-        "date",
-        "subject",
-        "from",
-        "to",
-        "cc",
-        "reply-to",
-        "sender",
-        "return-path",
-        "auto-submitted",
-        "precedence",
-        "list-id",
-        "list-unsubscribe",
-        "list-post",
-        "list-archive",
-        "content-type",
-        "content-language",
-        "importance",
-        "priority",
-        "x-priority",
-        "x-auto-response-suppress",
-    }
-)
+_RETAINED_HEADERS: dict[str, str] = {
+    "message-id": "Message-ID",
+    "in-reply-to": "In-Reply-To",
+    "references": "References",
+    "date": "Date",
+    "subject": "Subject",
+    "from": "From",
+    "to": "To",
+    "cc": "Cc",
+    "reply-to": "Reply-To",
+    "sender": "Sender",
+    "return-path": "Return-Path",
+    "auto-submitted": "Auto-Submitted",
+    "precedence": "Precedence",
+    "list-id": "List-Id",
+    "list-unsubscribe": "List-Unsubscribe",
+    "list-post": "List-Post",
+    "list-archive": "List-Archive",
+    "content-type": "Content-Type",
+    "content-language": "Content-Language",
+    "importance": "Importance",
+    "priority": "Priority",
+    "x-priority": "X-Priority",
+    "x-auto-response-suppress": "X-Auto-Response-Suppress",
+}
 
 
 def allowlist_headers(headers: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
-    """Return only the data-minimized header allowlist for STORAGE (CA-CONN-05).
+    """Return only the data-minimized header allowlist for STORAGE (CA-CONN-05), canonical-cased.
 
     Drops the dense PII + secret surface (Received chains, Authentication-Results, Authorization,
     X-* vendor headers, Bcc) that GDPR data-minimization would otherwise require us to justify and
     that is also where a leaked credential (Authorization/X-API-Key) would land. The derived flags
     were already computed from the FULL header set, so this only narrows what is RETAINED.
+
+    Keys are stored under ONE canonical spelling (2026-07-03 audit M1): senders emit `Message-Id`,
+    `CC`, `Return-path` etc., and storing wire-case split the same header across JSONB key variants
+    — `headers->>'Message-ID'` silently missed the rest. Case-variant repeats within one message
+    merge into a single list value (first-seen order).
     """
-    return {key: value for key, value in headers.items() if key.lower() in _RETAINED_HEADERS}
+    retained: dict[str, str | list[str]] = {}
+    for key, value in headers.items():
+        canonical = _RETAINED_HEADERS.get(key.lower())
+        if canonical is None:
+            continue
+        if canonical in retained:
+            value = _merge_header_values(retained[canonical], value)
+        retained[canonical] = value
+    return retained
+
+
+def _merge_header_values(
+    first: str | list[str], second: str | list[str]
+) -> list[str]:
+    """Merge two value sets of one logical header (case-variant keys in a single message)."""
+    merged = first if isinstance(first, list) else [first]
+    return merged + (second if isinstance(second, list) else [second])
 
 
 def received_at_from_headers(message: EmailMessage) -> datetime | None:

@@ -389,3 +389,55 @@ def test_extract_tnef_text_payload_bytes_never_reach_logs(
     assert "Invalid TNEF Version" not in caplog.text  # the muted WARNING never materializes
     for result in results:
         assert secret not in (result.detail or "")
+
+
+# — M2 residual (2026-07-03): tnefparse pre-decoded str bodies re-chained through detection —
+
+
+def test_redecode_single_byte_text_repairs_wrong_codepage_mojibake() -> None:
+    # tnefparse decodes with the container's DECLARED codepage; cp1251 bytes declared Latin
+    # arrive as mojibake ('Ïðè ïúòóâàíå...'). The re-chain reverses the single-byte decode and
+    # lets coherence detection recover the Cyrillic.
+    from app.connectors.extraction.text_sanitize import redecode_single_byte_text
+
+    original = "При пътуване с ЛМПС до Варна се признават разходи"
+    mojibaked = original.encode("windows-1251").decode("latin-1")
+
+    assert redecode_single_byte_text(mojibaked) == original
+
+
+def test_redecode_single_byte_text_identity_on_correct_latin_text() -> None:
+    # Correctly-decoded Latin text must round-trip to itself — the repair is a no-op.
+    from app.connectors.extraction.text_sanitize import redecode_single_byte_text
+
+    original = "Städte wie München prüfen die Verträge — café résumé naïve über alles"
+
+    assert redecode_single_byte_text(original) == original
+
+
+def test_redecode_single_byte_text_wide_unicode_untouched() -> None:
+    # Genuine wide Unicode (correctly decoded UTF-16 TNEF body) fails the strict single-byte
+    # re-encode and must be returned untouched.
+    from app.connectors.extraction.text_sanitize import redecode_single_byte_text
+
+    original = "Договор № 5 — одобрено ✓ (виж прикачения файл)"
+
+    assert redecode_single_byte_text(original) == original
+
+
+def test_redecode_single_byte_text_mixed_planes_repairs_per_line() -> None:
+    # Word RTF doubles chars as \uN (real wide Cyrillic) next to \'xx runs (mojibaked under a
+    # lying \ansicpg): one genuine wide char must not strand the mojibake lines — the per-line
+    # fallback repairs the broken line and leaves the correct one untouched.
+    from app.connectors.extraction.text_sanitize import redecode_single_byte_text
+
+    correct_line = "Командировката е с право на дневни"  # genuine wide Cyrillic (from \uN)
+    mojibake_line = "При пътуване с ЛМПС до Варна се признават".encode("windows-1251").decode(
+        "latin-1"
+    )
+    mixed = correct_line + "\n" + mojibake_line
+
+    repaired = redecode_single_byte_text(mixed)
+
+    assert repaired.split("\n")[0] == correct_line
+    assert repaired.split("\n")[1] == "При пътуване с ЛМПС до Варна се признават"

@@ -43,7 +43,7 @@
 
 | ID | Date | Title | Hypothesis (one line) | Status | Outcome (one line) |
 |----|------|-------|-----------------------|--------|--------------------|
-| *[EXP-001](EXP-001_example.md)* | *2026-05-30* | *(example — delete)* | *X will outperform Y because…* | *🟡* | *—* |
+| [EXP-001](EXP-001_small-llm-schema-optimization-loop.md) | 2026-07-04 | Schema-optimization loop: evolve the derived layer on a DB copy until a local 7–8B maxes out the gold eval | Deterministic spine + typed tools recover most of the v2 0–7% gap; the loop finds non-obvious interface wins; the plateau lands above the usefulness bar | ⏸ | Designed + Codex gap-reviewed same night (16 findings adopted, §4.12): first run is a PILOT; sealed 3-way split, typed graders, PII-free git, disposable DBs, state-machine runner. Awaiting sign-off: target %, budget-from-pilot, model pick, cloud arm (cut for pilot) |
 
 ---
 

@@ -155,12 +155,17 @@ End-to-end **2.6 emails/s** (5,909 emails / 38.5 min): extraction 188ms/email (4
 trips ~120ms (31%) · parse 45ms (11%) · file read 37ms (9%), all strictly serial. At this rate a
 100k-email mailbox first-sync ≈ 11h. Levers, in ROI order:
 
-1. **Content-addressed extraction** (§3.3): 59% duplicate attachments → skip re-extraction on
-   known (org, content_hash) — index already exists; ~cuts a quarter of total pipeline cost.
-2. **Per-run resolver cache**: the resolver fully re-resolves the same ~839 participants ~20×
-   each (2 SELECTs + 2 UPDATEs + 1–3 deliberately-failing savepoint INSERTs per participant per
-   email). Cache confirmed ids + alias/link dedup per run; keep the race-safe get-or-create
-   underneath.
+1. **Content-addressed extraction** (§3.3) — **SHIPPED 2026-07-04 (pending commit)**: ingest
+   reuses the newest attempted extraction per (org, content_hash, content_type) — via the
+   fail-closed SECURITY DEFINER `email_prior_extraction` so person-less ingest keeps the win
+   under the PF-01 visibility policies; provenance copied verbatim so version-aware backfills
+   still target old engines. Tests in `test_email_ingest_attachments.py`.
+2. **Per-run resolver cache** — **SHIPPED 2026-07-04 (pending commit)**:
+   `entities/services/resolution_cache.py`, transaction-aware (staged entries promote on commit,
+   discard on rollback — savepoint-depth-tracked, since RELEASE SAVEPOINT fires after_commit in
+   SQLAlchemy 2.x+asyncpg); skips repeat person/company lookups, alias/link/host savepoint
+   attempts, and covered seen-window UPDATEs; race-safe get-or-create untouched underneath.
+   Tests in `tests/entities/test_resolution_cache.py`.
 3. **Batch child-row flushes** (recipients/attachments flush per row today) + pipeline stages
    (parse batch N+1 while committing N; fetch-ahead one batch in the production runner).
 4. **Parallel mailboxes** at fleet scale — connections are independent; the resolver is already
@@ -211,9 +216,9 @@ gates, the typed tool/semantic layer detail, tags + industry packs (§5), the pe
 
 ```
 NOW (this plan's sign-off)
- └─ P0.1 PF-01 (3–5 dev-days, spec ready) ──┐
+ └─ P0.1 PF-01 ✅ BUILT 2026-07-04 (0019 + access module; residuals = FIX_BEFORE_PROD PF-FBP-*)
  └─ P0.2 identity-merge substrate           ├─ then → P1 Ask layer (chunks/embeddings/tools/
  └─ P0.3 content_item+chunk+tag schemas     │          projections/enrichment worker)
  └─ P0.4 benchmark harness + contracts ─────┘         └─ P2 on benchmark evidence
-Performance lane (§7) runs parallel to P0 — items 1–2 are small, isolated wins.
+Performance lane (§7): items 1–2 ✅ SHIPPED 2026-07-04; 3–4 open.
 ```

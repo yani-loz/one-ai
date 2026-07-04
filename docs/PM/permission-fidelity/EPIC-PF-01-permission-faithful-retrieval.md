@@ -4,7 +4,7 @@
 |---|---|
 | **Epic ID** | PF-01 |
 | **Module** | Permission Fidelity (`PF`) — new `access` module + extensions to `core`, `connectors`, `entities` |
-| **Status** | 📝 **Spec** — agreed 2026-06-09 (Design A + 8 grafts from B/C); not yet built |
+| **Status** | 🔨 **BUILT (core) 2026-07-04** — migration `0019_permission_fidelity` + the `access` module, pending commit/PR; per-AC state in the Build-status addendum below. Spec agreed 2026-06-09 (Design A + 8 grafts from B/C) |
 | **Branch** | `feat/permission-faithful-retrieval` (proposed, off `main` after 0009/0012 land) |
 | **PR** | — (PR-PF-1: migration 0013 + GUC seam + grant writers + invariant tests) |
 | **Depends on** | Migration 0009 (`oneai_app` NOSUPERUSER / FORCE RLS / GUC seam), 0007–0011 (IMAP tables incl. `email_recipient`), 0012 (entity spine `person`/`person_email`), PC-04 (`audit_log` append-only), PC-06 (erasure-hook discipline), **CA-CONN-05 full-headers retention review — precondition: header retention must be reconciled with the grant model before email grants go live (owner-copy projection, AC19)** |
@@ -12,6 +12,58 @@
 | **Review** | — (adversarial design pass done: A vs B vs C; A selected, B/C rejected wholesale, 8 grafts absorbed) |
 | **Date** | 2026-06-09 |
 | **Estimate** | ~3–5 dev-days (≈ 24–40 h of spec-driven AI dev). **Gate: `chunk` and every retrieval table is built only AFTER this lands — no retrieval layer ever exists un-scoped.** |
+
+## 0. Build-status addendum (2026-07-04 — what shipped vs. what waits)
+
+Core build landed as migration `0019_permission_fidelity` + `backend/app/access/` (models,
+grant writer, promotion service+route, source-identity + erasure repositories, decision
+telemetry, AC19 projection), `scoped_session(org_id, person_id)` + the engine-seam assertion in
+`core/database.py`, GrantWriter wired into `EmailIngestService`. Tests: `tests/access/` (30
+green) + the INV extensions. Per-AC state:
+
+| State | ACs | Note |
+|---|---|---|
+| ✅ proven by tests | AC1, AC2, AC3, AC5, AC8, AC10, AC13, AC15, AC16, AC18, AC19, AC21 | `tests/access/*` + `test_rls_invariants.py::test_every_content_table_has_org_isolation_and_visibility_policy` |
+| ✅ partially / reframed | AC14 (tombstone-hides ✅; 404-purge waits for a connector with a 404 signal), AC17 (INV auto-covers the 4 new tables), AC20 (verified-only login binding ✅; merge-guard waits for the CA-CONN-09 merge tier), AC22 (children-bind-to-parent ✅ on today's children; chunk/fact placeholder stands) | residuals in FIX_BEFORE_PROD PF-FBP-6..9 |
+| ⬜ deferred with a named owner | AC4 (no retained 'disconnected' state exists today — disconnect IS a cascade delete; predicate lands with such a state), AC6 (schema shipped; unreadability enforceable only when a fact table exists), AC7+AC11 (Slack capture/re-check — with the Slack connector), AC9 (chat layer — PF-FBP-2), AC12 (local-folders connector) | FIX_BEFORE_PROD PF section |
+
+Three implementation decisions taken during the build (all fail-closed, all documented in the
+migration docstring):
+
+1. **THE READER PLANE — §2's back-pocketed fourth role is now LOAD-BEARING.** Discovered live:
+   PostgreSQL applies SELECT policies to rows returned by `INSERT ... RETURNING`, so a
+   restrictive visibility policy on the write role breaks person-less ingest inserting the very
+   restricted rows it creates (every ORM insert RETURNINGs server defaults). One role cannot be
+   both the person-less write plane and the person-scoped fail-closed read plane. Resolution:
+   `oneai_reader` (NOSUPERUSER, NO BYPASSRLS, **SELECT-only** — plus INSERT on audit_log for
+   AC16 telemetry); the `visibility` policies target it; `core.reader_session(org, person)` is
+   the retrieval seam (AC3/AC18 now hold ON THE READER PLANE, and the agent/retrieval plane
+   physically cannot write — stronger than the spec's single-role design). `oneai_app` keeps
+   org-RLS-only visibility: trusted first-party write/system code, within-tenant rules enforced
+   in services (ownership checks), exactly like the CO-01 admin plane. Promotion accordingly
+   runs on the app plane (a write flow); the reader plane is for serving content.
+2. Ingest dedup gained a savepoint-guarded insert (idempotency independent of any read-
+   visibility regime — belt for concurrent syncs).
+3. Email capture grants `sender` provenance to the From author alongside recipients + owner
+   (the author could see it at source — a strict fidelity improvement over recipients-only).
+
+**2026-07-04 same-day review triage (15 findings + 5 P-items; all verified against source
+before acting):** FIXED — reader-plane split (the Critical RETURNING finding + the reader
+audit-INSERT RETURNING grant), on-skip grant RECONCILIATION in ingest (re-ingest is now the
+production reconciliation caller AND the pre-0019 corpus's grant backfill), depth-tagged
+resolution-cache staging (savepoint-scoped discard), telemetry actor-id/person-id id-space
+separation, email origin_scope CHECK-pinned to 'restricted' (closes the born-org lineage
+side door), promotion row-lock + guarded flip (no double 201), visibility_promotion
+UPDATE+DELETE revoked from the tenant role (append-only as a privilege), owner lookup moved
+to the repo layer, single principal derivation with owner>sender>recipient precedence, xlsx
+grid reuse round-trip test, served-headers⊆stored-allowlist drift guard, and the cross-plane
+end-to-end test (ingest on oneai_app → grants → serve on oneai_reader → telemetry).
+ACCEPTED-AS-TRACKED — no production verified-identity WRITER yet (PF-FBP-7; UNKNOWN⇒DENY is
+the designed posture until bindings exist). REFUTED — "savepoint rollback poisons the batch
+today" (no production begin_nested wraps an email; hardened anyway), "projection duplicates
+the header allowlist" (deliberately narrower set, different question; subset now drift-
+guarded). SKIPPED — constraint-name string-match (consistent with the existing driver
+pattern).
 
 ## 1. Goal & context
 

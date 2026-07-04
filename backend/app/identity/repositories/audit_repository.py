@@ -27,10 +27,15 @@ class AuditRepository:
         """Bind the repository to a session (the caller owns the transaction)."""
         self._session = session
 
-    async def insert(self, entry: AuditLog) -> None:
-        """Stage an audit row for insert and flush (no commit — the caller commits)."""
+    async def insert(self, entry: AuditLog) -> AuditLog:
+        """Stage an audit row for insert and flush (no commit — the caller commits).
+
+        Returns the flushed row so callers needing the server-generated id (the PF-01
+        visibility_promotion lineage anchor) can read it in the same transaction.
+        """
         self._session.add(entry)
         await self._session.flush()
+        return entry
 
     async def list_for_org(
         self, org_id: UUID, *, limit: int, offset: int

@@ -23,6 +23,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.access.models  # noqa: F401  (registers access/PF-01 tables on Base.metadata)
 import app.connectors.imap.models  # noqa: F401  (registers email Layer-1 tables on Base.metadata)
 import app.connectors.models  # noqa: F401  (registers connector tables on Base.metadata)
 import app.entities.models  # noqa: F401  (registers entity-graph tables on Base.metadata)

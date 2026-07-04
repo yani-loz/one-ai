@@ -18,6 +18,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import inspect
 
+import app.access.models  # noqa: F401 — register access (PF-01) tables
 import app.connectors.imap.models  # noqa: F401 — register email Layer-1 tables
 import app.connectors.models  # noqa: F401 — register connector tables
 import app.entities.models  # noqa: F401 — register entity-graph tables

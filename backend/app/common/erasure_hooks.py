@@ -37,7 +37,9 @@ ErasureHook = Callable[[UUID, AsyncSession], Awaitable[dict[str, int]]]
 # registering only one module would erase incompletely behind a clean certificate — 2026-06-11
 # cross-vendor review). Every new PII-holding module joins this tuple in the same commit that
 # adds its hook (the FIX_BEFORE_PROD erasure-completeness invariant).
-REQUIRED_ERASURE_HOOKS: tuple[str, ...] = ("connectors", "entities")
+# 'access' (PF-01 AC15): acl_grant / principal_source_identity / visibility_promotion /
+# fact_provenance — grants and external identifiers are PII edges.
+REQUIRED_ERASURE_HOOKS: tuple[str, ...] = ("access", "connectors", "entities")
 
 _hooks: dict[str, ErasureHook] = {}
 

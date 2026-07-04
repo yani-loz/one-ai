@@ -61,3 +61,29 @@ class TenantMixin:
     """
 
     org_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False, index=True)
+
+
+class VisibilityScopedMixin:
+    """Adds the PF-01 within-tenant visibility columns — CONTENT tables only.
+
+    Mixing this in declares "this table holds per-principal content" and contracts the table
+    into permission-faithful retrieval (EPIC-PF-01):
+      - `visibility_scope` — the CURRENT audience: 'org' (whole tenant) or 'restricted'
+        (grant-holders only, resolved via acl_grant). DB default 'restricted': fail-closed.
+      - `origin_scope` — the audience the row was BORN with, set once at ingest and IMMUTABLE
+        (DB trigger rejects changes). The lineage guard discriminates on it: a restricted-origin
+        row may only reach visibility_scope='org' through a visibility_promotion row (AC5).
+      - `container_id` — the source container the row belongs to (email: the connection/mailbox;
+        Slack later: the channel), the join key for future container-granularity grants.
+    Every VisibilityScopedMixin table MUST get a RESTRICTIVE `visibility` RLS policy in its
+    migration — the standing invariant test enumerates this mixin's subclasses and FAILS on any
+    content table missing the policy (AC1: no content table ever exists person-unscoped).
+    """
+
+    visibility_scope: Mapped[str] = mapped_column(
+        postgresql.TEXT, nullable=False, server_default="restricted"
+    )
+    origin_scope: Mapped[str] = mapped_column(
+        postgresql.TEXT, nullable=False, server_default="restricted"
+    )
+    container_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True))

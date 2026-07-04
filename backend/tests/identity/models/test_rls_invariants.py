@@ -33,10 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 # Importing each domain's model package registers its TenantMixin subclasses, so the dynamic
 # enumeration below covers EVERY domain's tenant tables (a tenant table whose model isn't imported
 # here would be invisible to this safety net).
+import app.access.models  # noqa: E402, F401 — registers access (PF-01) TenantMixin subclasses
 import app.connectors.imap.models  # noqa: E402, F401 — registers email Layer-1 TenantMixin subclasses
 import app.connectors.models  # noqa: E402, F401 — registers connector TenantMixin subclasses
 import app.entities.models  # noqa: E402, F401 — registers entity-graph TenantMixin subclasses
-from app.common.base_model import TenantMixin
+from app.common.base_model import TenantMixin, VisibilityScopedMixin
 from app.connectors.imap.models.email import EmailMessage
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.core.database import engine, global_engine, tenant_engine
@@ -172,6 +173,62 @@ async def test_every_tenant_table_has_rls_enabled_forced_and_isolation_policy() 
             assert await _policy_exists(connection, table), (
                 f"{table}: missing the {_ISOLATION_POLICY!r} RLS policy"
             )
+
+
+def _all_visibility_scoped_models() -> list[type]:
+    """Every mapped CONTENT model (VisibilityScopedMixin) — the PF-01 AC1 enumeration."""
+    discovered: list[type] = []
+    pending = list(VisibilityScopedMixin.__subclasses__())
+    while pending:
+        model = pending.pop()
+        discovered.append(model)
+        pending.extend(model.__subclasses__())
+    return discovered
+
+
+def test_content_model_enumeration_is_non_vacuous() -> None:
+    """The AC1 content enumeration must find the email Layer-1 tables (vacuity guard)."""
+    content_tables = {model.__table__.name for model in _all_visibility_scoped_models()}
+
+    assert {"email_message", "email_recipient", "email_attachment"} <= content_tables
+
+
+async def test_every_content_table_has_org_isolation_and_visibility_policy() -> None:
+    """PF-01 AC1: every content table carries BOTH policies — org_isolation AND a RESTRICTIVE
+    `visibility` policy FOR SELECT. A content table without a visibility policy is a CI FAIL,
+    never a SKIP (the retrieval layer must never be able to exist person-unscoped).
+    """
+    content_tables = sorted(model.__table__.name for model in _all_visibility_scoped_models())
+
+    async with engine.connect() as connection:
+        if not await _is_migrated(connection):
+            pytest.skip(
+                "RLS policies are migration-only and this DB is not migrated (no alembic_version)."
+            )
+        for table in content_tables:
+            assert await _policy_exists(connection, table), (
+                f"{table}: missing the {_ISOLATION_POLICY!r} policy (content tables carry BOTH)"
+            )
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT permissive, cmd FROM pg_policies "
+                        "WHERE schemaname = 'public' AND tablename = :table "
+                        "AND policyname = 'visibility'"
+                    ),
+                    {"table": table},
+                )
+            ).first()
+            assert row is not None, (
+                f"{table}: missing the 'visibility' RLS policy (PF-01 AC1 — a content table "
+                "must never exist person-unscoped)"
+            )
+            permissive, cmd = row
+            assert permissive == "RESTRICTIVE", (
+                f"{table}: 'visibility' must be RESTRICTIVE (ANDed with org_isolation) — a "
+                f"permissive policy would WIDEN access, got {permissive!r}"
+            )
+            assert cmd == "SELECT", f"{table}: 'visibility' must gate SELECT, got {cmd!r}"
 
 
 async def _seed_two_orgs(session: AsyncSession) -> tuple[UUID, UUID]:

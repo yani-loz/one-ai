@@ -76,6 +76,10 @@ class AuditAction:
     CONNECTOR_CONSENT_WITHDRAWN = "connector.consent_withdrawn"
     CONNECTOR_CONNECTED = "connector.connected"
     CONNECTOR_DISCONNECTED = "connector.disconnected"
+    # PF-01 permission fidelity: the ONLY widening path + retrieval decision telemetry.
+    VISIBILITY_PROMOTED = "access.visibility_promoted"
+    ACCESS_RETRIEVAL_DECISION = "access.retrieval_decision"
+    ACCESS_GRANT_REVOKED = "access.grant_revoked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,13 +103,15 @@ class AuditService:
         """Bind the repository (on the caller's session for writes / a plain one for reads)."""
         self._audit = audit
 
-    async def record(self, event: AuditEvent) -> None:
+    async def record(self, event: AuditEvent) -> UUID:
         """Append `event` on the caller's session (same transaction as the action).
 
         Commits with the request via the unit-of-work, so a successful action is always
         logged atomically with its effect. Use this for events on a path that SUCCEEDS.
+        Returns the audit row's id — the PF-01 promotion lineage anchors on it.
         """
-        await self._audit.insert(self._build_row(event))
+        row = await self._audit.insert(self._build_row(event))
+        return row.id
 
     async def record_independently(self, event: AuditEvent) -> None:
         """Append `event` on its own session, committed immediately (survives a rollback).

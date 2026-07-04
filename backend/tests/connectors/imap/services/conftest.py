@@ -20,6 +20,8 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.access.models.acl_grant import AclGrant
+from app.access.models.principal_source_identity import PrincipalSourceIdentity
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
@@ -29,6 +31,8 @@ from app.entities.models.person import Person, PersonAlias, PersonEmail
 from tests.conftest import register_org
 
 # Parents before children (create order); TRUNCATE ... CASCADE handles FK order on teardown.
+# PF-01: ingest now touches the access tables too (grant capture reads
+# principal_source_identity and writes acl_grant inside the same transaction).
 _INGEST_TABLES = [
     ConnectorConnection.__table__,
     Person.__table__,
@@ -40,6 +44,8 @@ _INGEST_TABLES = [
     EmailMessage.__table__,
     EmailRecipient.__table__,
     EmailAttachment.__table__,
+    PrincipalSourceIdentity.__table__,
+    AclGrant.__table__,
 ]
 
 

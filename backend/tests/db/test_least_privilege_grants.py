@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 # Importing each domain's model package registers its TenantMixin subclasses, so the dynamic
 # tenant-table enumeration below covers EVERY domain (same idiom as test_rls_invariants).
+import app.access.models  # noqa: F401 — registers access (PF-01) TenantMixin subclasses
 import app.connectors.imap.models  # noqa: F401 — registers email Layer-1 TenantMixin subclasses
 import app.connectors.models  # noqa: F401 — registers connector TenantMixin subclasses
 import app.entities.models  # noqa: F401 — registers entity-graph TenantMixin subclasses
@@ -97,10 +98,15 @@ async def migrated_db() -> AsyncIterator[None]:
 
 @pytest_asyncio.fixture
 async def clean_audit_rows(migrated_db: None) -> AsyncIterator[None]:
-    """TRUNCATE audit_log after a test that writes rows (the append-only trigger blocks DELETE)."""
+    """TRUNCATE audit_log after a test that writes rows (the append-only trigger blocks DELETE).
+
+    CASCADE since PF-01 (0019): visibility_promotion FKs audit_log (the widening lineage
+    anchor), so a plain TRUNCATE is refused; cascading also empties that table, which is
+    correct test isolation.
+    """
     yield
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE TABLE audit_log"))
+        await connection.execute(text("TRUNCATE TABLE audit_log CASCADE"))
 
 
 # — 1) Standing invariants (catalog, owner engine) —
@@ -158,12 +164,21 @@ async def test_audit_log_rls_enabled_forced_with_isolation_policy(migrated_db: N
     assert policy_present, "audit_log: missing the 'org_isolation' RLS policy (0013)"
 
 
+# Deliberate per-table privilege narrowings on the tenant role — each documented in its
+# migration. visibility_promotion (0019): append-only lineage — the no-UPDATE trigger plus a
+# DELETE revoke, so tenant-plane code can neither rewrite nor erase a widening record (the GDPR
+# erasure hook deletes on the BYPASS global role).
+_TENANT_DML_EXCEPTIONS: dict[str, set[str]] = {"visibility_promotion": {"UPDATE", "DELETE"}}
+
+
 async def test_every_tenant_table_retains_full_dml_for_tenant_role(migrated_db: None) -> None:
-    """Every TenantMixin table must keep full DML for oneai_app.
+    """Every TenantMixin table must keep full DML for oneai_app (minus documented narrowings).
 
     Dual guard: 0013 must not have broken the 14 existing tenant tables, and — since 0013 revoked
     the default-ACL auto-grant — a FUTURE tenant-table migration that forgets its now-mandatory
-    explicit GRANT to oneai_app fails here instead of 500ing at runtime.
+    explicit GRANT to oneai_app fails here instead of 500ing at runtime. Tables in
+    _TENANT_DML_EXCEPTIONS are checked BOTH ways: the remaining DML must be held AND the
+    narrowed privileges must actually be absent (the narrowing is an invariant too).
     """
     tenant_tables = _all_tenant_table_names()
     assert tenant_tables, "TenantMixin enumeration is empty — models not imported (vacuous test)."
@@ -173,12 +188,22 @@ async def test_every_tenant_table_retains_full_dml_for_tenant_role(migrated_db: 
             (table, privilege)
             for table in tenant_tables
             for privilege in _DML_PRIVILEGES
-            if not await _has_table_privilege(connection, _APP_ROLE, table, privilege)
+            if privilege not in _TENANT_DML_EXCEPTIONS.get(table, set())
+            and not await _has_table_privilege(connection, _APP_ROLE, table, privilege)
+        ]
+        wrongly_held = [
+            (table, privilege)
+            for table, narrowed in _TENANT_DML_EXCEPTIONS.items()
+            for privilege in sorted(narrowed)
+            if await _has_table_privilege(connection, _APP_ROLE, table, privilege)
         ]
 
     assert missing == [], (
         f"tenant tables missing DML for {_APP_ROLE!r} (forgot the explicit GRANT "
         f"required since migration 0013?): {missing}"
+    )
+    assert wrongly_held == [], (
+        f"documented privilege narrowings not in force for {_APP_ROLE!r}: {wrongly_held}"
     )
 
 

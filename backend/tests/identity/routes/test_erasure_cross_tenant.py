@@ -22,6 +22,10 @@ from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.access.models.acl_grant import AclGrant
+from app.access.models.fact_provenance import FactProvenance
+from app.access.models.principal_source_identity import PrincipalSourceIdentity
+from app.access.models.visibility_promotion import VisibilityPromotion
 from app.common.base_model import Base
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
 from app.connectors.models.connector_connection import ConnectorConnection
@@ -35,6 +39,7 @@ from app.core.database import engine
 from app.entities.models.company import Company, CompanyDomain, PersonCompany
 from app.entities.models.person import Person, PersonAlias, PersonEmail
 from app.identity.enums import UserRole
+from app.identity.models.audit_log import AuditLog
 from tests.identity.conftest import (
     bearer,
     platform_token,
@@ -65,6 +70,11 @@ _CONNECT_ENTITY_TABLES = [
     ConnectorPolicyOverride.__table__,
     ConnectorPolicy.__table__,
     ConnectorEntitlement.__table__,
+    # PF-01 access tables — the access erasure hook (registered FIRST) deletes + counts these.
+    AclGrant.__table__,
+    PrincipalSourceIdentity.__table__,
+    VisibilityPromotion.__table__,
+    FactProvenance.__table__,
 ]
 
 # One seeded row per PII table per org (see _seed_connect_entity_rows). Used for the row-SURVIVAL
@@ -208,6 +218,50 @@ async def _seed_connect_entity_rows(
             ),
             ConnectorPolicy(org_id=org_id, connector_type="imap", org_wide_enabled=True),
             ConnectorEntitlement(org_id=org_id, connector_type="imap", enabled=True),
+        ]
+    )
+    await session.flush()
+    # PF-01 access rows (one per table): a grant on the message, the person's verified identity,
+    # a promotion lineage row (anchored to a real audit row), and a synthetic fact anchor.
+    audit_anchor = AuditLog(
+        actor_type="user",
+        actor_id=user_id,
+        action="access.visibility_promoted",
+        org_id=org_id,
+        details={},
+    )
+    session.add(audit_anchor)
+    await session.flush()
+    session.add_all(
+        [
+            AclGrant(
+                org_id=org_id,
+                person_id=person.id,
+                object_type="email_message",
+                object_id=message.id,
+                connection_id=connection.id,
+                provenance="recipient",
+            ),
+            PrincipalSourceIdentity(
+                org_id=org_id,
+                person_id=person.id,
+                source_type="email",
+                external_id=f"contact@{tag}.example",
+                verified=True,
+            ),
+            VisibilityPromotion(
+                org_id=org_id,
+                object_type="email_message",
+                object_id=message.id,
+                approved_by_user_id=user_id,
+                audit_log_id=audit_anchor.id,
+            ),
+            FactProvenance(
+                org_id=org_id,
+                fact_id=uuid4(),
+                source_object_type="email_message",
+                source_object_id=message.id,
+            ),
         ]
     )
     await session.flush()

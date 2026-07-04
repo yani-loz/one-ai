@@ -13,12 +13,15 @@ Depends on: app.connectors.imap.services.email_ingest_service + the email models
 from __future__ import annotations
 
 from base64 import b64encode
+from hashlib import sha256
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.imap.models.email import EmailAttachment
+from app.connectors.imap.models.email import EmailAttachment, EmailMessage
+from app.connectors.imap.services import email_ingest_service as email_ingest_service_module
 from app.connectors.imap.services.email_ingest_service import EmailIngestService
 from tests.connectors.extraction.conftest import (
     TEXT_PAGE_STREAM,
@@ -231,6 +234,196 @@ async def test_ingest_tnef_attachment_stores_text_with_detail_persisted(
     assert attachment.extractor_name == "tnefparse"
     assert attachment.extractor_version is not None
     assert attachment.extraction_detail == "body=rtf embedded_files=1"  # EQ-7: detail persisted
+
+
+def _pdf_email(message_id: bytes, pdf_b64: bytes) -> bytes:
+    """A multipart email carrying the given base64 PDF (distinct Message-ID per call)."""
+    return (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <" + message_id + b">\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: application/pdf\r\n"
+        b'Content-Disposition: attachment; filename="contract.pdf"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n" + pdf_b64 + b"\r\n--B--\r\n"
+    )
+
+
+async def test_ingest_duplicate_attachment_reuses_prior_extraction_without_rerunning(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Content-addressed extraction (perf lane #1): the SAME bytes in a second email must copy the
+    # first row's outcome — text, status, AND engine provenance — without invoking any extractor.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    service = EmailIngestService(db_session, connection)
+    pdf_b64 = b64encode(build_pdf([TEXT_PAGE_STREAM]))
+    await service.ingest_email(_pdf_email(b"dup-one@x", pdf_b64))
+
+    def _explode(_: object) -> None:
+        raise AssertionError("extractor ran for a byte-identical duplicate")
+
+    monkeypatch.setattr(email_ingest_service_module, "extract_text", _explode)
+    await service.ingest_email(_pdf_email(b"dup-two@x", pdf_b64))
+
+    rows = (
+        (
+            await db_session.execute(
+                select(EmailAttachment)
+                .where(EmailAttachment.org_id == org)
+                .order_by(EmailAttachment.created_at, EmailAttachment.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2
+    original, reused = rows
+    assert reused.extracted_text == original.extracted_text == "[page 1]\nHello World"
+    assert reused.extraction_status == "extracted"
+    assert reused.extractor_name == original.extractor_name == "pdfplumber"
+    assert reused.extractor_version == original.extractor_version
+
+
+async def test_ingest_duplicate_xlsx_reuses_structured_grid_intact(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The reuse copy must round-trip the 0017 JSONB grid too (2026-07-04 review L15): a codec
+    # regression (e.g. double-encoding on the copy) would corrupt the structured layer silently
+    # if only text-bearing formats were asserted.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    service = EmailIngestService(db_session, connection)
+    xlsx_b64 = b64encode(build_xlsx(sheets=[("Grid", [["Item", "Cost"], ["Servers", 4200]])]))
+    xlsx_type = b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    def _xlsx_email(message_id: bytes) -> bytes:
+        return (
+            b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <" + message_id + b">\r\n"
+            b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+            b"--B\r\nContent-Type: " + xlsx_type + b"\r\n"
+            b'Content-Disposition: attachment; filename="grid.xlsx"\r\n'
+            b"Content-Transfer-Encoding: base64\r\n\r\n" + xlsx_b64 + b"\r\n--B--\r\n"
+        )
+
+    await service.ingest_email(_xlsx_email(b"xlsx-dup-one@x"))
+
+    def _explode(_: object) -> None:
+        raise AssertionError("extractor ran for a byte-identical duplicate")
+
+    monkeypatch.setattr(email_ingest_service_module, "extract_text", _explode)
+    await service.ingest_email(_xlsx_email(b"xlsx-dup-two@x"))
+
+    rows = (
+        (
+            await db_session.execute(
+                select(EmailAttachment)
+                .where(EmailAttachment.org_id == org)
+                .order_by(EmailAttachment.created_at, EmailAttachment.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2
+    original, reused = rows
+    assert reused.extracted_data == original.extracted_data
+    assert reused.extracted_data["format"] == "xlsx-grid-v1"
+    cells = {c["ref"]: c for c in reused.extracted_data["sheets"][0]["cells"]}
+    assert cells["B2"] == {"ref": "B2", "t": "n", "v": 4200}  # typed cell survives the copy
+
+
+async def test_ingest_same_bytes_under_different_content_type_runs_own_extraction(
+    db_session: AsyncSession,
+) -> None:
+    # The reuse key is (org, content_hash, content_type): identical bytes declared as a different
+    # type dispatch to a different extractor, so the second attachment must NOT copy the first.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    service = EmailIngestService(db_session, connection)
+    body = b"plain words"
+    raw_text = (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <ct-one@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: text/plain\r\n"
+        b'Content-Disposition: attachment; filename="d.txt"\r\n\r\n' + body + b"\r\n--B--\r\n"
+    )
+    raw_binary = (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <ct-two@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: application/octet-stream\r\n"
+        b'Content-Disposition: attachment; filename="d.bin"\r\n\r\n' + body + b"\r\n--B--\r\n"
+    )
+
+    await service.ingest_email(raw_text)
+    await service.ingest_email(raw_binary)
+
+    statuses = {
+        row.content_type: row.extraction_status
+        for row in (
+            await db_session.execute(
+                select(EmailAttachment).where(
+                    EmailAttachment.org_id == org,
+                    EmailAttachment.filename.in_(["d.txt", "d.bin"]),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    assert statuses["text/plain"] == "extracted"
+    assert statuses["application/octet-stream"] == "unsupported_format"
+
+
+async def test_ingest_with_pending_prior_row_runs_extraction_instead_of_reusing(
+    db_session: AsyncSession,
+) -> None:
+    # 'pending' means extraction never RAN (DB-default rows predating an extractor) — there is no
+    # outcome to copy, so a matching-hash pending row must not suppress a real extraction.
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    payload = b"pending twin payload"
+    seeded_message = EmailMessage(
+        org_id=org,
+        connection_id=connection.id,
+        dedup_key="seed-pending-twin",
+        headers={},
+    )
+    db_session.add(seeded_message)
+    await db_session.flush()
+    db_session.add(
+        EmailAttachment(
+            org_id=org,
+            email_id=seeded_message.id,
+            filename="old.txt",
+            content_type="text/plain",
+            size_bytes=len(payload),
+            content_hash=sha256(payload).hexdigest(),
+        )
+    )
+    await db_session.flush()
+
+    service = EmailIngestService(db_session, connection)
+    raw = (
+        b"From: a@globex.com\r\nTo: owner@acme.com\r\nMessage-ID: <pend@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: text/plain\r\n"
+        b'Content-Disposition: attachment; filename="new.txt"\r\n\r\n' + payload + b"\r\n--B--\r\n"
+    )
+    await service.ingest_email(raw)
+
+    fresh = (
+        await db_session.execute(
+            select(EmailAttachment).where(
+                EmailAttachment.org_id == org, EmailAttachment.filename == "new.txt"
+            )
+        )
+    ).scalar_one()
+    assert fresh.extraction_status == "extracted"  # ran for real — never copied 'pending'
+    assert fresh.extracted_text == "pending twin payload"
 
 
 async def test_ingest_image_attachment_records_skipped_nondocument_status(

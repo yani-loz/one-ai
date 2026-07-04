@@ -11,12 +11,28 @@ Key invariants:
     passes an org_id, so an email can only ever land in its connection's tenant.
   - IDEMPOTENT: skips (does NOT insert) when (org, connection, dedup_key) already exists, so a
     re-run — or the same logical email seen in multiple IMAP folders — stores exactly one row.
+    TWO layers since PF-01: the exists() fast path, PLUS a SAVEPOINT-guarded insert that maps a
+    dedup-unique violation to SKIPPED — the insert conflict is the truth under ANY read-
+    visibility regime (belt-and-braces for concurrent syncs and any future policy narrowing;
+    the 0019 visibility policies target the READER role, not this write plane).
+  - PF-01 CAPTURE (0019): every stored row is born visibility_scope='restricted' /
+    origin_scope='restricted' with container_id = the connection (mailbox); children inherit in
+    the SAME transaction (AC22). After storing, the GrantWriter derives per-message acl_grant
+    rows for the connection owner + every verified participant (UNKNOWN ⇒ DENY inside the
+    writer) — grants commit or roll back WITH the message.
   - Returns a plain IngestOutcome enum, NEVER a live ORM row (a row read after the caller's commit
     could lazy-load on a closed greenlet). The CALLER owns the transaction + commit.
   - Attachment text is extracted inline and the bytes are dropped (lean storage, design §4);
     each row stores the ExtractionResult's status + detail (0016, EQ-7) + extractor provenance
     (0015) + the typed structured grid (0017, design §2.5 — NULL for non-xlsx) — honest NULL text
     always carries its machine-readable reason.
+  - CONTENT-ADDRESSED EXTRACTION (study §8.4, perf lane #1): before running an extractor, the
+    ingest reuses the newest attempted extraction of the SAME (org, content_hash, content_type) —
+    extraction is a pure function of (bytes, declared type), and 59% of real-corpus attachment
+    rows are byte-identical dups, so the copy is exact and skips ~a quarter of pipeline CPU.
+    The reused row's provenance (extractor_name/version) is copied verbatim, so version-aware
+    backfills still target every row extracted under an old engine. 'pending' rows are never
+    reused (nothing ever ran on them).
   - CPU work is OFF-LOOP: parse_email (RFC822 parse, base64 decode, sha256, html2text) AND
     extract_text (pdfplumber + tables + possible pypdf over ≤50MB payloads) both run on a WORKER
     thread (asyncio.to_thread) so a large email or PDF never stalls the event loop mid-sync.
@@ -30,10 +46,13 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.access.services.grant_writer import GrantWriter
+from app.connectors.extraction.extraction_result import ExtractionResult
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
-from app.connectors.imap.parsing import ParsedEmail, extract_text, parse_email
+from app.connectors.imap.parsing import ParsedAttachment, ParsedEmail, extract_text, parse_email
 from app.connectors.imap.repositories.email_repository import EmailMessageRepository
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.entities.services.entity_resolver import EntityResolver
@@ -63,11 +82,13 @@ class EmailIngestService:
         self._session = session
         self._org_id = connection.org_id
         self._connection_id = connection.id
+        self._owner_user_id = connection.owner_user_id
         self._mailbox = connection.username
         self._emails = EmailMessageRepository(session)
         self._resolver = EntityResolver(
             session, mailbox_address=connection.username, source=connection.connector_type
         )
+        self._grants = GrantWriter(session)
 
     async def ingest_email(
         self, raw_bytes: bytes, internal_date: datetime | None = None
@@ -88,7 +109,21 @@ class EmailIngestService:
         # ingest's CPU hot spot and would otherwise block the loop inside the background sync.
         parsed = await asyncio.to_thread(parse_email, raw_bytes, self._mailbox, internal_date)
 
-        if await self._emails.exists(org_id, connection_id, parsed.dedup_key):
+        existing_id = await self._emails.get_message_id_by_dedup(
+            org_id, connection_id, parsed.dedup_key
+        )
+        if existing_id is not None:
+            # Re-seen message: RECONCILE its grants instead of just skipping (PF-01 AC21) — a
+            # binding verified since the first ingest starts matching, a de-verified one is
+            # tombstoned, and a re-run over the pre-0019 corpus becomes the grant backfill pass.
+            await self._grants.reconcile_email_message_grants(
+                org_id,
+                existing_id,
+                connection_id,
+                self._owner_user_id,
+                parsed.from_address,
+                [recipient.address for recipient in parsed.recipients],
+            )
             return IngestOutcome.SKIPPED
 
         from_person_id = None
@@ -105,11 +140,43 @@ class EmailIngestService:
                 allow_person=not parsed.is_automated_origin,
             )
 
-        message = await self._emails.insert(
-            self._build_message(org_id, connection_id, parsed, from_person_id, len(raw_bytes))
-        )
+        # SAVEPOINT-guarded insert: the dedup UNIQUE conflict is the idempotency truth under any
+        # read-visibility regime (a concurrent sync — or a future policy narrowing — can make a
+        # duplicate invisible to the exists() SELECT), mapped to SKIPPED. Any OTHER integrity
+        # error is a real bug and must surface.
+        try:
+            async with self._session.begin_nested():
+                message = await self._emails.insert(
+                    self._build_message(
+                        org_id, connection_id, parsed, from_person_id, len(raw_bytes)
+                    )
+                )
+        except IntegrityError as error:
+            if "uq_email_message_dedup" not in str(error.orig):
+                raise
+            racing_id = await self._emails.get_message_id_by_dedup(
+                org_id, connection_id, parsed.dedup_key
+            )
+            if racing_id is not None:  # reconcile the winner's grants, same as the fast path
+                await self._grants.reconcile_email_message_grants(
+                    org_id,
+                    racing_id,
+                    connection_id,
+                    self._owner_user_id,
+                    parsed.from_address,
+                    [recipient.address for recipient in parsed.recipients],
+                )
+            return IngestOutcome.SKIPPED
         await self._store_recipients(org_id, message.id, parsed)
         await self._store_attachments(org_id, message.id, parsed)
+        await self._grants.write_email_grants(
+            org_id,
+            message.id,
+            connection_id,
+            self._owner_user_id,
+            parsed.from_address,
+            [recipient.address for recipient in parsed.recipients],
+        )
         return IngestOutcome.STORED
 
     def _build_message(
@@ -120,10 +187,17 @@ class EmailIngestService:
         from_person_id: UUID | None,
         size_bytes: int,
     ) -> EmailMessage:
-        """Map a ParsedEmail to an EmailMessage row (size_bytes is the raw wire length)."""
+        """Map a ParsedEmail to an EmailMessage row (size_bytes is the raw wire length).
+
+        PF-01: born restricted/restricted with container_id = the connection (mailbox) — email is
+        recipient-granted per message, never org-born (that is public-Slack territory).
+        """
         return EmailMessage(
             org_id=org_id,
             connection_id=connection_id,
+            visibility_scope="restricted",
+            origin_scope="restricted",
+            container_id=connection_id,
             dedup_key=parsed.dedup_key,
             message_id=parsed.message_id,
             in_reply_to=parsed.in_reply_to,
@@ -164,6 +238,10 @@ class EmailIngestService:
                 EmailRecipient(
                     org_id=org_id,
                     email_id=email_id,
+                    # AC22 same-transaction inheritance: children carry the parent's birth scopes.
+                    visibility_scope="restricted",
+                    origin_scope="restricted",
+                    container_id=self._connection_id,
                     kind=recipient.kind,
                     name=recipient.name,
                     address=recipient.address,
@@ -176,13 +254,19 @@ class EmailIngestService:
         bytes are dropped. Status + extractor provenance come straight off the ExtractionResult
         (the seam never raises), so every row records WHY its text is present or honestly NULL.
         extract_text is pure CPU (pdfplumber/pypdf over up-to-50MB payloads) — off-loaded to a
-        worker thread, same as parse_email, so a heavy PDF never stalls the loop mid-sync."""
+        worker thread, same as parse_email, so a heavy PDF never stalls the loop mid-sync.
+        Byte-identical duplicates reuse the prior row's outcome instead (content-addressed
+        extraction — see the module invariant)."""
         for attachment in parsed.attachments:
-            extraction = await asyncio.to_thread(extract_text, attachment)
+            extraction = await self._reuse_or_extract(org_id, attachment)
             await self._emails.add_attachment(
                 EmailAttachment(
                     org_id=org_id,
                     email_id=email_id,
+                    # AC22 same-transaction inheritance: children carry the parent's birth scopes.
+                    visibility_scope="restricted",
+                    origin_scope="restricted",
+                    container_id=self._connection_id,
                     filename=attachment.filename,
                     content_type=attachment.content_type,
                     size_bytes=attachment.size_bytes,
@@ -197,3 +281,30 @@ class EmailIngestService:
                     extracted_data=extraction.structured,
                 )
             )
+
+    async def _reuse_or_extract(
+        self, org_id: UUID, attachment: ParsedAttachment
+    ) -> ExtractionResult:
+        """Reuse the newest attempted extraction of identical bytes, else run the extractor.
+
+        Content-addressed extraction (perf lane #1): the lookup key is (org, content_hash,
+        content_type) — extraction is a pure function of the payload bytes and the declared type,
+        so a prior outcome for the same key IS this attachment's outcome; the extractor run
+        (188ms/email average, 48% of pipeline time) is skipped entirely. The copy carries the
+        prior row's provenance verbatim so version-aware backfills still see the true engine.
+        Falls through to a real extraction when no attempted prior row exists (first sighting,
+        or only 'pending' rows predating the extractor).
+        """
+        prior = await self._emails.get_prior_extraction(
+            org_id, attachment.content_hash, attachment.content_type
+        )
+        if prior is not None:
+            return ExtractionResult(
+                text=prior.extracted_text,
+                status=prior.extraction_status,
+                detail=prior.extraction_detail,
+                extractor_name=prior.extractor_name,
+                extractor_version=prior.extractor_version,
+                structured=prior.extracted_data,
+            )
+        return await asyncio.to_thread(extract_text, attachment)

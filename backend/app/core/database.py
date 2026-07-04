@@ -9,12 +9,29 @@ Key invariants:
                           against. Feeds TenantSessionLocal -> scoped_session -> get_tenant_session.
       * global_engine   — `oneai_global` (BYPASSRLS). The legitimately cross-org / pre-org flows.
                           Feeds GlobalSessionLocal -> get_session. NEVER gets the GUC listener.
+  - FOUR engines since PF-01 (migration 0019): the fourth is
+      * reader_engine  — `oneai_reader` (NOSUPERUSER, NO BYPASSRLS, SELECT-only). The person-
+                         scoped RETRIEVAL plane: the `visibility` RLS policies target this role
+                         only, and it holds no write grant on any tenant table — agent/tool/
+                         retrieval code physically cannot write or widen. Feeds reader_session.
+    WHY a separate role (discovered live, 2026-07-04): Postgres applies SELECT policies to the
+    rows returned by INSERT ... RETURNING, so a restrictive visibility policy on the WRITE role
+    would break person-less ingest inserting the very restricted rows it creates. One role
+    cannot be both the person-less write plane and the person-scoped fail-closed read plane.
   - scoped_session(org_id) binds `app.current_org_id` on EVERY transaction (the seam the
     org_isolation policies key on); org_id MUST come from the verified JWT (get_tenant_session).
+  - reader_session(org_id, person_id=None) additionally binds `app.current_person_id` — the
+    seam the PF-01 `visibility` policies key on. person_id MUST come from the verified auth
+    binding (principal_source_identity), never a header/body. A person-less reader session
+    serves only visibility_scope='org' rows (AC3, fail-closed).
+  - ENGINE-SEAM GUARD (PF-01 AC18): every scoped/reader transaction ASSERTS the connection's
+    current_user is the expected role and aborts otherwise — a flow that somehow acquired a
+    BYPASSRLS (or merely wrong) pool fails LOUD, never open/silent. Piggybacked on the same
+    round-trip that sets the GUCs (no extra latency).
   - The privilege boundary is a STATIC pool property: a flow on the wrong engine is a one-file,
     code-review-visible mis-wire. A global flow wrongly on the tenant engine fails closed/loud
     (empty/500); a tenant flow wrongly on the global engine fails open/silent — so the bypass pool
-    must only ever back get_session. There is deliberately no ambiguous `SessionLocal` symbol.
+    must only ever back get_session, and the runtime assertion above backstops the convention.
   - expire_on_commit=False so ORM objects remain usable after commit.
 """
 
@@ -48,6 +65,11 @@ TenantSessionLocal = async_sessionmaker(tenant_engine, class_=AsyncSession, expi
 global_engine = create_async_engine(_settings.global_database_url, echo=False, pool_pre_ping=True)
 GlobalSessionLocal = async_sessionmaker(global_engine, class_=AsyncSession, expire_on_commit=False)
 
+# READER engine — the SELECT-only `oneai_reader` role: the PF-01 person-scoped retrieval plane.
+# The `visibility` policies target this role; it cannot write (no DML grant on tenant tables).
+reader_engine = create_async_engine(_settings.reader_database_url, echo=False, pool_pre_ping=True)
+ReaderSessionLocal = async_sessionmaker(reader_engine, class_=AsyncSession, expire_on_commit=False)
+
 
 async def get_session() -> AsyncIterator[AsyncSession]:
     """Yield a GLOBAL (BYPASSRLS) async session, committing on success.
@@ -68,9 +90,18 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             await session.commit()
 
 
+class EngineSeamViolationError(RuntimeError):
+    """A scoped session is running as the WRONG database role (PF-01 AC18).
+
+    Raised by the scoped/reader transaction listener when `current_user` is not the role the
+    seam expects — the silent, maximally permissive failure mode (a tenant flow on a BYPASSRLS
+    pool, or a retrieval flow on the write pool) converted into a loud abort before any SQL runs.
+    """
+
+
 @asynccontextmanager
 async def scoped_session(org_id: UUID) -> AsyncIterator[AsyncSession]:
-    """Yield a tenant-scoped async session bound to `org_id`.
+    """Yield a tenant-scoped async session bound to `org_id` (the WRITE/system plane).
 
     Contract:
         - Sets the context-local tenant (set_current_org) so get_current_org() works
@@ -78,43 +109,90 @@ async def scoped_session(org_id: UUID) -> AsyncIterator[AsyncSession]:
           `app.current_org_id` GUC via the after_begin listener below.
         - org_id MUST come from a verified source (the JWT claim) — callers never
           pass a header or body value here.
+        - Every transaction asserts the connection runs as the app role (AC18).
+        - Within-tenant visibility does NOT apply on this plane (the `visibility` policies
+          target oneai_reader) — person-scoped retrieval uses reader_session instead.
 
     Used as the engine of app.identity.dependencies.get_tenant_session.
     """
     set_current_org(org_id)
     async with TenantSessionLocal() as session:
-        _bind_tenant_scope(session, org_id)
+        _bind_scope(session, org_id, None, _settings.app_db_user)
         yield session
 
 
-def _bind_tenant_scope(session: AsyncSession, org_id: UUID) -> None:
-    """Re-apply the tenant GUC on every transaction this session opens.
+@asynccontextmanager
+async def reader_session(
+    org_id: UUID, person_id: UUID | None = None
+) -> AsyncIterator[AsyncSession]:
+    """Yield a RETRIEVAL session bound to `org_id` (+ optionally a person) on the reader pool.
+
+    The PF-01 person-scoped read plane (SELECT-only role; the `visibility` policies target it):
+        - person_id MUST come ONLY from the verified auth binding (principal_source_identity,
+          source_type='auth') — never a header, body, or unverified row (AC20).
+        - person_id=None serves only visibility_scope='org' rows (AC3, fail-closed) — an
+          unbound or forgotten person context can never widen to restricted content.
+        - Every transaction asserts the connection runs as the reader role (AC18); the role
+          holds no write grant, so retrieval code cannot mutate tenant data even if it tries.
+
+    The seam for the Ask/agent/retrieval layer and app.access.dependencies.
+    """
+    set_current_org(org_id)
+    async with ReaderSessionLocal() as session:
+        _bind_scope(session, org_id, person_id, _settings.reader_db_user)
+        yield session
+
+
+def _bind_scope(
+    session: AsyncSession, org_id: UUID, person_id: UUID | None, expected_role: str
+) -> None:
+    """Re-apply the scope GUCs + the engine-seam assertion on every transaction.
 
     `set_config(..., is_local=true)` is transaction-scoped — the correct choice for
     a pooled async connection (no cross-request leakage) but it resets on commit.
     Listening on `after_begin` re-applies it to each new transaction, closing the
-    fail-open window once RLS is enabled. org_id is a validated UUID, so embedding
-    it as a literal is injection-safe.
+    fail-open window once RLS is enabled. org_id/person_id are validated UUIDs, so
+    embedding them as literals is injection-safe.
+
+    AC18 engine-seam guard: the SAME round-trip returns `current_user`; anything other
+    than `expected_role` aborts the transaction with EngineSeamViolationError — a scoped
+    flow can never silently run on a BYPASSRLS (or otherwise wrong) connection. The person
+    GUC, when unset, stays NULL for the transaction — PF-01 policies read it with
+    NULLIF(current_setting(..., true), '') and fail closed.
     """
+    person_setting = (
+        f", set_config('app.current_person_id', '{person_id}', true)" if person_id else ""
+    )
+    scope_and_probe_sql = (
+        f"SELECT set_config('app.current_org_id', '{org_id}', true){person_setting}, current_user"
+    )
 
     @event.listens_for(session.sync_session, "after_begin")
-    def _apply_tenant_scope(_session, _transaction, connection) -> None:
-        connection.exec_driver_sql(f"SELECT set_config('app.current_org_id', '{org_id}', true)")
+    def _apply_scope(_session, _transaction, connection) -> None:
+        row = connection.exec_driver_sql(scope_and_probe_sql).one()
+        connected_role = row[-1]
+        if connected_role != expected_role:
+            raise EngineSeamViolationError(
+                f"Scoped session is connected as {connected_role!r}, expected "
+                f"{expected_role!r} — refusing to run scoped SQL on this connection (AC18)."
+            )
 
 
 async def runtime_roles_present() -> bool:
-    """Return True iff both least-privilege runtime roles exist on the connected database.
+    """Return True iff every least-privilege runtime role exists on the connected database.
 
     Test-harness / diagnostic helper. Post-migration-0009 the app connects as `oneai_app` /
-    `oneai_global`, which exist only after `alembic upgrade head` + `scripts.provision_roles`.
-    DB-touching test fixtures call this to SKIP the suite with a clear message on a non-provisioned
-    database, instead of failing with a raw asyncpg "role does not exist" / auth error. Checked on
-    the owner `engine`, which is always present.
+    `oneai_global` (and post-0019 the retrieval plane as `oneai_reader`), which exist only after
+    `alembic upgrade head` + `scripts.provision_roles`. DB-touching test fixtures call this to
+    SKIP the suite with a clear message on a non-provisioned database, instead of failing with a
+    raw asyncpg "role does not exist" / auth error. Checked on the owner `engine`, which is
+    always present.
     """
+    required = {_settings.app_db_user, _settings.global_db_user, _settings.reader_db_user}
     async with engine.connect() as connection:
         rows = await connection.execute(
-            text("SELECT rolname FROM pg_roles WHERE rolname IN (:app_role, :global_role)"),
-            {"app_role": _settings.app_db_user, "global_role": _settings.global_db_user},
+            text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:roles)"),
+            {"roles": list(required)},
         )
         present = {row[0] for row in rows}
-    return {_settings.app_db_user, _settings.global_db_user} <= present
+    return required <= present

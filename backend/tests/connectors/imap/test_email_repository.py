@@ -45,15 +45,15 @@ async def test_get_in_org_other_org_returns_none(db_session: AsyncSession) -> No
     assert await repo.get_in_org(message.id, org_a) is not None
 
 
-async def test_exists_is_org_scoped(db_session: AsyncSession) -> None:
+async def test_dedup_lookup_is_org_scoped(db_session: AsyncSession) -> None:
     repo = EmailMessageRepository(db_session)
     org_a, org_b = uuid4(), uuid4()
     connection = await seed_connection(db_session, org_a)
-    await repo.insert(_message(org_a, connection.id, dedup_key="dk-1"))
+    message = await repo.insert(_message(org_a, connection.id, dedup_key="dk-1"))
 
-    assert await repo.exists(org_a, connection.id, "dk-1") is True
+    assert await repo.get_message_id_by_dedup(org_a, connection.id, "dk-1") == message.id
     # The idempotency check must not leak across tenants.
-    assert await repo.exists(org_b, connection.id, "dk-1") is False
+    assert await repo.get_message_id_by_dedup(org_b, connection.id, "dk-1") is None
 
 
 async def test_list_for_org_excludes_other_orgs(db_session: AsyncSession) -> None:

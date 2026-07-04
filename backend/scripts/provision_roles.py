@@ -1,5 +1,6 @@
 """
-Role: Provision the two least-privilege runtime DB roles' LOGIN credentials, out-of-band.
+Role: Provision the least-privilege runtime DB roles' LOGIN credentials (app / global / the
+      PF-01 reader), out-of-band.
 Used by: the container start command + CI — run AFTER `alembic upgrade head` and BEFORE
          uvicorn/pytest. Idempotent (ALTER ROLE), safe to re-run on every boot.
 Depends on: asyncpg (already a dependency), app.core.config (the single source of role passwords).
@@ -52,13 +53,15 @@ async def _provision() -> None:
         roles = {
             settings.app_db_user: settings.oneai_app_password,
             settings.global_db_user: settings.oneai_global_password,
+            settings.reader_db_user: settings.oneai_reader_password,
         }
         for role, password in roles.items():
             exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
             if not exists:
                 raise SystemExit(
                     f"Role {role!r} does not exist. Run `alembic upgrade head` first "
-                    f"(migration 0009 creates the runtime roles), then provision their passwords."
+                    f"(migrations 0009/0019 create the runtime roles), then provision "
+                    f"their passwords."
                 )
             # role names are fixed config values (identifier-quoted); the password is a quoted
             # literal because ALTER ROLE takes no bind params. LOGIN flips the migration's NOLOGIN

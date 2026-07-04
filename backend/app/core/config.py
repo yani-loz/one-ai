@@ -32,6 +32,7 @@ _INSECURE_POSTGRES_PASSWORD = "oneai"
 # ONEAI_GLOBAL_PASSWORD), so the connection password and the provisioned password cannot drift.
 _INSECURE_ONEAI_APP_PASSWORD = "dev-only-oneai-app-pw-change-me"
 _INSECURE_ONEAI_GLOBAL_PASSWORD = "dev-only-oneai-global-pw-change-me"
+_INSECURE_ONEAI_READER_PASSWORD = "dev-only-oneai-reader-pw-change-me"
 
 # Minimum HS256 signing-key length. RFC 7518 §3.2: an HMAC key MUST be at least as long as
 # the hash output — 256 bits / 32 bytes for HS256. The boot guard rejects any non-dev JWT
@@ -77,14 +78,19 @@ class Settings(BaseSettings):
 
     # — Least-privilege runtime DB roles (the RLS role split; see app.core.database) —
     # The running app connects as these, never as the owner above:
-    #   oneai_app    — non-owner, NO BYPASSRLS -> tenant engine; RLS enforces on it.
+    #   oneai_app    — non-owner, NO BYPASSRLS -> tenant engine; org RLS enforces on it.
     #   oneai_global — non-owner, BYPASSRLS    -> global engine; cross/pre-org flows.
-    # Passwords are env-supplied (ONEAI_APP_PASSWORD / ONEAI_GLOBAL_PASSWORD); provision_roles
-    # sets each role's LOGIN password to the SAME value, so they never drift from the connection.
+    #   oneai_reader — non-owner, NO BYPASSRLS, SELECT-only -> reader engine; the PF-01
+    #                  person-scoped retrieval plane (the `visibility` policies target it).
+    # Passwords are env-supplied (ONEAI_APP_PASSWORD / ONEAI_GLOBAL_PASSWORD /
+    # ONEAI_READER_PASSWORD); provision_roles sets each role's LOGIN password to the SAME
+    # value, so they never drift from the connection.
     app_db_user: str = "oneai_app"
     oneai_app_password: str = _INSECURE_ONEAI_APP_PASSWORD
     global_db_user: str = "oneai_global"
     oneai_global_password: str = _INSECURE_ONEAI_GLOBAL_PASSWORD
+    reader_db_user: str = "oneai_reader"
+    oneai_reader_password: str = _INSECURE_ONEAI_READER_PASSWORD
 
     # — Tenancy —
     # Fixed demo org used ONLY by the dev seed script (see SPEC §7). Tenant context
@@ -198,6 +204,21 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def reader_database_url(self) -> str:
+        """Async READER URL — connects as the SELECT-only `oneai_reader` role (PF-01).
+
+        The person-scoped retrieval plane: the `visibility` RLS policies target this role, and
+        it holds no INSERT/UPDATE/DELETE on content (audit INSERT for decision telemetry aside)
+        — the future agent/retrieval layer physically cannot write or widen. Used by
+        core.reader_session.
+        """
+        return (
+            f"postgresql+asyncpg://{self.reader_db_user}:{self.oneai_reader_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def is_production(self) -> bool:
         """True when running in the production environment.
 
@@ -278,6 +299,8 @@ class Settings(BaseSettings):
             insecure.append("ONEAI_APP_PASSWORD (dev default)")
         if self.oneai_global_password == _INSECURE_ONEAI_GLOBAL_PASSWORD:
             insecure.append("ONEAI_GLOBAL_PASSWORD (dev default)")
+        if self.oneai_reader_password == _INSECURE_ONEAI_READER_PASSWORD:
+            insecure.append("ONEAI_READER_PASSWORD (dev default)")
         # The httpOnly refresh cookie (Control C) must be Secure outside dev, or it can ride a
         # downgraded/plaintext request — the cookie analogue of the JWT-secret gate above.
         if not self.refresh_cookie_secure:

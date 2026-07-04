@@ -22,7 +22,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import GlobalSessionLocal, engine, global_engine, tenant_engine
+from app.core.database import (
+    GlobalSessionLocal,
+    engine,
+    global_engine,
+    reader_engine,
+    tenant_engine,
+)
 from app.identity.models.organization import Organization
 from app.main import app
 
@@ -58,17 +64,17 @@ async def seed_org(org_id: UUID | None = None) -> UUID:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _dispose_engine_between_tests() -> AsyncIterator[None]:
-    """Dispose ALL THREE async engines after each test.
+    """Dispose ALL FOUR async engines after each test.
 
     pytest-asyncio runs each test in its own event loop; asyncpg connections are
     bound to the loop that created them. Without disposal, a pooled connection
-    from one test is reused by the next test's loop and fails. Post the RLS role
-    split there are three engines (owner + tenant + global) — every one must be
-    disposed, or a test that touched the tenant/global pool leaks a connection
-    into the next test's loop.
+    from one test is reused by the next test's loop and fails ("Event loop is
+    closed"). Post the RLS role split + PF-01 there are four engines (owner +
+    tenant + global + reader) — every one must be disposed, or a test that
+    touched any pool leaks a connection into the next test's loop.
     """
     yield
-    for db_engine in (tenant_engine, global_engine, engine):
+    for db_engine in (tenant_engine, global_engine, reader_engine, engine):
         await db_engine.dispose()
 
 

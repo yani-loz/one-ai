@@ -25,12 +25,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DataError
 
+from app.access.repositories.access_erasure_repository import erase_access_data_for_org
+from app.access.router import access_router
 from app.api.routes.health import router as health_router
 from app.common.erasure_hooks import register_erasure_hook
 from app.connectors import connectors_router, register_connector_exception_handlers
 from app.connectors.repositories.connector_erasure_repository import erase_connector_data_for_org
 from app.core.config import get_settings
-from app.core.database import engine, global_engine, tenant_engine
+from app.core.database import engine, global_engine, reader_engine, tenant_engine
 from app.core.middleware import MaxBodySizeMiddleware
 from app.core.request_context import RequestContextMiddleware
 from app.entities.repositories.entity_erasure_repository import erase_entity_graph_for_org
@@ -45,7 +47,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     is idle in-process (DDL/provisioning paths only) but is disposed too for symmetry.
     """
     yield
-    for db_engine in (tenant_engine, global_engine, engine):
+    for db_engine in (tenant_engine, global_engine, reader_engine, engine):
         await db_engine.dispose()
 
 
@@ -78,13 +80,17 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(identity_router)
     app.include_router(connectors_router)
+    app.include_router(access_router)
     register_identity_exception_handlers(app)
     register_connector_exception_handlers(app)
     app.add_exception_handler(DataError, _handle_data_error)
-    # GDPR org-erasure hooks (CA-CONN-01 / CA-CONN-03): feature modules join the erasure path
-    # HERE, explicitly — identity must not import connectors/entities. Connectors first (its
+    # GDPR org-erasure hooks (CA-CONN-01 / CA-CONN-03 / PF-01 AC15): feature modules join the
+    # erasure path HERE, explicitly — identity must not import access/connectors/entities.
+    # Access FIRST (explicit grant/identity deletes must precede the person/connection deletes
+    # that would cascade them invisibly and skew the certificate counts), then connectors (its
     # email rows reference the entity graph via SET-NULL FKs), then the entity graph.
     # Registration is name-keyed + idempotent, so repeated create_app() calls don't stack hooks.
+    register_erasure_hook("access", erase_access_data_for_org)
     register_erasure_hook("connectors", erase_connector_data_for_org)
     register_erasure_hook("entities", erase_entity_graph_for_org)
     return app

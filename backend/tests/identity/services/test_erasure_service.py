@@ -105,7 +105,7 @@ async def test_erase_deactivated_admin_sudo_reauth_rejected(db_session: AsyncSes
     # neither the identity deletes nor any erasure hook runs.
     org, _admin, actor = await _seed_org_admin_user(db_session, admin_active=False)
     hook = _RecordingHook({"person": 1})
-    service = _service(db_session, {"connectors": hook, "entities": hook})
+    service = _service(db_session, {"access": hook, "connectors": hook, "entities": hook})
     payload = ErasureRequest(reason=_REASON, confirm_slug="acme", password=_ADMIN_PASSWORD)
 
     with pytest.raises(PasswordConfirmationError):
@@ -121,18 +121,24 @@ async def test_erase_runs_registered_hooks_and_reports_per_table_counts(
     # Every registered hook runs with (org_id, the service's session) and the certificate
     # reports the merged per-table counts — the certificate no longer lies about Connect PII.
     org, _admin, actor = await _seed_org_admin_user(db_session)
+    access_hook = _RecordingHook({"acl_grant": 4})
     connect_hook = _RecordingHook({"connector_connection": 2, "email_message": 5})
     entity_hook = _RecordingHook({"person": 3})
-    service = _service(db_session, {"connectors": connect_hook, "entities": entity_hook})
+    service = _service(
+        db_session,
+        {"access": access_hook, "connectors": connect_hook, "entities": entity_hook},
+    )
     payload = ErasureRequest(reason=_REASON, confirm_slug="acme", password=_ADMIN_PASSWORD)
 
     certificate = await service.erase_organization(org.id, payload, actor)
 
     assert certificate.erased_rows_by_table == {
+        "acl_grant": 4,
         "connector_connection": 2,
         "email_message": 5,
         "person": 3,
     }
+    assert access_hook.calls == [(org.id, db_session)]
     assert connect_hook.calls == [(org.id, db_session)]
     assert entity_hook.calls == [(org.id, db_session)]
     assert certificate.status == "offboarded"
@@ -142,7 +148,7 @@ async def test_erase_legal_hold_runs_no_hooks(db_session: AsyncSession) -> None:
     # LEGAL-HOLD-BEATS-ERASURE extends to the hooks: the 409 guard fires before any hook runs.
     org, _admin, actor = await _seed_org_admin_user(db_session, legal_hold=True)
     hook = _RecordingHook({"connector_connection": 1})
-    service = _service(db_session, {"connectors": hook, "entities": hook})
+    service = _service(db_session, {"access": hook, "connectors": hook, "entities": hook})
     payload = ErasureRequest(reason=_REASON, confirm_slug="acme", password=_ADMIN_PASSWORD)
 
     with pytest.raises(LegalHoldError):
@@ -190,7 +196,7 @@ def test_register_erasure_hook_same_name_replaces_not_stacks(
     assert hooks["connectors"] is second_hook
 
 
-@pytest.mark.parametrize("registered", ["connectors", "entities"])
+@pytest.mark.parametrize("registered", ["access", "connectors", "entities"])
 async def test_erase_partial_hook_registry_fails_closed(
     db_session: AsyncSession, registered: str
 ) -> None:
@@ -225,7 +231,11 @@ async def test_erase_hook_failure_rolls_back_identity_deletes(db_session: AsyncS
 
     service = _service(
         db_session,
-        {"connectors": _RecordingHook({"connector_connection": 0}), "entities": _ExplodingHook()},
+        {
+            "access": _RecordingHook({"acl_grant": 0}),
+            "connectors": _RecordingHook({"connector_connection": 0}),
+            "entities": _ExplodingHook(),
+        },
     )
     payload = ErasureRequest(reason=_REASON, confirm_slug="acme", password=_ADMIN_PASSWORD)
 

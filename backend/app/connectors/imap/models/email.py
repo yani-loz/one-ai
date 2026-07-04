@@ -69,12 +69,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.common.base_model import Base, TenantMixin, TimestampMixin, UUIDPrimaryKeyMixin
+from app.common.base_model import (
+    Base,
+    TenantMixin,
+    TimestampMixin,
+    UUIDPrimaryKeyMixin,
+    VisibilityScopedMixin,
+)
 from app.connectors.extraction.extraction_result import EXTRACTION_STATUSES
 
 
-class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
-    """One logical email (deduped by Message-ID/content hash) with its decoded envelope + body."""
+class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, VisibilityScopedMixin, TimestampMixin):
+    """One logical email (deduped by Message-ID/content hash) with its decoded envelope + body.
+
+    PF-01 (0019): a CONTENT table — carries visibility_scope/origin_scope/container_id
+    (container_id = connection_id, the mailbox) under a RESTRICTIVE `visibility` RLS policy
+    targeting the READER role (the retrieval plane); per-message acl_grant rows decide who
+    retrieves it. Children (recipient/attachment) inherit the scopes in the same ingest
+    transaction and bind to THIS row's grants via email_id.
+    """
 
     __tablename__ = "email_message"
     __table_args__ = (
@@ -146,8 +159,14 @@ class EmailMessage(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     parse_status: Mapped[str] = mapped_column(String(10), nullable=False, server_default="parsed")
 
 
-class EmailRecipient(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
-    """A recipient of an email (to/cc/bcc/reply_to/sender) — raw address + resolved person link."""
+class EmailRecipient(Base, UUIDPrimaryKeyMixin, TenantMixin, VisibilityScopedMixin, TimestampMixin):
+    """A recipient of an email (to/cc/bcc/reply_to/sender) — raw address + resolved person link.
+
+    PF-01 (0019): a CONTENT table (recipient identities are the message's PII edge) — inherits
+    the parent message's visibility_scope/origin_scope/container_id in the same ingest
+    transaction; its `visibility` policy binds to the PARENT's grants via email_id (AC22's
+    chunk→grant contract, exercised today on the children that already exist).
+    """
 
     __tablename__ = "email_recipient"
     __table_args__ = (
@@ -187,8 +206,18 @@ class EmailRecipient(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
     )
 
 
-class EmailAttachment(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
-    """Attachment metadata + extracted text (original bytes are NOT kept — lean storage)."""
+class EmailAttachment(
+    Base, UUIDPrimaryKeyMixin, TenantMixin, VisibilityScopedMixin, TimestampMixin
+):
+    """Attachment metadata + extracted text (original bytes are NOT kept — lean storage).
+
+    PF-01 (0019): a CONTENT table (extracted_text is the embeddable document substrate) —
+    inherits the parent message's visibility scopes in the same ingest transaction; its
+    `visibility` policy (READER role) binds to the PARENT's grants via email_id (AC22
+    contract). The content-addressed extraction-reuse lookup runs on the WRITE plane, where
+    the policy does not apply — reusing an extraction requires already HOLDING the identical
+    bytes, so it is not a read of another principal's content.
+    """
 
     __tablename__ = "email_attachment"
     __table_args__ = (

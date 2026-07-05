@@ -75,6 +75,25 @@ def main() -> int:
         gold_cit,
     )["verdict"] == "fail")
 
+    # — verifier MUT11b regression cases —
+    check("count headline binding", grade_one(
+        {"qid": "T", "answer": (
+            "We have at least 4 active clients. Details: Alpha sent 12 inbound messages "
+            "and Beta sent 11 messages over 9 threads."
+        ), "tool_calls": []},
+        {"qid": "T", "gold_status": "authored", "intent_class": "aggregation", "split": "dev",
+         "gold": {"state": "answerable", "answer_type": "count",
+                  "expected": {"value": 9, "tolerance": 4},
+                  "evidence": {"min_citations": 0}}, "question": "?"},
+    )["verdict"] == "fail")  # 4 is the headline; 12/11/9 are incidental body numbers
+    from datetime import date as _d
+
+    from scripts.ask_loop.grade import _extract_dates
+    check("month-first english date", _d(2026, 5, 26) in
+          _extract_dates("The last contact was on May 26, 2026 from the client."))
+    check("day-first date still parses", _d(2026, 3, 20) in
+          _extract_dates("It was accepted on 20 March 2026."))
+
     gold_ent = {
         "qid": "T", "gold_status": "authored", "intent_class": "entity_lookup", "split": "dev",
         "gold": {"state": "answerable", "answer_type": "entity",

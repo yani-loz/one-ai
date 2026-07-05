@@ -38,6 +38,14 @@ _TEXT_DATE_RE = re.compile(
     r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.?,?\s*(\d{4})\b",
     re.IGNORECASE,
 )
+# Month-first English dates ("May 26, 2026") — verifier MUT11b finding: parsing only
+# day-first silently failed correct parent answers on format, inflating a flip.
+_TEXT_DATE_MDY_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.?\s+"
+    r"(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\b",
+    re.IGNORECASE,
+)
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 )}
@@ -89,6 +97,13 @@ def _extract_dates(answer: str) -> list[date]:
                 found.append(date(int(y), month, int(d)))
             except ValueError:
                 continue
+    for month_name, d, y in _TEXT_DATE_MDY_RE.findall(answer):
+        month = _MONTHS.get(month_name.lower()[:3])
+        if month:
+            try:
+                found.append(date(int(y), month, int(d)))
+            except ValueError:
+                continue
     return found
 
 
@@ -106,9 +121,19 @@ def _grade_answerable(answer: str, gold: dict[str, Any]) -> tuple[str, str]:
 
     if answer_type == "count":
         target, tolerance = int(expected["value"]), int(expected.get("tolerance", 0))
-        numbers = _extract_numbers(answer)
+        # HEADLINE binding (verifier MUT11b finding): the count must come from the answer's
+        # FIRST number-bearing sentence (the headline claim) — incidental per-item integers
+        # later in the answer must never satisfy a count gold.
+        numbers: list[int] = []
+        for sentence in re.split(r"(?<=[.!?])\s+", answer.strip()):
+            numbers = _extract_numbers(sentence[:300])
+            if numbers:
+                break
         hit = any(abs(n - target) <= tolerance for n in numbers)
-        return ("pass" if hit else "fail", f"expected {target}±{tolerance}, saw {numbers[:8]}")
+        return (
+            "pass" if hit else "fail",
+            f"expected {target}±{tolerance}, headline numbers {numbers[:8]}",
+        )
 
     if answer_type == "date":
         target = date.fromisoformat(expected["value"])

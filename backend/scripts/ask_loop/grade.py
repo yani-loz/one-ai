@@ -51,10 +51,22 @@ _NO_DATA_PATTERNS = re.compile(
 )
 
 
+_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
+_LIST_INDEX_RE = re.compile(r"(?m)^\s{0,4}\d{1,3}\.(?=\s)")
+
+
 def _extract_numbers(answer: str) -> list[int]:
-    """All standalone integers in the answer (thousand separators normalized)."""
+    """Standalone integers in the answer — after stripping contexts that leak digits.
+
+    Verifier-confirmed false-pass sources removed BEFORE extraction: ISO dates
+    (2026-07-04 → 2026/07/04), clock times (16:31:55 → 55), and markdown list
+    indices ("5. Something"). Conformance suite pins each case.
+    """
+    cleaned = _ISO_DATE_RE.sub(" ", answer)
+    cleaned = _TIME_RE.sub(" ", cleaned)
+    cleaned = _LIST_INDEX_RE.sub(" ", cleaned)
     values = []
-    for raw in _NUMBER_RE.findall(answer):
+    for raw in _NUMBER_RE.findall(cleaned):
         try:
             values.append(int(raw.replace(",", "").replace(".", "")))
         except ValueError:

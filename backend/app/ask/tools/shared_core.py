@@ -277,6 +277,50 @@ async def _search_attachments(session: AsyncSession, args: dict[str, Any]) -> li
     return [dict(r) for r in rows.mappings()]
 
 
+async def _get_counterparty_summary(
+    session: AsyncSession, args: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """One-hop relationship dossier per counterparty domain (derived view, citable ids)."""
+    term = str(args.get("name_or_domain") or "").strip().lower()
+    if not term:
+        raise ToolExecutionError("name_or_domain is required.")
+    if "@" in term:
+        term = term.split("@", 1)[1]
+    summaries = (
+        await session.execute(
+            text(
+                """
+                SELECT domain, first_contact, last_contact,
+                       first_message_id, last_message_id,
+                       inbound_count, outbound_count, total_mentions, distinct_addresses
+                FROM counterparty_summary
+                WHERE domain ILIKE :term_like
+                ORDER BY total_mentions DESC
+                LIMIT 3
+                """
+            ),
+            {"term_like": _like(term)},
+        )
+    ).mappings().all()
+    results = []
+    for row in summaries:
+        top = (
+            await session.execute(
+                text(
+                    """
+                    SELECT lower(coalesce(from_address, '')) AS address, count(*) AS messages
+                    FROM email_message
+                    WHERE from_address ILIKE :domain_like
+                    GROUP BY 1 ORDER BY messages DESC LIMIT 5
+                    """
+                ),
+                {"domain_like": f"%@{row['domain']}"},
+            )
+        ).mappings().all()
+        results.append({**dict(row), "top_senders": [dict(t) for t in top]})
+    return results
+
+
 _LIMIT_PARAM = {
     "type": "integer",
     "description": f"Max results (default {_DEFAULT_LIMIT}, cap {_MAX_LIMIT}).",
@@ -407,6 +451,31 @@ def build_shared_core_registry() -> ToolRegistry:
                     "required": [],
                 },
                 executor=_search_attachments,
+            ),
+            ToolSpec(
+                name="get_counterparty_summary",
+                description=(
+                    "Call this FIRST for any question about the history, relationship, "
+                    "status, or overview of a company/organization/counterparty: returns "
+                    "their communication dossier — first and last contact dates (with "
+                    "first_message_id/last_message_id to CITE as evidence), inbound/"
+                    "outbound volumes, and top sender addresses — in one call. Then drill "
+                    "into specifics with search_emails."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name_or_domain": {
+                            "type": "string",
+                            "description": (
+                                "Company name fragment, email domain, or address "
+                                "(e.g. 'acme' or 'acme.com')."
+                            ),
+                        }
+                    },
+                    "required": ["name_or_domain"],
+                },
+                executor=_get_counterparty_summary,
             ),
         ]
     )

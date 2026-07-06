@@ -16,6 +16,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -55,8 +56,15 @@ def _like(term: str) -> str:
     return f"%{escaped}%"
 
 
-async def _find_person(session: AsyncSession, args: dict[str, Any]) -> list[dict[str, Any]]:
-    """Match persons by display name or any bound email address (case-insensitive contains)."""
+async def _find_person(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:
+    """Match persons by name/address; include their latest signature block + unlinked addresses.
+
+    The signature excerpt comes from the person's most recent NON-REPLY authored message
+    (replies end in quoted history, not the author's signature) — it carries the
+    role/title/phone facts that exist nowhere else. `unlinked_addresses` surfaces sender
+    addresses matching the term that are NOT bound to any person row (the identity graph
+    under-merges) — search those as participants too for complete coverage.
+    """
     term = str(args.get("name_or_email") or "").strip()
     if not term:
         raise ToolExecutionError("name_or_email is required.")
@@ -65,21 +73,65 @@ async def _find_person(session: AsyncSession, args: dict[str, Any]) -> list[dict
             """
             SELECT p.id, p.display_name, p.is_internal,
                    p.first_seen_at::date AS first_seen, p.last_seen_at::date AS last_seen,
-                   array_remove(array_agg(DISTINCT pe.email), NULL) AS addresses
+                   array_remove(array_agg(DISTINCT pe.email), NULL) AS addresses,
+                   (SELECT right(coalesce(m.body_text, ''), 400)
+                    FROM email_message m
+                    WHERE m.org_id = p.org_id
+                      AND m.from_address IN (
+                          SELECT pe3.email FROM person_email pe3
+                          WHERE pe3.person_id = p.id AND pe3.org_id = p.org_id)
+                    ORDER BY m.is_reply ASC, m.sent_at DESC NULLS LAST
+                    LIMIT 1) AS signature_block
             FROM person p
             LEFT JOIN person_email pe ON pe.person_id = p.id AND pe.org_id = p.org_id
             WHERE p.display_name ILIKE :term OR EXISTS (
                   SELECT 1 FROM person_email pe2
                   WHERE pe2.person_id = p.id AND pe2.org_id = p.org_id
                     AND pe2.email ILIKE :term)
-            GROUP BY p.id, p.display_name, p.is_internal, p.first_seen_at, p.last_seen_at
+            GROUP BY p.id, p.org_id, p.display_name, p.is_internal,
+                     p.first_seen_at, p.last_seen_at
             ORDER BY p.last_seen_at DESC NULLS LAST
             LIMIT :limit
             """
         ),
         {"term": _like(term), "limit": _clamp_limit(args)},
     )
-    return [dict(r) for r in rows.mappings()]
+    persons = [dict(r) for r in rows.mappings()]
+    linked = {a for person in persons for a in (person.get("addresses") or [])}
+    unlinked = await session.execute(
+        text(
+            """
+            SELECT DISTINCT lower(from_address) AS address
+            FROM email_message
+            WHERE org_id = current_setting('app.current_org_id', true)::uuid
+              AND (from_address ILIKE :term OR from_name ILIKE :term)
+            LIMIT 10
+            """
+        ),
+        {"term": _like(term)},
+    )
+    extra = [r["address"] for r in unlinked.mappings() if r["address"] not in linked]
+    # Company names rarely literal-match address strings (e.g. 'Acme+' vs acme-corp.com) —
+    # normalize to alphanumerics and scan sender DOMAINS so enumeration can be fed even
+    # when no person row matches.
+    normalized = re.sub(r"[^a-z0-9]", "", term.lower())
+    domains: list[str] = []
+    if len(normalized) >= 3:
+        domain_rows = await session.execute(
+            text(
+                """
+                SELECT DISTINCT lower(split_part(from_address, '@', 2)) AS domain
+                FROM email_message
+                WHERE org_id = current_setting('app.current_org_id', true)::uuid
+                  AND regexp_replace(lower(split_part(from_address, '@', 2)),
+                                     '[^a-z0-9]', '', 'g') LIKE :norm_like
+                LIMIT 5
+                """
+            ),
+            {"norm_like": f"%{normalized}%"},
+        )
+        domains = [r["domain"] for r in domain_rows.mappings()]
+    return {"persons": persons, "unlinked_addresses": extra, "matching_domains": domains}
 
 
 _MAX_QUERY_TERMS = 5
@@ -88,11 +140,13 @@ _EMAIL_FILTERS = """
       (CAST(:terms_count AS int) = 0
        OR m.subject ILIKE ANY(CAST(:term_likes AS text[]))
        OR m.body_text ILIKE ANY(CAST(:term_likes AS text[])))
-  AND (CAST(:participant AS text) IS NULL
-       OR m.from_address ILIKE :participant_like OR m.from_name ILIKE :participant_like
+  AND (CAST(:participants_count AS int) = 0
+       OR m.from_address ILIKE ANY(CAST(:participant_likes AS text[]))
+       OR m.from_name ILIKE ANY(CAST(:participant_likes AS text[]))
        OR EXISTS (SELECT 1 FROM email_recipient r
                   WHERE r.email_id = m.id AND r.org_id = m.org_id
-                    AND (r.address ILIKE :participant_like OR r.name ILIKE :participant_like)))
+                    AND (r.address ILIKE ANY(CAST(:participant_likes AS text[]))
+                         OR r.name ILIKE ANY(CAST(:participant_likes AS text[])))))
   AND (CAST(:date_from AS date) IS NULL OR m.sent_at >= CAST(:date_from AS date))
   AND (CAST(:date_to AS date) IS NULL
        OR m.sent_at < CAST(:date_to AS date) + INTERVAL '1 day')
@@ -110,15 +164,26 @@ def _query_terms(args: dict[str, Any]) -> list[str]:
     return terms[:_MAX_QUERY_TERMS]
 
 
+def _participant_terms(args: dict[str, Any]) -> list[str]:
+    """Collect participant variants from `participants` (list) or legacy `participant`."""
+    raw = args.get("participants")
+    if raw is None:
+        raw = [args.get("participant")] if args.get("participant") else []
+    if not isinstance(raw, list):
+        raw = [raw]
+    terms = [str(t).strip() for t in raw if t and str(t).strip()]
+    return terms[:8]
+
+
 def _email_filter_params(args: dict[str, Any]) -> dict[str, Any]:
     """Shared param builder for search_emails/count_emails (identical filter semantics)."""
     terms = _query_terms(args)
-    participant = str(args.get("participant") or "").strip() or None
+    participants = _participant_terms(args)
     return {
         "terms_count": len(terms),
         "term_likes": [_like(t) for t in terms] or [""],
-        "participant": participant,
-        "participant_like": _like(participant) if participant else None,
+        "participants_count": len(participants),
+        "participant_likes": [_like(t) for t in participants] or [""],
         "date_from": _parse_iso_date(args.get("date_from"), "date_from"),
         "date_to": _parse_iso_date(args.get("date_to"), "date_to"),
     }
@@ -127,8 +192,8 @@ def _email_filter_params(args: dict[str, Any]) -> dict[str, Any]:
 async def _search_emails(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:
     """Search messages by keyword variants and/or participant and/or date window, newest first."""
     params = _email_filter_params(args)
-    if not params["terms_count"] and not params["participant"] and not params["date_from"]:
-        raise ToolExecutionError("Provide at least one of: queries, participant, date_from.")
+    if not params["terms_count"] and not params["participants_count"] and not params["date_from"]:
+        raise ToolExecutionError("Provide at least one of: queries, participants, date_from.")
     rows = await session.execute(
         text(
             f"""
@@ -252,8 +317,9 @@ async def _search_attachments(session: AsyncSession, args: dict[str, Any]) -> li
         raise ToolExecutionError("Provide at least one of: query, content_type.")
     rows = await session.execute(
         text(
-            """
+            f"""
             SELECT a.id, a.email_id, a.filename, a.content_type, a.size_bytes,
+                   left(coalesce(a.extracted_text, ''), {_SNIPPET_CHARS}) AS text_snippet,
                    m.sent_at, m.from_address, m.subject
             FROM email_attachment a
             JOIN email_message m ON m.id = a.email_id AND m.org_id = a.org_id
@@ -277,6 +343,44 @@ async def _search_attachments(session: AsyncSession, args: dict[str, Any]) -> li
     return [dict(r) for r in rows.mappings()]
 
 
+_ATTACHMENT_TEXT_CAP = 5000
+
+
+async def _get_attachment(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:
+    """Fetch one attachment's extracted document text (capped) by attachment id."""
+    attachment_id = str(args.get("attachment_id") or "").strip()
+    if not attachment_id:
+        raise ToolExecutionError("attachment_id is required.")
+    row = (
+        await session.execute(
+            text(
+                """
+                SELECT a.id, a.filename, a.content_type, a.size_bytes, a.extraction_status,
+                       a.extracted_text, m.sent_at, m.from_address, m.subject, a.email_id
+                FROM email_attachment a
+                JOIN email_message m ON m.id = a.email_id AND m.org_id = a.org_id
+                WHERE a.id = CAST(:attachment_id AS uuid)
+                """
+            ),
+            {"attachment_id": attachment_id},
+        )
+    ).mappings().first()
+    if row is None:
+        return {"found": False, "attachment_id": attachment_id}
+    extracted = row["extracted_text"] or ""
+    result = {k: v for k, v in dict(row).items() if k != "extracted_text"}
+    result["found"] = True
+    result["text"] = extracted[:_ATTACHMENT_TEXT_CAP]
+    if len(extracted) > _ATTACHMENT_TEXT_CAP:
+        result["text_truncated_from_chars"] = len(extracted)
+    if not extracted:
+        result["note"] = (
+            f"No extracted text available (extraction_status={row['extraction_status']}) — "
+            "the document content cannot be read."
+        )
+    return result
+
+
 _LIMIT_PARAM = {
     "type": "integer",
     "description": f"Max results (default {_DEFAULT_LIMIT}, cap {_MAX_LIMIT}).",
@@ -292,7 +396,13 @@ def build_shared_core_registry() -> ToolRegistry:
                 description=(
                     "Look up people by name or email address (case-insensitive, partial "
                     "matches). Returns each match with all known email addresses, whether "
-                    "they are internal, and first/last time seen in communications."
+                    "they are internal, first/last time seen, and a signature_block from "
+                    "their own emails — READ the signature_block: it states the person's "
+                    "job title, role, company, and phone, which you should include when "
+                    "describing who someone is. Also check unlinked_addresses for the "
+                    "person's other addresses not yet linked to their record. For COMPANIES, "
+                    "matching_domains lists their email domains — pass those to "
+                    "search_emails participants to enumerate the whole relationship."
                 ),
                 parameters={
                     "type": "object",
@@ -315,7 +425,11 @@ def build_shared_core_registry() -> ToolRegistry:
                     "several keyword variants together — the original term plus its "
                     "translations into the archive's likely languages and transliterations "
                     "of names — results match ANY variant. Returns newest-first message "
-                    "summaries with a short body snippet; use get_email for full messages."
+                    "summaries with a short body snippet; use get_email for full messages. "
+                    "NOTE: documents and agreements often live in threads whose subject "
+                    "does not name them — when looking for a specific document or exchange, "
+                    "also search the counterparty's thread subjects and open the messages "
+                    "before concluding it does not exist."
                 ),
                 parameters={
                     "type": "object",
@@ -328,9 +442,15 @@ def build_shared_core_registry() -> ToolRegistry:
                                 "transliterations); a message matches if ANY variant matches."
                             ),
                         },
-                        "participant": {
-                            "type": "string",
-                            "description": "Name or address of a sender/recipient.",
+                        "participants": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Names/addresses/domains of senders or recipients — pass "
+                                "ALL of a person's addresses (see find_person) or a whole "
+                                "domain like 'acme.com' to enumerate a full relationship; "
+                                "matches ANY entry."
+                            ),
                         },
                         "date_from": {"type": "string", "description": "YYYY-MM-DD inclusive."},
                         "date_to": {"type": "string", "description": "YYYY-MM-DD inclusive."},
@@ -358,9 +478,15 @@ def build_shared_core_registry() -> ToolRegistry:
                                 "transliterations); a message matches if ANY variant matches."
                             ),
                         },
-                        "participant": {
-                            "type": "string",
-                            "description": "Name or address of a sender/recipient.",
+                        "participants": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Names/addresses/domains of senders or recipients — pass "
+                                "ALL of a person's addresses (see find_person) or a whole "
+                                "domain like 'acme.com' to enumerate a full relationship; "
+                                "matches ANY entry."
+                            ),
                         },
                         "date_from": {"type": "string", "description": "YYYY-MM-DD inclusive."},
                         "date_to": {"type": "string", "description": "YYYY-MM-DD inclusive."},
@@ -407,6 +533,26 @@ def build_shared_core_registry() -> ToolRegistry:
                     "required": [],
                 },
                 executor=_search_attachments,
+            ),
+            ToolSpec(
+                name="get_attachment",
+                description=(
+                    "Read the extracted document text of ONE attachment by its id (from "
+                    "search_attachments or get_email results). Facts about money, terms, "
+                    "agreements, and deadlines usually live INSIDE attached documents "
+                    "(offers, invoices, contracts) — email bodies only reference them."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "attachment_id": {
+                            "type": "string",
+                            "description": "The attachment id (UUID).",
+                        }
+                    },
+                    "required": ["attachment_id"],
+                },
+                executor=_get_attachment,
             ),
         ]
     )

@@ -234,6 +234,13 @@ def main(argv: list[str] | None = None) -> int:
             grade = grade_one(record, question)
             grades.append(grade)
             if grade["verdict"] == "pending_critic":
+                # Tool payloads ride along (capped) so the critic can distinguish
+                # transcript-SUPPORTED extra claims from genuinely unsupported ones —
+                # the ≤2% gate counts only claims absent from BOTH gold AND transcript.
+                payloads = " ".join(
+                    str(c.get("result_payload") or "")
+                    for c in (record.get("tool_calls") or [])
+                )[:8000]
                 worksheet.append(
                     {
                         "qid": record["qid"],
@@ -241,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
                         "answer": record["answer"],
                         "gold_state": (question.get("gold") or {}).get("state"),
                         "atomic_claims": (question.get("gold") or {}).get("atomic_claims"),
+                        "tool_payloads_excerpt": payloads,
                         "detail": grade["detail"],
                     }
                 )

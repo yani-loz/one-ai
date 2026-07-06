@@ -62,10 +62,14 @@ def _config_hash(
     answers without changing the serialized tool specs (measured: MUT2 was silently served
     MUT1's cache)."""
     import app.ask.services.agent_runner as _runner_mod
+    import app.ask.services.router as _router_mod
+    import app.ask.services.sql_pipeline as _pipe_mod
     import app.ask.tools.shared_core as _tools_mod
+    import app.ask.tools.sql_guard as _guard_mod
+    import app.ask.tools.sql_tool as _sql_mod
 
     code = b""
-    for module in (_tools_mod, _runner_mod):
+    for module in (_tools_mod, _runner_mod, _router_mod, _guard_mod, _sql_mod, _pipe_mod):
         code += Path(module.__file__).read_bytes()
     basis = json.dumps(
         {
@@ -106,8 +110,14 @@ async def _answer_one(
     cache_dir: Path,
     use_cache: bool,
     semaphore: asyncio.Semaphore,
+    arm: str = "generalist",
+    client: Any = None,
 ) -> dict[str, Any]:
-    """Answer one question (cache-first); return the JSONL record."""
+    """Answer one question (cache-first); return the JSONL record.
+
+    arm='routed': classify the question first, then run with the class-scoped registry
+    and the class procedure appended to the system prompt (generalist on any fallback).
+    """
     cache_file = cache_dir / f"{question['qid']}.json"
     if use_cache and await asyncio.to_thread(cache_file.exists):
         cached_text = await asyncio.to_thread(cache_file.read_text, encoding="utf-8")
@@ -115,7 +125,50 @@ async def _answer_one(
         record["cached"] = True
         return record
 
+    routed_class: str | None = None
     async with semaphore:
+        if arm == "xiyan-routed" and client is not None:
+            from app.ask.services.router import classify_question
+            from app.ask.services.sql_pipeline import SQL_PIPELINE_CLASSES, answer_via_sql
+
+            routed_class = await classify_question(client, question["question"])
+            if routed_class in SQL_PIPELINE_CLASSES:
+                async with reader_session(org_id, person_id) as session:
+                    piped = await answer_via_sql(client, session, question["question"])
+                if piped is not None:
+                    record = {
+                        "qid": question["qid"],
+                        "source_id": question.get("source_id"),
+                        "intent_class": question.get("intent_class"),
+                        "routed_class": routed_class,
+                        "question": question["question"],
+                        **piped,
+                        "cached": False,
+                    }
+                    await asyncio.to_thread(
+                        cache_file.write_text,
+                        json.dumps(record, ensure_ascii=False, indent=1),
+                        encoding="utf-8",
+                    )
+                    return record
+            # fall through to the normal agent below
+        if arm == "routed" and client is not None:
+            from app.ask.services.router import (
+                classify_question,
+                prompt_addendum_for_class,
+                registry_for_class,
+            )
+
+            routed_class = await classify_question(client, question["question"])
+            runner = AskAgentRunner(
+                client,
+                registry_for_class(runner._registry, routed_class),  # noqa: SLF001
+                today=date.fromisoformat("1970-01-01"),  # overridden by system_prompt below
+                max_turns=runner._max_turns,  # noqa: SLF001
+                model_params=runner._model_params,  # noqa: SLF001
+                system_prompt=runner._system_prompt  # noqa: SLF001
+                + prompt_addendum_for_class(routed_class),
+            )
         async with reader_session(org_id, person_id) as session:
             result: AskResult = await runner.run(question["question"], session)
 
@@ -123,6 +176,7 @@ async def _answer_one(
         "qid": question["qid"],
         "source_id": question.get("source_id"),
         "intent_class": question.get("intent_class"),
+        "routed_class": routed_class,
         "question": question["question"],
         "answer": result.answer,
         "turns": result.turns,
@@ -147,6 +201,8 @@ async def _answer_all(
     cache_dir: Path,
     use_cache: bool,
     parallel: int,
+    arm: str = "generalist",
+    client: Any = None,
 ) -> list[dict[str, Any]]:
     """Answer every selected question concurrently (bounded), disposing engines after."""
     semaphore = asyncio.Semaphore(parallel)
@@ -154,7 +210,10 @@ async def _answer_all(
         return list(
             await asyncio.gather(
                 *(
-                    _answer_one(runner, org, person_id, q, cache_dir, use_cache, semaphore)
+                    _answer_one(
+                        runner, org, person_id, q, cache_dir, use_cache, semaphore,
+                        arm=arm, client=client,
+                    )
                     for q in questions
                 )
             )
@@ -178,6 +237,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parallel", type=int, default=4, help="concurrent questions")
     parser.add_argument("--no-cache", action="store_true", help="force fresh answers")
     parser.add_argument("--artifacts", default=None, help="artifacts root override")
+    parser.add_argument(
+        "--prompt-suffix", default=None,
+        help="text appended to the system prompt (arm calibration; hashed into config)",
+    )
+    parser.add_argument(
+        "--arm", choices=["generalist", "routed", "xiyan", "xiyan-routed"],
+        default="generalist",
+        help="agent architecture: monolithic, router+specialists, +SQL tool, or "
+        "routed-SQL pipeline (set-shaped classes bypass the agent)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -192,14 +261,22 @@ def main(argv: list[str] | None = None) -> int:
     pinned_now = date.fromisoformat(payload.get("pinned_now", "2026-07-04"))
     client = TogetherChatClient()
     registry = build_shared_core_registry()
+    if args.arm == "xiyan":
+        from app.ask.tools.sql_tool import register_sql_tool
+
+        registry = register_sql_tool(registry)
     runner = AskAgentRunner(
         client, registry, today=pinned_now,
         max_turns=args.max_turns, model_params=model_params,
     )
+    if args.prompt_suffix:
+        runner._system_prompt = runner._system_prompt + "\n\n" + args.prompt_suffix  # noqa: SLF001
     # Hash the runner's EFFECTIVE params (defaults included), not the raw CLI value —
     # otherwise a changed default silently serves stale cached answers.
     effective_params = runner._model_params  # noqa: SLF001 — reproducibility pin
-    config_hash = _config_hash(registry, runner, client.model, effective_params)
+    config_hash = _config_hash(
+        registry, runner, client.model, {**effective_params, "__arm": args.arm}
+    )
 
     root = _artifacts_root(args.artifacts)
     cache_dir = root / "cache" / config_hash
@@ -211,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
         _answer_all(
             runner, UUID(args.org), person_id, questions,
             cache_dir, not args.no_cache, args.parallel,
+            arm=args.arm, client=client,
         )
     )
 

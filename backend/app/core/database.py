@@ -42,7 +42,9 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 from sqlalchemy import event, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session, SessionTransaction
 
 from app.core.config import get_settings
 from app.core.tenant import set_current_org
@@ -156,25 +158,43 @@ def _bind_scope(
 
     AC18 engine-seam guard: the SAME round-trip returns `current_user`; anything other
     than `expected_role` aborts the transaction with EngineSeamViolationError — a scoped
-    flow can never silently run on a BYPASSRLS (or otherwise wrong) connection. The person
-    GUC, when unset, stays NULL for the transaction — PF-01 policies read it with
-    NULLIF(current_setting(..., true), '') and fail closed.
+    flow can never silently run on a BYPASSRLS (or otherwise wrong) connection.
+
+    The person GUC is bound on EVERY transaction, explicitly to '' when there is no person:
+    binding it only when set would leave a person-less read inheriting whatever value the
+    connection already carried, so any future path that leaves a session-level person id
+    behind would silently widen an org-scope read. PF-01 policies read the GUC with
+    NULLIF(current_setting(..., true), ''), so '' is exactly the fail-closed value.
     """
     person_setting = (
-        f", set_config('app.current_person_id', '{person_id}', true)" if person_id else ""
+        f", set_config('app.current_person_id', '{person_id if person_id else ''}', true)"
     )
+    # The probe returns the role NAME and its RLS-relevant attributes in the same round trip.
+    # A name check alone is not an isolation guarantee: the role name comes from configuration,
+    # so pointing READER_DB_USER at a BYPASSRLS role (or granting BYPASSRLS to the reader
+    # later) would satisfy it while every policy silently stopped applying.
     scope_and_probe_sql = (
-        f"SELECT set_config('app.current_org_id', '{org_id}', true){person_setting}, current_user"
+        f"SELECT set_config('app.current_org_id', '{org_id}', true){person_setting}, "
+        "current_user, "
+        "(SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user)"
     )
 
     @event.listens_for(session.sync_session, "after_begin")
-    def _apply_scope(_session, _transaction, connection) -> None:
+    def _apply_scope(
+        _session: Session, _transaction: SessionTransaction, connection: Connection
+    ) -> None:
         row = connection.exec_driver_sql(scope_and_probe_sql).one()
-        connected_role = row[-1]
+        connected_role, bypasses_rls = row[-2], row[-1]
         if connected_role != expected_role:
             raise EngineSeamViolationError(
                 f"Scoped session is connected as {connected_role!r}, expected "
                 f"{expected_role!r} — refusing to run scoped SQL on this connection (AC18)."
+            )
+        if bypasses_rls:
+            raise EngineSeamViolationError(
+                f"Scoped session is connected as {connected_role!r}, which is SUPERUSER or "
+                "BYPASSRLS — every row-level policy would be inert, so this connection is "
+                "refused regardless of its name."
             )
 
 

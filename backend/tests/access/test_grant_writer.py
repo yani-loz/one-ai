@@ -188,3 +188,92 @@ async def test_reconciliation_adds_newly_verified_principal(db_session: AsyncSes
     grants = await _grants(db_session, org)
     assert [grant.person_id for grant in grants] == [alice.id]
     assert grants[0].revoked_at is None
+
+
+# — R5 write-plane: grants derive ONLY from fields that are in the dedup key ————————————
+
+# The SAME logical message as it appears in two folders. The Sent copy carries the Bcc header;
+# every received copy does not. `_recipient_identity` keys the dedup on to/cc ONLY — deliberately,
+# so the two FOLD into one message — and `folder_policy` keeps SENT, so both land under one
+# connection and share `(org_id, connection_id, dedup_key)`.
+_SENT_COPY_WITH_BCC = (
+    b"From: sender@globex.test\r\nTo: alice@acme.test\r\nBcc: carol@acme.test\r\n"
+    b"Message-ID: <ordering@x>\r\nSubject: ordering\r\n\r\nbody\r\n"
+)
+_RECEIVED_COPY_WITHOUT_BCC = (
+    b"From: sender@globex.test\r\nTo: alice@acme.test\r\n"
+    b"Message-ID: <ordering@x>\r\nSubject: ordering\r\n\r\nbody\r\n"
+)
+
+
+async def _ingest_both(db_session: AsyncSession, first: bytes, second: bytes):
+    """Ingest two copies of one message in the given order; return (org, grants-by-person)."""
+    org = uuid4()
+    connection = await seed_connection(db_session, org)
+    alice = await seed_person(db_session, org, "Alice")
+    carol = await seed_person(db_session, org, "Carol")
+    await bind_verified_identity(db_session, org, alice.id, "email", "alice@acme.test")
+    await bind_verified_identity(db_session, org, carol.id, "email", "carol@acme.test")
+
+    service = EmailIngestService(db_session, connection)
+    await service.ingest_email(first)
+    await service.ingest_email(second)
+
+    live = {g.person_id for g in await _grants(db_session, org) if g.revoked_at is None}
+    return alice, carol, live
+
+
+async def test_ingest_order_does_not_decide_who_can_read_the_message(
+    db_session: AsyncSession,
+) -> None:
+    # W2-C: grants used to derive from all five recipient kinds while the dedup key covered
+    # to/cc only, so the two copies derived DIFFERENT principal sets — and because a dedup hit
+    # RECONCILES (tombstoning anything not in the new set), whichever copy arrived second
+    # silently revoked the other's. Ingest order decided access, with no attacker involved.
+    alice_a, _carol_a, sent_first = await _ingest_both(
+        db_session, _SENT_COPY_WITH_BCC, _RECEIVED_COPY_WITHOUT_BCC
+    )
+    alice_b, _carol_b, received_first = await _ingest_both(
+        db_session, _RECEIVED_COPY_WITHOUT_BCC, _SENT_COPY_WITH_BCC
+    )
+
+    # Both orders must agree, and both must grant the DISCLOSED recipient.
+    assert sent_first == {alice_a.id}
+    assert received_first == {alice_b.id}
+
+
+async def test_a_bcc_header_never_mints_a_grant(db_session: AsyncSession) -> None:
+    # W1/W2-A: a literal `Bcc:` on delivered mail is not stripped by the RECEIVING MTA, so
+    # anyone can mail a synced mailbox with `Bcc: victim@corp.com` and place their text inside
+    # the victim's private retrieval scope — which the victim cannot inspect, because the
+    # message never reaches their inbox. Carol is verified and named; she still gets nothing.
+    _alice, carol, live = await _ingest_both(db_session, _SENT_COPY_WITH_BCC, _SENT_COPY_WITH_BCC)
+
+    assert carol.id not in live
+
+
+async def test_the_backfill_script_derives_the_same_kinds_as_ingest(
+    db_session: AsyncSession,
+) -> None:
+    # The backfill script and the ingest service are TWO WRITERS on ONE reconciling choke point.
+    # The script selected recipients with no `kind` filter, so it minted bcc-derived grants that
+    # the next re-ingest tombstoned as `live - derivable`, and the next backfill re-minted — the
+    # same bug class the ingest fix removed, reappearing BETWEEN the two writers. No test
+    # exercised the script at all, which is why it survived the first fix.
+    from scripts.backfill_email_grants import _reconcile_all_messages
+
+    org = uuid4()
+    owner_user = await seed_user(db_session, org)
+    connection = await seed_connection(db_session, org, owner_user_id=owner_user.id)
+    alice = await seed_person(db_session, org, "Alice")
+    carol = await seed_person(db_session, org, "Carol")
+    await bind_verified_identity(db_session, org, alice.id, "email", "alice@acme.test")
+    await bind_verified_identity(db_session, org, carol.id, "email", "carol@acme.test")
+    await EmailIngestService(db_session, connection).ingest_email(_SENT_COPY_WITH_BCC)
+    await db_session.commit()
+
+    await _reconcile_all_messages(db_session, org, connection.id, owner_user.id)
+
+    live = {g.person_id for g in await _grants(db_session, org) if g.revoked_at is None}
+    assert alice.id in live  # the disclosed recipient keeps her grant
+    assert carol.id not in live  # the blind copy never gains one, by either writer

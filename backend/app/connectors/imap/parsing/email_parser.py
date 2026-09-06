@@ -114,6 +114,33 @@ _RECIPIENT_HEADERS: tuple[tuple[str, str], ...] = (
     ("reply-to", "reply_to"),
     ("sender", "sender"),
 )
+# The recipient kinds that are EVIDENCE OF DISCLOSURE — the audience the sender addressed in
+# the open. Only these may derive an access grant.
+#
+# `bcc`, `reply_to` and `sender` must NOT, for two independent reasons measured in the R5
+# write-plane review:
+#   * a literal `Bcc:` on delivered mail is NOT stripped by the receiving MTA (only the SENDING
+#     MTA strips it when fanning out real blind copies), so anyone can mail a synced mailbox
+#     with `Bcc: victim@corp.com` and place their text inside the victim's private retrieval
+#     scope — a scope the victim cannot inspect, because the message never reaches their inbox;
+#   * they are NOT in the dedup key (`_recipient_identity` keys on to/cc only, deliberately, so
+#     the sender's Sent copy and every received copy FOLD). Deriving grants from a field that is
+#     not keyed means two copies of the SAME message derive DIFFERENT grants — and since a dedup
+#     hit reconciles, whichever copy is ingested second silently revoked the other's. Ingest
+#     order decided who could read the message. Keeping derivation inside the keyed fields makes
+#     that class of bug impossible rather than patched.
+#
+# A genuinely blind-copied person USUALLY still reaches their own copy: in THEIR mailbox they are
+# the connection owner, and the owner grant carries them. That is not a guarantee, and it is
+# stated carefully because an earlier version of this comment asserted one the schema does not
+# provide: `connector_connection.owner_user_id` is NULLABLE by design ("NULL = org-owned/shared",
+# the admin-provisioned mailbox), and even when set it needs a VERIFIED 'auth'-namespace binding
+# before `write_email_grants` derives anything from it. So on an owner-less or auth-unbound
+# connection, a message whose ONLY verified principal sat in bcc has no grant holder at all and is
+# unreadable on the retrieval plane. That is the fail-CLOSED direction and is intended — but it is
+# a real narrowing, not a no-op, and nobody should discover it from behaviour.
+DISCLOSED_RECIPIENT_KINDS = frozenset({"to", "cc"})
+
 _DECODE_ERRORS = (LookupError, UnicodeDecodeError, ValueError)
 
 logger = logging.getLogger(__name__)

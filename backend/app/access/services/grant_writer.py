@@ -54,20 +54,23 @@ class GrantWriter:
         connection_id: UUID,
         owner_user_id: UUID | None,
         sender_address: str | None,
-        recipient_addresses: list[str],
+        disclosed_recipient_addresses: list[str],
     ) -> set[UUID]:
         """Write the per-message grants for one stored email; returns the granted principal set.
 
         Principal derivation (all through VERIFIED identities — UNKNOWN ⇒ DENY):
           - the connection owner: 'auth' namespace binding of owner_user_id ('owner');
           - the From author: 'email' namespace binding of the normalized address ('sender');
-          - every recipient (to/cc/bcc/reply_to/sender headers): 'email' bindings ('recipient').
+          - every DISCLOSED recipient (to/cc ONLY — see DISCLOSED_RECIPIENT_KINDS): 'recipient'.
+        Bcc/Reply-To/Sender are excluded: they are forgeable on delivered mail AND absent from
+        the dedup key, so deriving from them let two copies of one message disagree about who
+        may read it, and ingest ORDER decided the winner.
         One grant per principal, provenance by the owner > sender > recipient precedence.
         Unresolvable addresses simply write nothing: an org member who was not a recipient ends
         with no grant and sees nothing (AC10).
         """
         principals = await self._derive_email_principal_roles(
-            org_id, owner_user_id, sender_address, recipient_addresses
+            org_id, owner_user_id, sender_address, disclosed_recipient_addresses
         )
         for person_id, provenance in principals.items():
             await self._grants.insert_live_grant(
@@ -87,7 +90,7 @@ class GrantWriter:
         connection_id: UUID,
         owner_user_id: UUID | None,
         sender_address: str | None,
-        recipient_addresses: list[str],
+        disclosed_recipient_addresses: list[str],
     ) -> int:
         """Re-derive one message's principal set and TOMBSTONE grants that dropped out (AC21).
 
@@ -99,7 +102,12 @@ class GrantWriter:
         tombstoned grants. Principals are derived ONCE (write_email_grants returns the set).
         """
         derivable = await self.write_email_grants(
-            org_id, message_id, connection_id, owner_user_id, sender_address, recipient_addresses
+            org_id,
+            message_id,
+            connection_id,
+            owner_user_id,
+            sender_address,
+            disclosed_recipient_addresses,
         )
         live = await self._grants.list_live_person_ids_for_object(
             org_id, _EMAIL_OBJECT_TYPE, message_id
@@ -117,11 +125,11 @@ class GrantWriter:
         org_id: UUID,
         owner_user_id: UUID | None,
         sender_address: str | None,
-        recipient_addresses: list[str],
+        disclosed_recipient_addresses: list[str],
     ) -> dict[UUID, str]:
         """The CURRENTLY-derivable principal → provenance map (owner > sender > recipient)."""
         address_roles: dict[str, str] = {}
-        for address in recipient_addresses:
+        for address in disclosed_recipient_addresses:
             normalized = normalize_email(address)
             if normalized:
                 address_roles.setdefault(normalized, "recipient")

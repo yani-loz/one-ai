@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.models.principal_source_identity import PrincipalSourceIdentity
 from app.access.services.grant_writer import GrantWriter
+from app.connectors.imap.parsing import DISCLOSED_RECIPIENT_KINDS
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.core.config import get_settings
 from app.core.database import (
@@ -121,8 +122,12 @@ async def _resolve_owner_person(session: AsyncSession, org_id: UUID, normalized:
 
 
 async def _upsert_verified_binding(
-    session: AsyncSession, org_id: UUID, person_id: UUID,
-    source_type: str, external_id: str, actor_user_id: UUID,
+    session: AsyncSession,
+    org_id: UUID,
+    person_id: UUID,
+    source_type: str,
+    external_id: str,
+    actor_user_id: UUID,
 ) -> None:
     """Idempotently bind + verify one external identity to the owner person."""
     existing = (
@@ -164,11 +169,23 @@ async def _reconcile_all_messages(
     """Reconcile grants for every stored message of the connection (batched commits)."""
     recipient_rows = await session.execute(
         text(
+            # DISCLOSED kinds only, and bound as a PARAMETER rather than written into the SQL:
+            # this script and the ingest service are two writers on ONE reconciling choke point,
+            # so if their derivation rules differ they OSCILLATE — backfill mints a bcc grant,
+            # the next re-ingest hits the dedup fast path and tombstones it as `live -
+            # derivable`, the next backfill re-mints it. That is the same bug class the ingest
+            # fix removed, reappearing BETWEEN the two writers. Sharing the constant is what
+            # stops the rule drifting apart again.
             "SELECT r.email_id, r.address FROM email_recipient r "
             "JOIN email_message m ON m.id = r.email_id AND m.org_id = r.org_id "
-            "WHERE m.org_id = :org AND m.connection_id = :conn"
+            "WHERE m.org_id = :org AND m.connection_id = :conn "
+            "AND r.kind = ANY(:disclosed_kinds)"
         ),
-        {"org": str(org_id), "conn": str(connection_id)},
+        {
+            "org": str(org_id),
+            "conn": str(connection_id),
+            "disclosed_kinds": sorted(DISCLOSED_RECIPIENT_KINDS),
+        },
     )
     recipients_by_message: dict[UUID, list[str]] = defaultdict(list)
     for email_id, address in recipient_rows:

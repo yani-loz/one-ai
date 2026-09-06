@@ -7,7 +7,12 @@ Used by: the future retrieval layer (Ask) — specified and tested NOW so the co
       before any tool serves email content; also usable by any interim admin/debug surface.
 Depends on: app.connectors.imap.models.email (read-only field access; pure function, no I/O).
 Key invariants:
-  - BCC IS NEVER SERVED to a non-owner: recipient rows of kind 'bcc' are dropped (the stored
+  - ONLY DISCLOSED recipients are served: `kind IN ('to','cc')`, an ALLOWLIST. It was a
+    denylist (`!= 'bcc'`) until R5, which is a rule over a FIVE-value enum — so reply_to and
+    sender rows were served as recipients, and this file was the fifth site of a rule the
+    other four had already been corrected on (V13). It is unreached today and is the
+    designated contract the MCP-01 read tools will be built against, so whoever wires it up
+    would have inherited the old form while V13's pin stayed green. BCC IS NEVER SERVED (the stored
     headers already carry no Bcc — the CA-CONN-05 allowlist cut it at parse).
   - Headers are reduced further to the RECIPIENT-VISIBLE subset: a recipient's copy shows
     threading/addressing headers but not the owner's Return-Path or automation-source headers.
@@ -58,7 +63,7 @@ def project_email_for_non_owner(
     visible_recipients = [
         {"kind": r.kind, "name": r.name, "address": r.address}
         for r in recipients
-        if r.kind != "bcc"
+        if r.kind in ("to", "cc")
     ]
     visible_headers = {
         name: value

@@ -52,7 +52,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.access.services.grant_writer import GrantWriter
 from app.connectors.extraction.extraction_result import ExtractionResult
 from app.connectors.imap.models.email import EmailAttachment, EmailMessage, EmailRecipient
-from app.connectors.imap.parsing import ParsedAttachment, ParsedEmail, extract_text, parse_email
+from app.connectors.imap.parsing import (
+    DISCLOSED_RECIPIENT_KINDS,
+    ParsedAttachment,
+    ParsedEmail,
+    extract_text,
+    parse_email,
+)
 from app.connectors.imap.repositories.email_repository import EmailMessageRepository
 from app.connectors.models.connector_connection import ConnectorConnection
 from app.entities.services.entity_resolver import EntityResolver
@@ -63,6 +69,20 @@ class IngestOutcome(StrEnum):
 
     STORED = "stored"
     SKIPPED = "skipped"  # already present (idempotent re-run or same email in another folder)
+
+
+def _disclosed_addresses(parsed: ParsedEmail) -> list[str]:
+    """The to/cc addresses — the only recipient kinds that may derive an access grant.
+
+    See DISCLOSED_RECIPIENT_KINDS for why bcc/reply_to/sender are excluded. Both the grant WRITE
+    and the grant RECONCILE paths go through here, so the two can never disagree about which
+    fields are authoritative.
+    """
+    return [
+        recipient.address
+        for recipient in parsed.recipients
+        if recipient.kind in DISCLOSED_RECIPIENT_KINDS
+    ]
 
 
 class EmailIngestService:
@@ -122,7 +142,7 @@ class EmailIngestService:
                 connection_id,
                 self._owner_user_id,
                 parsed.from_address,
-                [recipient.address for recipient in parsed.recipients],
+                _disclosed_addresses(parsed),
             )
             return IngestOutcome.SKIPPED
 
@@ -164,7 +184,7 @@ class EmailIngestService:
                     connection_id,
                     self._owner_user_id,
                     parsed.from_address,
-                    [recipient.address for recipient in parsed.recipients],
+                    _disclosed_addresses(parsed),
                 )
             return IngestOutcome.SKIPPED
         await self._store_recipients(org_id, message.id, parsed)
@@ -175,7 +195,7 @@ class EmailIngestService:
             connection_id,
             self._owner_user_id,
             parsed.from_address,
-            [recipient.address for recipient in parsed.recipients],
+            _disclosed_addresses(parsed),
         )
         return IngestOutcome.STORED
 
@@ -230,7 +250,14 @@ class EmailIngestService:
             person_id = await self._resolver.resolve_participant(
                 org_id,
                 recipient.address,
-                recipient.name,
+                # A RECIPIENT display name is chosen by the SENDER, about somebody else, and
+                # `_enrich_person` back-fills `display_name` first-writer-wins. So mailing a
+                # synced mailbox `To: "Chief Fraud Officer" <cfo@corp.com>` before any named
+                # sighting of that address named that person PERMANENTLY, and `find_person`
+                # then reported it as who they are (R5 write-plane W4). A sender naming
+                # THEMSELVES in `From:` is a claim about their own identity and stays allowed;
+                # naming a third party is not, so the address alone resolves them.
+                None,
                 parsed.received_at,
                 allow_person=recipient.kind not in self._NON_PERSON_RECIPIENT_KINDS,
             )

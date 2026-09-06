@@ -280,9 +280,7 @@ def _decode_rtf(payload: bytes) -> ExtractionResult:
     chain cannot see); stripped-to-blank → honest `empty`."""
     try:
         text = sanitize_body_text(
-            redecode_single_byte_text(
-                rtf_to_text(decode_charset_chain(payload), errors="replace")
-            )
+            redecode_single_byte_text(rtf_to_text(decode_charset_chain(payload), errors="replace"))
         )
     except Exception as strip_error:  # belt-and-braces: the seam must never raise
         return ExtractionResult(

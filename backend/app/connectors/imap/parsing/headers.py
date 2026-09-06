@@ -113,9 +113,7 @@ def allowlist_headers(headers: dict[str, str | list[str]]) -> dict[str, str | li
     return retained
 
 
-def _merge_header_values(
-    first: str | list[str], second: str | list[str]
-) -> list[str]:
+def _merge_header_values(first: str | list[str], second: str | list[str]) -> list[str]:
     """Merge two value sets of one logical header (case-variant keys in a single message)."""
     merged = first if isinstance(first, list) else [first]
     return merged + (second if isinstance(second, list) else [second])

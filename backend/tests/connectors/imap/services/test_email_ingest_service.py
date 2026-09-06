@@ -328,3 +328,40 @@ async def test_ingest_auto_generated_sender_makes_no_from_person(db_session: Asy
     ).scalar_one()
     assert message.from_person_id is None  # machine sender → no person
     assert await _count(db_session, Company, org) == 2  # globex (auto sender) + acme (recipient)
+
+
+# — R5 write-plane W4: a sender may name THEMSELVES, never a third party ————————————————
+
+
+async def test_a_sender_supplied_recipient_name_never_names_that_person(
+    db_session: AsyncSession,
+) -> None:
+    # `_enrich_person` back-fills display_name FIRST-WRITER-WINS, and a recipient display name is
+    # chosen by the SENDER about somebody else. So mailing a synced mailbox
+    # `To: "Chief Fraud Officer" <cfo@acme.com>` before any named sighting of that address named
+    # that person PERMANENTLY, and find_person then reported it as who they are.
+    org = uuid4()
+    connection = await seed_connection(db_session, org, mailbox=MAILBOX)
+    raw = _eml('From: outsider@globex.com\nTo: "Chief Fraud Officer" <cfo@acme.com>\nSubject: hi')
+
+    await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    named = await db_session.execute(select(Person).where(Person.org_id == org))
+    display_names = {person.display_name for person in named.scalars().all()}
+    assert "Chief Fraud Officer" not in display_names
+
+
+async def test_a_sender_still_names_themselves_from_the_from_header(
+    db_session: AsyncSession,
+) -> None:
+    # The other direction: naming yourself in `From:` is a claim about your OWN identity and must
+    # keep working, or the contact graph loses every display name it legitimately has.
+    org = uuid4()
+    connection = await seed_connection(db_session, org, mailbox=MAILBOX)
+    raw = _eml('From: "Real Person" <real@globex.com>\nTo: owner@acme.com\nSubject: hi')
+
+    await EmailIngestService(db_session, connection).ingest_email(raw)
+
+    named = await db_session.execute(select(Person).where(Person.org_id == org))
+    display_names = {person.display_name for person in named.scalars().all()}
+    assert "Real Person" in display_names

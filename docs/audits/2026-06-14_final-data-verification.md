@@ -1,5 +1,16 @@
 # Final Data Verification — Connect corpus is production-quality and LLM-queryable
 
+> **Status as of 2026-09-06:** historical record — this is the go/no-go for the **pre-blocklist** corpus
+> of 8,386 emails, and its findings and method are left as written. That corpus no longer exists: after
+> the Trash/Junk/Spam/Drafts folder ingest blocklist (CA-CONN-08 in `docs/FIX_BEFORE_PROD.md`) the corpus
+> was wiped and re-ingested on **2026-07-08**. The corpus of record since then is **5,893 emails (5,883
+> distinct Message-IDs) · 8,454 attachments (2,850 carrying text) · 839 persons · 364 companies · 632
+> person→company links**, with the TNEF inflation now 918 of 2,850 text rows — measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3 and §8.2 row D62). So every absolute count below —
+> 8,386 / 8,238 / 10,092 / 3,528 / 1,140 / 537 / "847/847 person→company links" / "1,455 of 3,528" —
+> reads as a pre-re-ingest measurement, not a current one. **No later document replaces this one**, and
+> the go/no-go has not been re-run against the 5,893-email corpus.
+
 **Date:** 2026-06-14 · **Scope:** the four-layer memory substrate on the fresh Connect ingest · **Type:** go/no-go data verification (read-only) · **Mode:** simulated LLM/agent queries against the live dev corpus, with the structured-layer numbers **adversarially recomputed two independent ways**, then the 15 headline answers **independently re-verified** by a second agent.
 
 **Corpus (dev org `d1500000-…-0001`):** 8,386 emails (8,238 distinct Message-IDs) · 10,092 attachments (3,528 carry text) · 62 xlsx typed-grids · 1,140 persons · 537 companies. One tenant only — no cross-org bleed possible in any join.

@@ -5,7 +5,7 @@
 | **Epic ID** | PC-05 |
 | **Module** | Platform Console (`PC`) |
 | **Status** | ✅ **Done** — grant lifecycle (PC-05a) + the platform request panel & company HITL approval inbox (PC-05b) |
-| **Branch** | `feat/platform-break-glass` (off `main`, which now has PC-01…PC-04) |
+| **Branch / commit** | `main` · `806a569` (PC-05a backend) + `d4df054` (PC-05b UIs), both 2026-06-01; also on `feat/platform-break-glass` |
 | **PR** | PR-5 (backend: grant lifecycle, both auth domains, audit emission) |
 | **Depends on** | PC-04 (`audit_log` — every transition writes here); the Identity auth domains |
 | **Enables** | The consented access path any future **content** feature (Connect/Ask/Learn) must gate on |
@@ -99,8 +99,12 @@ content-access gate (a forward hook — no content exists yet).
 - **Transitions serialize via a row lock** (added in review): the transition loaders
   `SELECT … FOR UPDATE`, so two concurrent privileged actors can't lost-update one another (a
   revoke racing an approve must stick). The list reads stay non-locking. Mirrors the DYN-01
-  last-admin lock. `support_grant` also carries an inert `org_isolation` RLS policy (migration
-  `0006`, like `0003`); the platform side is the cross-org BYPASSRLS exception (login/onboard).
+  last-admin lock. `support_grant` also carries an `org_isolation` RLS policy (migration `0006`,
+  like `0003`) — **it was inert when PR-5 shipped but is enforced since migration `0009_enforce_rls`**,
+  which added `support_grant` to the ENABLE + FORCE list and moved the tenant engine onto the
+  non-BYPASSRLS role `oneai_app` (measured 2026-09-06: `relrowsecurity=t`, `relforcerowsecurity=t` —
+  `docs/audits/2026-09-06_built-vs-docs-map.md` §8.2 D32). The platform side remains the cross-org
+  BYPASSRLS exception (login/onboard).
 - **Consent is structural,** not a flag: approval lives only on the company router; the
   platform service has no approve method. Pinned by AC2.
 - **Denormalized emails looked up at write time** (requester + decider) — informed consent

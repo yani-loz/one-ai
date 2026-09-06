@@ -4,8 +4,8 @@
 |---|---|
 | **Epic ID** | PC-02 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | ✅ Done (pending commit) |
-| **Branch** | `feat/platform-session` (stacked on `feat/platform-console`) |
+| **Status** | ✅ Done — committed and merged |
+| **Branch / commit** | `main` · `673964a` (2026-06-01; also on `feat/platform-session`, `feat/platform-lifecycle`, `feat/platform-break-glass`, `feat/platform-erasure`) |
 | **PR** | PR-2 (backend + frontend) |
 | **Depends on** | PC-01 (the console it keeps alive); Identity token plumbing (`TokenIssuer`, `TokenRotator`, `aud`/`subject_type`) |
 | **Closes** | **AUD-14** (`docs/FIX_BEFORE_PROD.md`) — synthesised platform identity + no rehydrate endpoint |

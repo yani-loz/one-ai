@@ -4,9 +4,9 @@
 |---|---|
 | **Epic ID** | PF-01 |
 | **Module** | Permission Fidelity (`PF`) — new `access` module + extensions to `core`, `connectors`, `entities` |
-| **Status** | 🔨 **BUILT (core) 2026-07-04** — migration `0019_permission_fidelity` + the `access` module, pending commit/PR; per-AC state in the Build-status addendum below. Spec agreed 2026-06-09 (Design A + 8 grafts from B/C) |
-| **Branch** | `feat/permission-faithful-retrieval` (proposed, off `main` after 0009/0012 land) |
-| **PR** | — (PR-PF-1: migration 0013 + GUC seam + grant writers + invariant tests) |
+| **Status** | 🔨 **BUILT (core) 2026-07-04, COMMITTED** as `db1795d` (55 files, 0019 + `app/access` + `tests/access`) — no longer "pending commit". Still uncommitted as of 2026-09-06: the R5 write-plane follow-up (`grant_writer.py`, `email_projection.py`, `test_grant_writer.py`) and migration `0023_reader_bcc_and_seen_window.py`, which exists on disk but is in no git object and is **unapplied** (dev DB `alembic_version` = `0022_counterparty_summary_v3`, measured 2026-09-06 — `docs/audits/2026-09-06_built-vs-docs-map.md` §3). Per-AC state in the Build-status addendum below. Spec agreed 2026-06-09 (Design A + 8 grafts from B/C) |
+| **Branch** | `feat/permission-faithful-retrieval` was **proposed but never created** — PF-01 landed straight on `main` (`git branch --contains db1795d` → `main`, `ask-tools-loop`; verified 2026-09-06) |
+| **PR** | — (PR-PF-1: migration 0019 + GUC seam + grant writers + invariant tests) |
 | **Depends on** | Migration 0009 (`oneai_app` NOSUPERUSER / FORCE RLS / GUC seam), 0007–0011 (IMAP tables incl. `email_recipient`), 0012 (entity spine `person`/`person_email`), PC-04 (`audit_log` append-only), PC-06 (erasure-hook discipline), **CA-CONN-05 full-headers retention review — precondition: header retention must be reconciled with the grant model before email grants go live (owner-copy projection, AC19)** |
 | **Closes (FIX_BEFORE_PROD)** | "Per-mailbox/per-source access control — tracked separately" (ingestion design §7); "connector-lifecycle visibility must be enforced in every retrieval path" |
 | **Review** | — (adversarial design pass done: A vs B vs C; A selected, B/C rejected wholesale, 8 grafts absorbed) |
@@ -17,13 +17,21 @@
 
 Core build landed as migration `0019_permission_fidelity` + `backend/app/access/` (models,
 grant writer, promotion service+route, source-identity + erasure repositories, decision
-telemetry, AC19 projection), `scoped_session(org_id, person_id)` + the engine-seam assertion in
+telemetry, AC19 projection), `reader_session(org_id, person_id)` — the person-bound seam is
+`reader_session`, **not** `scoped_session`, which takes `org_id` only
+(`backend/app/core/database.py:105,127`) — + the engine-seam assertion in
 `core/database.py`, GrantWriter wired into `EmailIngestService`. Tests: `tests/access/` (30
-green) + the INV extensions. Per-AC state:
+green when this addendum was written; **45 test functions across 10 modules** in the working
+tree counted 2026-09-06 — but the newest evidence is **not committed**:
+`test_counterparty_summary.py` (4 functions, an ASK/0022 deliverable) is intent-to-add, and
+`test_grant_writer.py` carries 89 uncommitted insertions holding the three R5/PF-FBP-14 tests
+that AC10 below cites — `test_ingest_order_does_not_decide_who_can_read_the_message`,
+`test_a_bcc_header_never_mints_a_grant`, `test_the_backfill_script_derives_the_same_kinds_as_ingest`.
+Not re-run in this pass) + the INV extensions. Per-AC state:
 
 | State | ACs | Note |
 |---|---|---|
-| ✅ proven by tests | AC1, AC2, AC3, AC5, AC8, AC10, AC13, AC15, AC16, AC18, AC19, AC21 | `tests/access/*` + `test_rls_invariants.py::test_every_content_table_has_org_isolation_and_visibility_policy` |
+| ✅ proven by tests | AC1, AC2, AC3, AC5, AC8, AC10, AC13, AC15, AC16, AC18, AC19, AC21 | `tests/access/*` + `backend/tests/identity/models/test_rls_invariants.py::test_every_content_table_has_org_isolation_and_visibility_policy` (real path re-located 2026-09-06; §4 below now carries the same ✅ marks and the actual shipped test names) |
 | ✅ partially / reframed | AC14 (tombstone-hides ✅; 404-purge waits for a connector with a 404 signal), AC17 (INV auto-covers the 4 new tables), AC20 (verified-only login binding ✅; merge-guard waits for the CA-CONN-09 merge tier), AC22 (children-bind-to-parent ✅ on today's children; chunk/fact placeholder stands) | residuals in FIX_BEFORE_PROD PF-FBP-6..9 |
 | ⬜ deferred with a named owner | AC4 (no retained 'disconnected' state exists today — disconnect IS a cascade delete; predicate lands with such a state), AC6 (schema shipped; unreadability enforceable only when a fact table exists), AC7+AC11 (Slack capture/re-check — with the Slack connector), AC9 (chat layer — PF-FBP-2), AC12 (local-folders connector) | FIX_BEFORE_PROD PF section |
 
@@ -80,6 +88,15 @@ retrieve every other employee's private email, DM, and local file. PF-01 closes 
 > static-pool guarantee as org isolation. Tool code, future agent SQL/REPL, hallucinated tool
 > calls, and buggy filters CANNOT widen results, because the role cannot.**
 
+*As built (noted 2026-09-06, the invariant itself unchanged): the enforcing role in that
+paragraph is **`oneai_reader`**, not `oneai_app` — see §0 decision 1. The `visibility` policies
+are RESTRICTIVE SELECT policies granted to `oneai_reader`, the SELECT-only retrieval plane
+(3 such policies live on the dev DB, measured 2026-09-06,
+`docs/audits/2026-09-06_built-vs-docs-map.md` §3); `oneai_app` carries org-level RLS only and
+is the write/system plane. On the reader plane the guarantee is strictly stronger than written
+here: that role holds no write privilege on content at all. Every `oneai_app` reference below
+that predates the build should be read through this correction.*
+
 **The invariant holds only if every tenant/retrieval query actually runs on the `oneai_app`
 pool.** The `oneai_global` engine is BYPASSRLS, and a tenant flow that mistakenly acquires it
 fails **open and silent** — bypassing org AND person RLS at once, across every org. Engine
@@ -105,17 +122,23 @@ Eight grafts from B/C are absorbed where they only *narrow* (see §6).
 
 ## 2. Scope
 
-**In scope (PF-01 — migration 0013 + enforcement + capture + tests):**
+**In scope (PF-01 — migration 0019 + enforcement + capture + tests):**
 
-- **Data model (migration 0013):** `acl_grant`, `visibility_promotion`,
+*(The spec drafted this as "0013"; the slot was taken by `0013_least_privilege_grants.py` and
+PF-01 shipped as `0019_permission_fidelity.py` — corrected throughout on 2026-09-06.)*
+
+- **Data model (migration 0019):** `acl_grant`, `visibility_promotion`,
   `principal_source_identity`, `fact_provenance` (schema now, populated by the Learn layer),
   plus `visibility_scope`/`origin_scope` (immutable, set at ingest)/`container_id` columns on
   all content/chunk tables (§ "Data model").
-- **Enforcement:** `scoped_session(org_id, person_id)` — second GUC `app.current_person_id`
-  set in the same `after_begin` listener; per-table `visibility` RLS policies on `oneai_app`;
+- **Enforcement:** `reader_session(org_id, person_id)` — second GUC `app.current_person_id`
+  set in the same `after_begin` listener; per-table `visibility` RLS policies (**as built**
+  these are RESTRICTIVE SELECT policies targeting `oneai_reader`, not `oneai_app` — see §0
+  decision 1; live DB shows 3 × `visibility` RESTRICTIVE/SELECT/`{oneai_reader}`, measured
+  2026-09-06, `docs/audits/2026-09-06_built-vs-docs-map.md` §3);
   connector-lifecycle predicate (pause ≠ disconnect) inside the policy; **engine-seam guard**
-  (`scoped_session` aborts unless `current_user = 'oneai_app'`; the `access`/retrieval package
-  has no import path to `global_engine`).
+  (`scoped_session` aborts unless `current_user = 'oneai_app'` and `reader_session` unless
+  `oneai_reader`; the `access`/retrieval package has no import path to `global_engine`).
 - **Per-connector permission capture at ingest:** email (per-message grants from
   `email_recipient` + connection owner; non-owner grant-holders are served a **redacted
   projection of the recipient's source-view** — never the BCC set or owner-only headers),
@@ -171,42 +194,53 @@ Eight grafts from B/C are absorbed where they only *narrow* (see §6).
 
 ## 4. Acceptance criteria → tests (traceability matrix)
 
-> ⭐ = compliance/security-critical. INV = `backend/tests/test_rls_invariants.py` (dynamic
-> enumeration — **FAILs, never SKIPs**); PF = `backend/tests/access/`. All rows ⬜ until the PR.
-> Tests run against the `oneai_app` engine (the enforced role), never the owner engine.
+> ⭐ = compliance/security-critical. INV = `backend/tests/identity/models/test_rls_invariants.py`
+> (dynamic enumeration — **FAILs, never SKIPs**; the spec's `backend/tests/test_rls_invariants.py`
+> path never existed); PF = `backend/tests/access/`.
+>
+> **Status reconciled 2026-09-06.** This table used to read "All rows ⬜ until the PR" while §0
+> already marked twelve of them ✅ — the two halves of the file contradicted each other. A row is
+> now ✅ **only** where its proving test was located in the working tree on 2026-09-06; several
+> tests were renamed or moved between planes during the build and are re-pointed inline, and
+> names that resolve to nothing are called out as such. The tests were **not re-run** in this
+> pass (running `pytest` truncates the dev corpus). Rows still ⬜ are unbuilt, deferred, or only
+> partially proven — §0 says which.
+>
+> Tests run on the enforced roles — `oneai_app` (write plane) and `oneai_reader` (the visibility
+> tests, through `reader_session`; `test_visibility_policies.py:36`) — never the owner engine.
 
 | AC | Criterion | Proven by |
 |---|---|---|
-| ⬜ ⭐ PF-01-AC1 | **Dynamic enumeration:** every content table carries BOTH an `org_isolation` policy AND a `visibility` policy; a content table without a visibility policy is a **CI FAIL**. | INV `::test_every_content_table_has_org_isolation_and_visibility_policy` |
-| ⬜ ⭐ PF-01-AC2 | **Per-table negative test:** for each content table, a principal with no grant sees **zero** `restricted` rows (parametrized over the enumerated tables). | INV `::test_ungranted_principal_sees_zero_restricted_rows[table]` |
-| ⬜ ⭐ PF-01-AC3 | **GUC fail-closed:** `app.current_person_id` unset → predicate NULLs → only `visibility_scope='org'` rows visible; no error path leaks restricted rows. | INV `::test_person_guc_unset_yields_org_scope_rows_only` |
+| ✅ ⭐ PF-01-AC1 | **Dynamic enumeration:** every content table carries BOTH an `org_isolation` policy AND a `visibility` policy; a content table without a visibility policy is a **CI FAIL**. | INV `::test_every_content_table_has_org_isolation_and_visibility_policy` (exists at `backend/tests/identity/models/test_rls_invariants.py:196` — the only ✅ row whose proof lives outside `tests/access/`) |
+| ✅ ⭐ PF-01-AC2 | **Per-table negative test:** for each content table, a principal with no grant sees **zero** `restricted` rows (parametrized over the enumerated tables). | PF `test_visibility_policies.py::test_granted_person_sees_restricted_email_ungranted_sees_zero` , `::test_children_bind_to_the_parents_grants` — **shipped narrower than the criterion:** covers `email_message` + its children (`email_recipient`, `email_attachment`), **not parametrized over every enumerated content table**; no test named `::test_ungranted_principal_sees_zero_restricted_rows[table]` exists (2026-09-06) |
+| ✅ ⭐ PF-01-AC3 | **GUC fail-closed:** `app.current_person_id` unset → predicate NULLs → only `visibility_scope='org'` rows visible; no error path leaks restricted rows. | PF `test_visibility_policies.py::test_person_guc_unset_yields_org_scope_rows_only` (same name, shipped under PF rather than INV) |
 | ⬜ ⭐ PF-01-AC4 | **Lifecycle:** `disconnected` connection → rows hidden by policy at next query; `paused` → rows stay visible. Pause ≠ disconnect, enforced in the predicate, not in tool code. | INV `::test_disconnected_connector_hides_rows` , `::test_paused_connector_keeps_rows_visible` |
-| ⬜ ⭐ PF-01-AC5 | **Widening only via promotion:** every row with immutable `origin_scope='restricted'` and current `visibility_scope='org'` has `visibility_promotion` lineage with `approved_by_user_id` NOT NULL and `audit_log_id` NOT NULL; the lineage-guard trigger fires on **both INSERT and UPDATE** — direct `UPDATE … SET visibility_scope='org'` AND direct `INSERT` of a restricted-origin row as `'org'` without lineage are both rejected. `origin_scope` is set once at ingest and immutable thereafter (born-org rows, e.g. public Slack, pass the guard legitimately). | INV `::test_org_rows_of_restricted_origin_have_promotion_lineage` ; PF `test_promotion.py::test_widening_without_promotion_row_is_impossible` , `::test_insert_org_with_restricted_origin_without_lineage_is_rejected` , `::test_origin_scope_is_immutable` |
+| ✅ ⭐ PF-01-AC5 | **Widening only via promotion:** every row with immutable `origin_scope='restricted'` and current `visibility_scope='org'` has `visibility_promotion` lineage with `approved_by_user_id` NOT NULL and `audit_log_id` NOT NULL; the lineage-guard trigger fires on **both INSERT and UPDATE** — direct `UPDATE … SET visibility_scope='org'` AND direct `INSERT` of a restricted-origin row as `'org'` without lineage are both rejected. `origin_scope` is set once at ingest and immutable thereafter (born-org rows, e.g. public Slack, pass the guard legitimately). | PF `test_visibility_policies.py::test_update_widening_without_promotion_row_is_rejected` , `::test_insert_org_row_of_restricted_origin_without_lineage_is_rejected` , `::test_origin_scope_is_immutable` ; PF `test_promotion.py::test_email_content_cannot_be_born_org_visible` , `::test_promotion_history_is_append_only` . *(Re-pointed 2026-09-06: the three trigger tests shipped in `test_visibility_policies.py`, not `test_promotion.py`; no INV test named `::test_org_rows_of_restricted_origin_have_promotion_lineage` exists.)* |
 | ⬜ ⭐ PF-01-AC6 | **Fact provenance fail-closed:** a fact without a `fact_provenance` row is unreadable; provenance shrink (erasure, grant revocation, scope suspension) flips `status='quarantined'` and the fact stops resolving. (Synthetic rows until Step 7 populates.) | INV `::test_fact_without_provenance_is_unreadable` , `::test_provenance_shrink_quarantines_fact` |
 | ⬜ ⭐ PF-01-AC7 | **Live re-check narrows only — bounded:** for restricted Slack hits, result set after re-check ⊆ DB-granted set; **transient** cache/API failure ⇒ DB floor stands (UNKNOWN ⇒ floor, never widen, never error-open) — but only up to a **hard staleness TTL**: a restricted Slack grant whose membership snapshot cannot be refreshed within the TTL is **suspended** (fail-closed) until a fresh snapshot lands. The floor does not stand forever through an outage. | INV `::test_live_recheck_result_is_subset_of_db_granted_set` ; PF `test_live_recheck.py::test_recheck_failure_falls_back_to_db_floor` , `::test_stale_membership_snapshot_suspends_grant_after_ttl` |
-| ⬜ ⭐ PF-01-AC8 | **Unverified identity ⇒ no grant:** an `acl_grant` whose principal resolves only through an unverified `principal_source_identity` never matches; ingest writes no grant for unmappable principals (UNKNOWN ⇒ DENY as a named rule). | INV `::test_unverified_source_identity_yields_no_grants` ; PF `test_grant_writer.py::test_unmappable_principal_writes_no_grant` |
+| ✅ ⭐ PF-01-AC8 | **Unverified identity ⇒ no grant:** an `acl_grant` whose principal resolves only through an unverified `principal_source_identity` never matches; ingest writes no grant for unmappable principals (UNKNOWN ⇒ DENY as a named rule). | PF `test_grant_writer.py::test_unmappable_principals_write_no_grant` , `::test_unverified_identity_writes_no_grant` . *(Re-pointed 2026-09-06; no INV test named `::test_unverified_source_identity_yields_no_grants` exists.)* |
 | ⬜ ⭐ PF-01-AC9 | **History-replay re-filter:** multi-turn history replay re-filters revoked/quarantined content before context assembly — revoked content cannot re-enter via conversation history. Until the chat layer exists: invariant written, marked FIX_BEFORE_PROD. | INV `::test_history_replay_refilters_revoked_content` (FIX_BEFORE_PROD until chat layer lands) |
-| ⬜ PF-01-AC10 | **Email capture:** ingest writes per-message grants for every `email_recipient` (to/cc/bcc/reply_to/sender, resolved via verified identity) + the connection owner; an org member who was not a recipient sees nothing. **A grant on another owner's copy is a grant to a redacted projection, not the raw row** (see AC19) — a recipient's own connected copy is the authoritative source for their full view. | PF `test_grant_writer.py::test_email_grants_cover_recipients_and_owner` , `::test_non_recipient_sees_no_email_rows` |
+| ✅ PF-01-AC10 | **Email capture:** ingest writes per-message grants for every `email_recipient` (to/cc/bcc/reply_to/sender, resolved via verified identity) + the connection owner; an org member who was not a recipient sees nothing. **A grant on another owner's copy is a grant to a redacted projection, not the raw row** (see AC19) — a recipient's own connected copy is the authoritative source for their full view. | PF `test_grant_writer.py::test_verified_recipients_and_owner_get_per_message_grants` , `::test_ingest_order_does_not_decide_who_can_read_the_message` , `::test_a_bcc_header_never_mints_a_grant` ; non-recipient case → `test_visibility_policies.py::test_granted_person_sees_restricted_email_ungranted_sees_zero` . **The criterion's "to/cc/bcc/reply_to/sender" clause is superseded by what shipped:** only disclosed recipients mint grants — `DISCLOSED_RECIPIENT_KINDS = frozenset({"to", "cc"})` (`backend/app/connectors/imap/parsing/email_parser.py:142`, the PF-FBP-14 R5 fix, **uncommitted** as of 2026-09-06). Amending the criterion text is a founder call, not a doc-maintenance one |
 | ⬜ PF-01-AC11 | **Slack capture:** public channel rows ingest as `visibility_scope='org'`; private/DM rows ingest `restricted` with **container** grants from the membership snapshot; a non-member sees zero rows from that container. | PF `test_grant_writer.py::test_slack_public_is_org_scope` , `::test_slack_private_container_grants_match_membership` |
 | ⬜ PF-01-AC12 | **Files capture:** local-folder content ingests owner-only; widening happens exclusively through the promotion queue. | PF `test_grant_writer.py::test_local_folder_is_owner_only` |
-| ⬜ PF-01-AC13 | **Promotion queue:** owner sees promotion candidates, one click approves → `visibility_promotion` row + `audit_log` entry + scope flip in one transaction; non-owners cannot approve. | PF `test_promotion.py::test_owner_one_click_promotion_is_atomic_and_audited` , `::test_non_owner_cannot_promote` |
+| ✅ PF-01-AC13 | **Promotion queue:** owner sees promotion candidates, one click approves → `visibility_promotion` row + `audit_log` entry + scope flip in one transaction; non-owners cannot approve. | PF `test_promotion.py::test_owner_one_click_promotion_is_atomic_and_audited` , `::test_non_owner_cannot_promote` (both names resolve as written); HTTP-level cover in `test_promotion_routes.py::test_owner_promotes_over_http` , `::test_granted_non_owner_can_see_but_not_widen_403` |
 | ⬜ ⭐ PF-01-AC14 | **Revocation & 404 purge:** grant revocation sets `revoked_at` (tombstone; partial UNIQUE keeps re-grant clean) and the row stops matching immediately; source-404 (sync or live re-check) tombstones + enqueues chunk/content purge via the `FOR UPDATE SKIP LOCKED` work-queue; queue drains to actual row deletion. **Deny-but-retain is not acceptable deletion fidelity.** | PF `test_revocation.py::test_tombstone_hides_immediately` , `::test_404_enqueues_and_purges_content` |
-| ⬜ ⭐ PF-01-AC15 | **Erasure wiring:** all four new tables registered in the erasure-hook registry (`identity` imports nothing from `access`/`connectors`); explicit scrub-vs-retain per table (§6); org-level erasure leaves no `acl_grant`/`principal_source_identity` PII behind. | PF `test_erasure_hooks.py::test_access_tables_registered_and_scrubbed` ; INV (existing) `::test_every_tenant_table_is_wired_into_erasure` |
-| ⬜ PF-01-AC16 | **Decision telemetry:** retrieval-time allow/deny counts + resource keys (never content) land in append-only `audit_log`; when filtering starves retrieval below a threshold, the answer path receives a reduced-coverage signal to disclose. | PF `test_telemetry.py::test_decisions_logged_keys_not_content` , `::test_starved_retrieval_sets_reduced_coverage_flag` |
+| ✅ ⭐ PF-01-AC15 | **Erasure wiring:** all four new tables registered in the erasure-hook registry (`identity` imports nothing from `access`/`connectors`); explicit scrub-vs-retain per table (§6); org-level erasure leaves no `acl_grant`/`principal_source_identity` PII behind. | PF `test_erasure_hooks.py::test_access_hook_is_required_and_registered_by_the_composition_root` , `::test_erasing_org_a_deletes_access_rows_and_spares_org_b` ; registry-completeness is asserted through `REQUIRED_ERASURE_HOOKS` (`test_erasure_hooks.py:36`, `backend/tests/identity/services/test_erasure_service.py:205`). *(Re-pointed 2026-09-06; neither `::test_access_tables_registered_and_scrubbed` nor an INV `::test_every_tenant_table_is_wired_into_erasure` exists under those names.)* |
+| ✅ PF-01-AC16 | **Decision telemetry:** retrieval-time allow/deny counts + resource keys (never content) land in append-only `audit_log`; when filtering starves retrieval below a threshold, the answer path receives a reduced-coverage signal to disclose. | PF `test_decision_telemetry.py::test_decisions_are_logged_as_keys_never_content` , `::test_reduced_coverage_boundaries` (the reduced-coverage threshold, via `is_coverage_reduced`). *(Re-pointed 2026-09-06: the file shipped as `test_decision_telemetry.py`, not `test_telemetry.py`.)* |
 | ⬜ ⭐ PF-01-AC17 | **Role floor unchanged:** `oneai_app` remains NOSUPERUSER, non-owner, no BYPASSRLS; FORCE RLS on every new table; `oneai_global` never receives the person GUC listener; tenant flows never run on the global engine — **asserted here, structurally enforced by AC18** (an assertion without a structural guard is convention, and the failure mode is silent + maximally permissive). | INV (existing, extended) `::test_role_attributes_and_force_rls[table]` |
-| ⬜ ⭐ PF-01-AC18 | **Engine seam fail-closed by construction:** the `access`/retrieval package has **no code path to `global_engine`** (module-import guard); `scoped_session` carries a runtime assertion that `SELECT current_user` returns `oneai_app` and aborts otherwise; a retrieval query attempted on the global engine is refused, not silently widened. **FIX_BEFORE_PROD blocker until green** — no agent/retrieval module starts before this passes. | INV `::test_access_package_cannot_import_or_construct_global_engine` , `::test_scoped_session_aborts_unless_current_user_is_oneai_app` ; PF `test_engine_seam.py::test_retrieval_query_on_global_engine_is_refused` |
-| ⬜ ⭐ PF-01-AC19 | **Owner-copy redaction (BCC leak):** non-owner recipient retrieval **never exposes BCC recipients or the full header chain** of another owner's copy; the served projection equals what that recipient could see in their own source copy (no BCC line, no `Received`/headers JSONB not present in a recipient copy, no owner-only folder/annotation context). | PF `test_email_projection.py::test_non_owner_never_sees_bcc_recipients` , `::test_non_owner_projection_matches_recipient_source_view` |
+| ✅ ⭐ PF-01-AC18 | **Engine seam fail-closed by construction:** the `access`/retrieval package has **no code path to `global_engine`** (module-import guard); `scoped_session` carries a runtime assertion that `SELECT current_user` returns `oneai_app` and aborts otherwise; a retrieval query attempted on the global engine is refused, not silently widened. **FIX_BEFORE_PROD blocker until green** — no agent/retrieval module starts before this passes. | PF `test_engine_seam.py::test_access_package_never_imports_the_global_engine` , `::test_scope_binding_aborts_on_the_wrong_role` , `::test_scoped_and_reader_sessions_run_as_their_expected_roles` . *(Re-pointed 2026-09-06: all three shipped under PF rather than INV; the assertion is per plane — `scoped_session` expects `oneai_app`, `reader_session` expects `oneai_reader` — `backend/app/core/database.py:_bind_scope`.)* |
+| ✅ ⭐ PF-01-AC19 | **Owner-copy redaction (BCC leak):** non-owner recipient retrieval **never exposes BCC recipients or the full header chain** of another owner's copy; the served projection equals what that recipient could see in their own source copy (no BCC line, no `Received`/headers JSONB not present in a recipient copy, no owner-only folder/annotation context). | PF `test_email_projection.py::test_non_owner_never_sees_bcc_recipients` , `::test_non_owner_projection_matches_recipient_source_view` , `::test_served_headers_are_a_subset_of_the_stored_allowlist` (all names resolve as written) |
 | ⬜ ⭐ PF-01-AC20 | **Login binding survives entity resolution:** the JWT→`person_id` binding is admin/IdP-controlled, `verified`, and **immutable by reviewer merges**; a `person` merge that would change an authenticated principal's grant surface is blocked pending explicit admin confirmation (or re-auth); an unverified or merged-ambiguous principal resolves **zero** restricted grants (extends AC8's ingest-side rule to the login side). | INV `::test_merged_or_ambiguous_principal_yields_zero_restricted_grants` ; PF `test_source_identity.py::test_merge_touching_authenticated_binding_is_blocked` |
-| ⬜ ⭐ PF-01-AC21 | **Grant reconciliation on sync (SHRINK ⇒ TOMBSTONE):** each sync **diffs** prior vs current recipient/container membership and tombstones (`revoked_at`) grants for removed principals — access removal at the source propagates **without requiring object deletion** (no 404 fires when a folder is un-shared or membership narrows). Grant writing is reconciliation, never append-only. | PF `test_grant_writer.py::test_sync_reconciliation_tombstones_removed_principals` , `::test_membership_shrink_without_deletion_revokes_grant` |
+| ✅ ⭐ PF-01-AC21 | **Grant reconciliation on sync (SHRINK ⇒ TOMBSTONE):** each sync **diffs** prior vs current recipient/container membership and tombstones (`revoked_at`) grants for removed principals — access removal at the source propagates **without requiring object deletion** (no 404 fires when a folder is un-shared or membership narrows). Grant writing is reconciliation, never append-only. | PF `test_grant_writer.py::test_reconciliation_tombstones_principal_whose_verification_was_revoked` , `::test_reingest_skip_path_reconciles_grants` , `::test_reconciliation_adds_newly_verified_principal` ; revocation-hides cover in `test_visibility_policies.py::test_revoked_grant_hides_rows_immediately` . *(Re-pointed 2026-09-06; no test named `::test_sync_reconciliation_tombstones_removed_principals` or `::test_membership_shrink_without_deletion_revokes_grant` exists — the container-membership half has no connector to exercise it, cf. AC11.)* |
 | ⬜ ⭐ PF-01-AC22 | **Chunk/fact inherit the parent's grant surface:** for every future `chunk` row, the set of principals who can SELECT it **equals** the set who can SELECT its parent content row — the chunk carries the parent's `object_type`/`object_id`/`container_id` and inherits `visibility_scope`/`origin_scope` in the same transaction that creates it; same equivalence for facts vs `fact_provenance`. Until the chunk/fact tables exist: failing-placeholder invariant, FIX_BEFORE_PROD (same pattern as AC9). | INV `::test_chunk_principal_set_equals_parent_principal_set` , `::test_fact_principal_set_equals_provenance_principal_set` (FIX_BEFORE_PROD until chunk/fact land) |
 
 ## 5. Implementation map
 
 | Area | Files (proposed) |
 |---|---|
-| Migration | `db/migrations/versions/0013_permission_fidelity.py` (`acl_grant`, `visibility_promotion`, `principal_source_identity`, `fact_provenance`; `visibility_scope` DEFAULT `'restricted'` + immutable `origin_scope` (set at ingest, change-rejected by trigger) + `container_id` on content tables; visibility policies + FORCE RLS; lineage-guard trigger on **INSERT and UPDATE**; partial UNIQUE `(org_id, object_type, object_id, person_id) WHERE revoked_at IS NULL` + covering index) |
+| Migration | `backend/app/db/migrations/versions/0019_permission_fidelity.py` — shipped, 515 lines, in `db1795d` (`acl_grant`, `visibility_promotion`, `principal_source_identity`, `fact_provenance`; `visibility_scope` DEFAULT `'restricted'` + immutable `origin_scope` (set at ingest, change-rejected by trigger) + `container_id` on content tables; visibility policies + FORCE RLS; lineage-guard trigger on **INSERT and UPDATE**; partial UNIQUE `(org_id, object_type, object_id, person_id) WHERE revoked_at IS NULL` + covering index) |
 | Models | `access/models/{acl_grant,visibility_promotion,principal_source_identity,fact_provenance}.py` (all on `TenantMixin` — `org_id` NOT NULL + indexed) |
-| GUC seam | `core/database.py` — `scoped_session(org_id, person_id)`; `after_begin` adds `set_config('app.current_person_id', …, true)`; both values derived **only** from the verified JWT in `identity/dependencies.get_tenant_session` (never header/body); background jobs open their own scoped session; **engine-seam guard**: runtime assertion `SELECT current_user = 'oneai_app'` (abort otherwise) + module-import guard denying the `access` package any path to `global_engine` (AC18) |
+| GUC seam | `core/database.py` — as built, two seams: `reader_session(org_id, person_id)` (person-bound reads, asserts `oneai_reader`) and `scoped_session(org_id)` (write/system plane, asserts `oneai_app`); `after_begin` adds `set_config('app.current_person_id', …, true)` on **every** transaction (explicitly `''` when there is no person); both values derived **only** from the verified JWT / verified auth binding (never header/body); background jobs open their own scoped session; **engine-seam guard**: per-plane runtime assertion on `current_user` (abort otherwise) + module-import guard denying the `access` package any path to `global_engine` (AC18) |
 | Grant capture | `access/services/grant_writer.py` (UNKNOWN ⇒ DENY and SHRINK ⇒ TOMBSTONE rules live here, single choke point — each sync diffs prior vs current recipients/membership and tombstones removed principals, AC21); called from `connectors/imap/services/ingest_service.py` (+ each future connector's ingest) |
 | Email projection | `access/services/email_projection.py` (non-owner grant-holders get the redacted recipient source-view of another owner's copy: strip BCC recipients, header chain, owner-only folder/annotation context — AC19; CA-CONN-05 header-retention review is the precondition) |
 | Identity mapping | `access/services/source_identity_service.py` (per-connector external id → `person_id`, `verified` flag; email-connector case = JWT-email mapping, same table, no separate mechanism; **auth-binding guard**: bindings for authenticated principals are immutable by reviewer merges — a merge touching one is blocked pending admin confirmation, AC20) |
@@ -215,7 +249,7 @@ Eight grafts from B/C are absorbed where they only *narrow* (see §6).
 | Purge | `access/services/purge_service.py` + work-queue items on the existing `FOR UPDATE SKIP LOCKED` queue (404-driven tombstone → content/chunk purge) |
 | Telemetry | `access/services/decision_telemetry.py` → `identity/services/audit_service.py` (allow/deny counts + resource keys; doubles as the staleness alert) |
 | Erasure | `access/erasure_hooks.py` registered via the erasure-hook registry (no `identity` → `access` import) |
-| Tests | `tests/test_rls_invariants.py` (extensions, dynamic enumeration), `tests/access/` (grant writer, promotion, revocation, re-check, telemetry, erasure hooks) |
+| Tests | `backend/tests/identity/models/test_rls_invariants.py` (extensions, dynamic enumeration — the real path; `tests/test_rls_invariants.py` never existed), `backend/tests/access/` (grant writer, promotion + routes, visibility policies, engine seam, email projection, decision telemetry, erasure hooks, end-to-end planes, counterparty summary) |
 | Tracking | `docs/FIX_BEFORE_PROD.md` (new entries, §7) |
 
 ## 6. Decisions settled during the design sprint
@@ -363,7 +397,7 @@ Eight grafts from B/C are absorbed where they only *narrow* (see §6).
   trick — only if a non-RLS retrieval path ever appears. Not scheduled.
 
 **Sequencing note:** this epic is the gate for EPIC "Ask". `chunk`, embeddings, BM25, and the
-agent loop are built **only after** 0013 + the visibility policies + the invariant tests —
+agent loop are built **only after** 0019 + the visibility policies + the invariant tests —
 **including AC18's engine-seam guard (import guard + runtime role assertion)** — are
 green on `oneai_app`, and only **under the chunk→grant contract (§6 / AC22)** — the retrieval
 layer must never exist un-scoped, even on a branch.

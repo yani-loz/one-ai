@@ -72,7 +72,7 @@ in view, because for DACH mid-market buyers "who can see our data?" is a gating 
 |---|---|
 | Console screen + states | `frontend/src/platform/PlatformConsolePage.tsx` |
 | Company card (crest gallery) | `frontend/src/platform/CompanyCard.tsx`, `StatusBadge.tsx` |
-| Onboard flow | `OnboardCompanyDrawer.tsx`, `OnboardSuccess.tsx`, `onboardValidation.ts`, `useDialogA11y.ts` |
+| Onboard flow | `OnboardCompanyDrawer.tsx`, `OnboardSuccess.tsx`, `onboardValidation.ts`, and `frontend/src/components/useDialogA11y.ts` (moved out of `platform/` by `fd944d0`, 2026-06-02, when CA-01 started sharing it) |
 | Sealed affordance | `SealedBanner.tsx` |
 | Data client | `platformClient.ts`, `types.ts` |
 | Routing / guard | `PlatformRoute.tsx`, `App.tsx` (`RoleHome`, `/platform`), `identity/LoginPage.tsx` (role nav), `identity/index.ts` (`authorizedFetch` re-export) |

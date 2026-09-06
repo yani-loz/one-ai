@@ -15,14 +15,26 @@ diff:
 docs/PM/
   README.md                 ← this file (the convention)
   <module>/                 ← one folder per product module
-    README.md               ← module epic index + roadmap/status
+    README.md               ← module epic index + roadmap/status (epic folders)
     EPIC-<code>-NN-*.md      ← one epic per significant body of work (≈ one PR/feature)
 ```
 
-- **Module** = a coherent product area (e.g. `platform-console`, and later `connect`,
-  `ask`, `learn`). Each gets a short code used to prefix epic + requirement ids.
+- **Module** = a coherent product area. Each gets a short code used to prefix epic +
+  requirement ids. As of 2026-09-06 seven module folders exist: `company-admin` (CA),
+  `connectors` (CO), `permission-fidelity` (PF), `platform-console` (PC), `ask` (ASK),
+  `mcp` (MCP) and `memory` (MEM).
 - **Epic** = a shippable body of work, usually one PR. Filename
   `EPIC-<code>-NN-<slug>.md` (e.g. `EPIC-PC-01-super-admin-console.md`).
+
+> **Which folders the convention binds (as of 2026-09-06).** The `EPIC-<code>-NN-<slug>.md`
+> filename scheme and the per-module `README.md` apply to the four **epic folders** —
+> `company-admin/`, `connectors/`, `platform-console/` and `permission-fidelity/`
+> (`permission-fidelity/` has no README yet; the other three do). `ask/`, `mcp/` and
+> `memory/` hold **design and analysis documents rather than epics**: they are named under
+> their own document ids (`ASK-NN-*`, `MCP-NN-*`, `MEM-NN-*`), plus a few topical files
+> (`ask/ASK-SECURITY-LEDGER.md`, `ask/intent-classes.md`), and are **exempt** from the epic
+> filename scheme and from the README requirement. `memory/` additionally nests
+> `MEM-01/` as a document set rather than holding flat files.
 
 ## ID scheme (for traceability)
 

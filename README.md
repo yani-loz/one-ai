@@ -28,23 +28,36 @@ docker compose up --build
 
 Then:
 
-- Frontend → http://localhost:5173 (shows a live backend/DB status panel)
+- Frontend → http://localhost:5173 — sign-in first; the health panel is on the post-login home page.
 - API docs → http://localhost:8000/docs
 - Health → http://localhost:8000/health (200 means DB is reachable)
 
-The backend container runs `alembic upgrade head` on start (enabling pgvector),
-then launches uvicorn with `--reload`. Editing files under `backend/` or
-`frontend/src/` hot-reloads inside the containers.
+The backend container runs `alembic upgrade head` on start (enabling pgvector)
+→ `python -m scripts.provision_roles` (migration 0009 creates the runtime roles
+NOLOGIN; this gives them LOGIN) → uvicorn with `--reload`. Editing files under
+`backend/` or `frontend/src/` hot-reloads inside the containers.
+
+The Ask retrieval layer (`backend/app/ask`) reads through a Together-hosted
+model and needs `TOGETHER_API_KEY` in `.env` (`backend/app/core/config.py`).
+It is deliberately outside the boot guard — the stack boots without it and the
+adapter fails only when a query actually needs the model. Ask has no HTTP route
+today; it runs from the eval harness in `backend/scripts/ask_loop/`.
 
 ## Project layout
 
 ```
-backend/    FastAPI app (app/), Alembic migrations (app/db/migrations), tests/
-frontend/   React + Vite app (src/), Tailwind v4 design system (src/index.css)
+backend/    FastAPI app (app/ — access, api, ask, common, connectors, core, db,
+            entities, identity), Alembic migrations (app/db/migrations),
+            tests/, scripts/ (ingest, seeds, provision_roles, ask_loop harness)
+frontend/   React + Vite app (src/ — admin, connect, identity, platform,
+            support, components), Tailwind v4 design system (src/index.css)
 docker-compose.yml   dev stack: db + backend + frontend
 scripts/    repo tooling (file-size ceiling gate)
-docs/       Project Bible + experiments notebook
-.claude/    coding / design / security / testing rules (auto-loaded)
+docs/       Project Bible + Claude Code Bible, PM/ (module epics + design),
+            audits/, experiments/ (notebook), design notes
+testing/    QA plans and evidence
+.claude/    rules/ (coding / design / security / testing, auto-loaded),
+            agents/, skills/
 ```
 
 ## Common commands
@@ -63,6 +76,16 @@ docker compose exec frontend pnpm lint
 docker compose down
 docker compose down -v
 ```
+
+## CI
+
+`.github/workflows/ci.yml` runs three jobs: the file-size ceiling gate
+(`scripts/check_file_size.py`), backend (ruff → `alembic upgrade head` →
+`provision_roles` → pytest), and frontend (lint → tests → build). The backend
+job also runs the three Ask gates — `scripts.ask_loop.conformance`,
+`scripts.ask_loop.seal_check`, `scripts.ask_loop.defence_matrix`. As of
+2026-09-06 those three steps are an uncommitted working-tree edit (absent from
+`git show HEAD:.github/workflows/ci.yml`).
 
 ## Demo data (dev)
 
@@ -87,8 +110,11 @@ docker compose exec backend uv run python -m scripts.seed_identity
 `org_id` is the canonical tenant key. Every tenant-scoped model mixes in
 `TenantMixin` (org_id NOT NULL + indexed); `get_tenant_session` binds each DB
 session to the active org via `set_config('app.current_org_id', …)`, the seam
-for Postgres Row-Level Security once the first org-scoped table lands. Real
-auth (JWT/RBAC/SSO) is deferred to Phase 4 — see Project Bible §13.
+for Postgres Row-Level Security, which is enforced today on 22 tables
+(migration 0009) via the least-privilege roles `oneai_app` / `oneai_reader`
+— measured 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3).
+JWT auth and RBAC are live (`app/identity`: login/refresh/logout/me, 15-min
+access + 7-day refresh, httpOnly refresh cookie). SSO is not built.
 
 ## Production
 

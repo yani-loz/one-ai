@@ -12,9 +12,10 @@ Tests are how we prove the system does what we promised — and the only way we 
 ## Runners + coverage
 
 - **Backend:** `pytest` + `pytest-asyncio` + `pytest-cov`. Run from `backend/`: `pytest --cov`.
-- **Frontend (when scaffolded):** `vitest` + `@vitest/coverage-v8` + `@testing-library/react`. Run from `frontend/`: `npm run test`.
+- **Frontend:** `vitest` + `@vitest/coverage-v8` + `@testing-library/react`. Run from `frontend/`: `pnpm test` (the repo is pnpm-only — `package.json:6` pins `packageManager: pnpm@10.28.2`).
 - **IMPORTANT: Coverage threshold is 70%.** CI fails below this. PRs cannot merge with coverage drops below threshold.
 - Coverage is a floor, not a target. 70% with the right tests beats 95% with mock-heavy tests that exercise nothing.
+- **Backend tests need a live Postgres**, not an in-process fake: point `POSTGRES_HOST` / `POSTGRES_PORT` (`app/core/config.py:76-77`) at the database the compose stack runs (`docker-compose.yml` service `db`). The DB-backed tests ERROR without it.
 
 ---
 
@@ -25,8 +26,8 @@ Write many unit tests, fewer integration tests, very few e2e tests.
 | Layer | What it covers | Externals |
 |---|---|---|
 | **Unit** | Single function / class / module in isolation | Mock everything outside the unit (adapters, DB, network) |
-| **Integration** | Multiple internal modules talking to a real internal DB | Real DB (testcontainers); mock external vendors |
-| **E2E** | Full critical-path user flow (login → upload → analyze → generate → export) | Real-ish workflow; mock Claude SDK + GBS storage at adapter boundary |
+| **Integration** | Multiple internal modules talking to a real internal DB | The live Postgres the compose stack provides (`docker-compose.yml` service `db`) — testcontainers is not a dependency; mock external vendors |
+| **E2E** | Full critical-path user flow (login → create a connection → ingest → person-bound read) | Real-ish workflow; mock the reader model and IMAP at the adapter boundary |
 
 Reach for the cheapest layer that gives you confidence. If a unit test catches the bug, you don't need an integration test for the same thing.
 
@@ -34,7 +35,7 @@ Reach for the cheapest layer that gives you confidence. If a unit test catches t
 
 ## The non-negotiable — multi-tenancy
 
-**YOU MUST write a cross-tenant negative test for every tenant-scoped endpoint, service, and repository method.** This protects clause §З and Annex 2 §4.9 — a cross-company data leak is a contract breach.
+**YOU MUST write a cross-tenant negative test for every tenant-scoped endpoint, service, and repository method.** A cross-company data leak is a GDPR incident and a customer-contract breach — it is the failure One AI cannot survive.
 
 Pattern:
 - Authenticate as tenant A.
@@ -48,9 +49,9 @@ If you write a tenant-scoped endpoint without this test, code review rejects the
 
 ## Mocking — the boundary rule
 
-- **Mock vendor adapters at the adapter boundary** (the wrapper file in `backend/adapters/<vendor>/`), NEVER inside business logic.
+- **Mock vendor adapters at the adapter boundary** — the domain's own `adapters/` wrapper file; today the only one is `backend/app/ask/adapters/together_chat.py`. NEVER inside business logic.
 - **Do not mock internal services or repositories** in unit tests for code that uses them — those should be real. If isolation forces you to mock internal code, you are testing in the wrong layer.
-- **Do not mock framework code** (FastAPI route registration, Pydantic field validators, Tortoise's `_meta`). Frameworks test themselves.
+- **Do not mock framework code** (FastAPI route registration, Pydantic field validators, SQLAlchemy 2.0 mapper internals). Frameworks test themselves.
 - **Mocks must verify contract**, not behavior. Assert that the adapter was called with the expected shape; do not assert that the assertion was made.
 
 If a test passes purely through mocked behavior (no real code executed), delete it — it tests nothing.
@@ -59,8 +60,8 @@ If a test passes purely through mocked behavior (no real code executed), delete 
 
 ## Test structure
 
-- **File path mirrors source path.** `backend/services/auth/login.py` → `backend/tests/services/auth/test_login.py`. `frontend/src/components/SectionEditor.tsx` → `frontend/src/components/SectionEditor.test.tsx`.
-- **Test naming:** `test_<what>_<condition>_<expected>`. Examples: `test_login_invalid_password_returns_401`, `test_generate_section_kss_quantity_in_text_returns_validation_error`.
+- **File path mirrors source path.** `backend/app/identity/services/auth_service.py` → `backend/tests/identity/services/test_auth_service.py`. `frontend/src/components/insignia/generateInsignia.ts` → `frontend/src/components/insignia/generateInsignia.test.ts`.
+- **Test naming:** `test_<what>_<condition>_<expected>`. Examples: `test_login_wrong_password_raises_invalid_credentials`, `test_cross_tenant_promotion_probe_returns_not_found`.
 - **AAA pattern (Arrange, Act, Assert)** — blank lines between the three blocks. One assertion per test where possible.
 - **FIRST principles:** Fast (sub-second per unit test), Isolated (any order works), Repeatable (no random data without seed), Self-validating (no manual inspection), Timely (written with the code, not after).
 
@@ -74,13 +75,17 @@ If a test passes purely through mocked behavior (no real code executed), delete 
 
 ---
 
-## AI-generated content tests
+## Ask-layer tests (model calls + security gates)
 
-When testing functionality that calls the Claude SDK to generate ТП text:
+When testing anything under `backend/app/ask/` — the retrieval tools, the agent runner, the SQL pipeline:
 
-- **Mock the Claude SDK adapter** (e.g., `claude_adapter.generate(...)`) — never call real Claude in unit/integration tests.
-- **Verify the rules the SDK should follow** at the test level: regex-check generated output for future tense (no past-tense verbs), validator-check Section 2 text for the absence of КСС-style quantity rows, count provenance colors per sentence.
-- The **rules themselves** (KCC, tense, generation modes, color application) live in `backend/ai/` system prompts. Tests verify the rules took effect; they do not define the rules.
+- **Mock the reader adapter** at `backend/app/ask/adapters/` (`together_chat.py`) — **never call Together, or any hosted model, from a unit or integration test.** No test may depend on a network round trip to a model provider.
+- **The database side stays real.** Tool SQL is tested against the live Postgres through `reader_session(org_id, person_id)`, because what is being proved is what the *policies* return, not what a mock returns. A mocked read plane proves nothing about tenant or per-person isolation.
+- **The security gates are scripts, not pytest.** Three of them, run from `backend/`:
+  - `python -m scripts.ask_loop.conformance` — behavioural conformance of the tool layer.
+  - `python -m scripts.ask_loop.seal_check` — the outcome seals; exits non-zero if any seal is broken.
+  - `python -m scripts.ask_loop.defence_matrix` — the causal half of the seal: which mechanism actually stops which attack (`ci.yml:63`). A green `seal_check` is an outcome, not a proof of cause, so do not treat it alone as sufficient.
+  Run all three by hand after any change to `sql_guard.py`, `sql_execution.py`, the tool registry or the reader RLS policies. **As of 2026-09-06 CI does not run them** — the steps at `.github/workflows/ci.yml:59,62,69` are an uncommitted working-tree edit (absent from `git show HEAD:.github/workflows/ci.yml`). The only gate that *is* committed at HEAD is the file-size job, `scripts/check_file_size.py` (`ci.yml:17`).
 
 ---
 
@@ -89,11 +94,12 @@ When testing functionality that calls the Claude SDK to generate ТП text:
 | Rule | Concrete |
 |---|---|
 | BE runner | `pytest --cov` (≥70% threshold) |
-| FE runner | `npm run test` (Vitest, ≥70%) |
+| FE runner | `pnpm test` (Vitest, ≥70%) |
 | Cross-tenant negative test | required per tenant-scoped endpoint / service / repo |
-| Mock location | adapter boundary only |
+| Mock location | adapter boundary only (`backend/app/<domain>/adapters/`) |
+| Ask security gates | `scripts.ask_loop.conformance` · `seal_check` · `defence_matrix` — run by hand (not in CI as of 2026-09-06) |
 | File location | mirror source tree |
 | Naming | `test_<what>_<condition>_<expected>` |
 | Pattern | AAA, FIRST |
-| Flaky test | `xfail` + Jira ticket, never retry-loop |
-| Coverage threshold change | requires Stilyana + Sasho sign-off |
+| Flaky test | `xfail` + tracked ticket, never retry-loop |
+| Coverage threshold change | requires founder sign-off |

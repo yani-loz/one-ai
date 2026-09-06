@@ -6,7 +6,19 @@
 > This doc is the durable plan; implement it as a focused, branch-isolated change — it is the
 > single most invasive change in the repo (DB roles + connection layer + CI + docker).
 
-> **STATUS — IMPLEMENTED + LIVE-VERIFIED (2026-06-07, pending commit/PR).** Landed as migration
+> **STATUS (re-checked 2026-09-06) — IMPLEMENTED, COMMITTED + LIVE-VERIFIED.** The flip landed in
+> commit `74a438c` *"feat(security): enforce tenant RLS via least-privilege runtime DB roles"*
+> (2026-06-07), which carries `0009_enforce_rls.py`, `backend/scripts/provision_roles.py` and this
+> document itself; the commit is contained in both `main` and `ask-tools-loop`, so the original
+> "pending commit/PR" note is historical. RLS is live and enforcing on 22 tables with ENABLE +
+> FORCE — measured 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3).
+> **One shape change since:** the three-role / two-engine split below has grown a FOURTH role and
+> plane — `oneai_reader` (NOSUPERUSER, NO BYPASSRLS, SELECT-only), created by
+> `0019_permission_fidelity.py` in `db1795d` (2026-07-04) and fed by
+> `reader_session(org_id, person_id)`. The "Chosen design" table below is the 2026-06-07 shape,
+> not today's.
+>
+> **Original status (2026-06-07):** IMPLEMENTED + LIVE-VERIFIED, pending commit/PR. Landed as migration
 > `0009_enforce_rls` + `scripts/provision_roles.py` + the `database.py` three-engine split + the
 > `SessionLocal`→`GlobalSessionLocal` rename across all importers + docker/CI provisioning steps +
 > the `test_rls_invariants.py` FORCE assertion & live two-role isolation proof (with teeth) +

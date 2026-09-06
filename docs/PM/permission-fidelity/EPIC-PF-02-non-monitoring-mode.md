@@ -12,6 +12,21 @@
 | **Review** | — (spec-stage; adversarial review to be linked at PR time) |
 | **Date** | 2026-06-09 |
 
+> **Status as of 2026-09-06 — still unbuilt; read every path below as a contract, not a map.**
+> Nothing in this epic has been implemented. Verified absent in the working tree on 2026-09-06:
+> `backend/app/identity/models/org_settings.py`, `…/services/org_settings_service.py`,
+> `…/routes/org_settings_routes.py`, `…/schemas/org_settings_schemas.py`,
+> `backend/app/common/monitoring_registry.py`, the whole `backend/tests/invariants/` directory
+> (including `test_monitoring_surface_invariants.py`, the AC7 gate test) and
+> `backend/tests/identity/routes/test_org_settings_routes.py`. A repo-wide grep for
+> `org_settings`, `non_monitoring` and `monitoring_registry` across `backend/**/*.py` returns
+> **zero hits**, and no migration in `backend/app/db/migrations/versions/` creates an
+> `org_settings` table.
+> **Therefore:** every file path in §2 and §5, and every test name in the §4 acceptance matrix,
+> is a **build contract for something that does not yet exist** — all 12 ACs are correctly ⬜
+> and none of them has been checked against running code. The migration slot has also moved
+> (see §2 and §5).
+
 ## 1. Goal & context
 
 Make **"One AI does not monitor your employees"** a *structural product guarantee* — not a
@@ -55,7 +70,10 @@ The guarantee, as a product statement:
 
 **In scope (PF-02 — backend + invariants + artifact):**
 
-- **Tenant-level flag:** new tenant table `org_settings` (migration `0013_org_settings`,
+- **Tenant-level flag:** new tenant table `org_settings` (migration `0024_org_settings` —
+  **renumbered 2026-09-06:** the spec's `0013` slot was taken by `0013_least_privilege_grants.py`
+  in June; `versions/` now runs to `0022_counterparty_summary_v3` in git plus an untracked,
+  unapplied `0023_reader_bcc_and_seen_window.py` on disk, so the next free number is **0024**;
   `TenantMixin`, RLS policy, FORCE RLS — standing invariants apply) with
   `non_monitoring_mode BOOLEAN NOT NULL DEFAULT TRUE`. Default **ON** for every org.
   Turning it **off** requires: company-admin role + typed confirmation + a recorded
@@ -193,7 +211,7 @@ it is not a behavioral surface.
 
 | Area | Files |
 |---|---|
-| Model + migration | `backend/app/identity/models/org_settings.py`; `backend/app/db/migrations/0013_org_settings.py` (TenantMixin, RLS policy, FORCE RLS, default TRUE) |
+| Model + migration | `backend/app/identity/models/org_settings.py`; `backend/app/db/migrations/versions/0024_org_settings.py` (TenantMixin, RLS policy, FORCE RLS, default TRUE) — renumbered from `0013` (slot taken) and corrected to the real `migrations/versions/` directory, 2026-09-06 |
 | Service + routes | `backend/app/identity/services/org_settings_service.py`; `backend/app/identity/routes/org_settings_routes.py`; `backend/app/identity/schemas/org_settings_schemas.py` |
 | Enforcement seam | `backend/app/identity/dependencies.py` (`require_non_monitoring_guard` — single choke point, mirrors `get_tenant_session` discipline) |
 | Registry | `backend/app/common/monitoring_registry.py` (allowlist of per-user tables: name, key, purpose, legal-basis hint, access scope) |

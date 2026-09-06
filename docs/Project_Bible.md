@@ -4,13 +4,19 @@
 >
 > **Tagline:** *One Company. One AI.*
 > **Company:** Ethera Technologies · **Founder:** Yani Lozanov
-> **Status:** living document · **Last revision:** 2026-05-30
+> **Status:** living document · **Last revision:** content revision 2026-06-13 (commit `e782cf0`); status banners added 2026-09-06
+
+> **Status as of 2026-09-06.** This document is still the product/architecture source of truth, but three things have moved on since the last content revision. Read these before implementing from it:
+>
+> - **§18 (build scope) is superseded by the MCP-first delivery pivot** — see the section *"Delivery pivot — MCP-first (v1.1, 2026-07-04)"* in `CLAUDE.md`. The North Star is unchanged; what pivoted is the delivery face, and the build spine is PF-01 → ASK-01 → MCP-01.
+> - **§6 (memory design) is superseded by** `docs/PM/memory/MEM-01/MEM-01-knowledge-pipeline.md` — five memory kinds (Летопис / Карта / Знание / Занаят / Обещания) on three orthogonal axes, an ant-colony (extract-only) pipeline and a no-review-role regime. The four-layer model and the "Nightly Board" curation described below are the earlier framing.
+> - **Designed here but NOT built as of 2026-09-06:** §15 hybrid vector retrieval (pgvector is installed, but zero columns anywhere are vector-typed and there is no HNSW / `tsvector` / RRF index or code) · §14 the `cost_events` table (no table, no code reference in `backend/`) · §12 the `AIProvider` abstraction (one adapter exists: `backend/app/ask/adapters/together_chat.py`) · §15 DuckDB query-time analysis (not a dependency — it appears only in docstrings). Database figures measured 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3).
 
 ---
 
 ## 0. How to use this document
 
-**If you are an AI coding agent:** §1–§3 give the mental model. §5–§14 are the architecture you implement. §11 (principles) constrains *every* implementation choice — when a low-level decision is ambiguous, default to the relevant principle. §15 is the technical architecture and stack. §18 is the current build scope.
+**If you are an AI coding agent:** §1–§3 give the mental model. §5–§14 are the architecture you implement. §11 (principles) constrains *every* implementation choice — when a low-level decision is ambiguous, default to the relevant principle. §15 is the technical architecture and stack. §18 was the build scope before the MCP-first pivot — see the status banner above; the *"Delivery pivot — MCP-first"* section of `CLAUDE.md` is the scope of record as of 2026-09-06.
 
 **Living Document Principle.** Nothing here is sacred. Vision, architecture, business model, and positioning evolve as the idea sharpens. If new evidence or reasoning suggests a better direction, challenge it and propose the change. Past conclusions are starting points, not constraints.
 
@@ -84,6 +90,8 @@ Modules that plug into company data sources (email, documents, chat, CRM, HR, pr
 ---
 
 ## 6. Architecture — the Memory Foundation (4 layers)
+
+> **Note (2026-09-06).** The **design of record for memory is now** `docs/PM/memory/MEM-01/MEM-01-knowledge-pipeline.md` — five memory kinds (Летопис / Карта / Знание / Занаят / Обещания) on three orthogonal axes, an ant-colony (extract-only) pipeline, and a no-review-role regime. The four layers below are the earlier framing, kept for context; where the two differ, MEM-01 is the later design. Terminology, to avoid a recurring mix-up: the **four layers** are Layer 1 Organizational Memory / Layer 2 Agent Identity / Layer 3 Interaction Memory / Layer 4 Learning Loop, while *structured · semantic · graph · explorable* are Layer 1's four **types**, not the four layers.
 
 The heart of the system. Memory is a **database** (queryable, dynamic, access-controlled) — **not** files.
 
@@ -173,6 +181,8 @@ The personal AI becomes *irreplaceable* through genuine personalization and accr
 
 ## 12. Model architecture — multi-model, provider-agnostic
 
+> **Note (2026-09-06).** The operating decision since July 2026 is **small-model-first, with the database doing the computing and the model only rendering** — see `docs/PM/ask/ASK-02-small-model-to-100-safe.md`. The shipped default reader is `Qwen/Qwen3.5-9B` via Together (`backend/app/core/config.py:137` — `ask_reader_model: str = "Qwen/Qwen3.5-9B"`), not the Sonnet-class model described below. The `AIProvider` abstraction is **not built**: `backend/app/ask/adapters/together_chat.py` is the only adapter in the tree.
+
 - **Real-time chat:** a capable mid-tier model (Claude Sonnet-class). Lightweight models are insufficient for cross-source reasoning over enterprise data.
 - **Nightly Board + Knowledge Nexus:** a top-tier model (Claude Opus-class) — best judgment, privacy-critical.
 - **Embeddings:** a cheap bulk provider (e.g. OpenAI `text-embedding-3-small`).
@@ -238,6 +248,8 @@ The ROI-proof system that makes the product unchurnable. Captures moments where 
 ---
 
 ## 18. Build scope — Connect → Ask → Learn
+
+> **Note (2026-09-06).** As the *current* build scope this section is superseded by the MCP-first delivery pivot — see *"Delivery pivot — MCP-first (v1.1, 2026-07-04)"* in `CLAUDE.md`, which is the scope of record. Connect → Ask → Learn remains the capability model; what changed is the delivery face (an MCP company-intelligence server plugged into the agents companies already use) and the build spine (PF-01 → ASK-01 → MCP-01).
 
 The product is built in three capability layers:
 

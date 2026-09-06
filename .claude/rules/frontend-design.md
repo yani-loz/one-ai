@@ -41,6 +41,10 @@ Define the system as CSS tokens in a single `@theme` block in `index.css`. Tailw
   --animate-aura-pulse: aura-pulse 3s ease-in-out infinite;
   --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
   --animate-clari-pulse: clari-pulse 2s ease-in-out infinite;
+  /* The three below are declared in this rule, NOT YET IMPLEMENTED in frontend/src/index.css
+     (verified 2026-09-06: index.css:31-38 ships six animation tokens, ending at clari-pulse;
+     zero occurrences of these three anywhere under frontend/). Add them when the first
+     consumer lands — they remain part of the design contract. */
   --animate-bounce-soft: bounce-soft 0.6s ease-in-out infinite;
   --animate-slide-in-left: slide-in-left 0.3s ease-out;
   --animate-toast-in: toast-in 0.4s ease;
@@ -61,7 +65,7 @@ Define the system as CSS tokens in a single `@theme` block in `index.css`. Tailw
 | `brand-purple` | `#8b5cf6` | AI indicators, premium features, AI-action-pending |
 | `brand-red` | `#dc2626` | Errors, destructive actions |
 | `brand-bg` | `#f0f4f8` | Page background base |
-| `brand-glass` | `rgba(255,255,255,0.65)` | Glass panels |
+| `brand-glass` | `rgba(255,255,255,0.65)` | Glass panels — **declared in this rule, NOT YET IMPLEMENTED in `index.css`** (verified 2026-09-06: 0 occurrences under `frontend/`; panels use the `bg-white/65` Tailwind form instead) |
 | `text-primary` | `#1f2937` | Primary text |
 | `text-secondary` | `#4b5563` | Secondary text, labels |
 | `text-muted` | `#6b7280` | Captions, placeholders, hints |
@@ -150,6 +154,8 @@ Secondary: glass background, `text-primary`, border. Ghost: transparent, hover r
 }
 ```
 
+> **Not yet shipped as CSS classes (verified 2026-09-06).** `.glass-panel`, `.btn-primary` and `.form-input` are specified above but have 0 occurrences under `frontend/` — the only hand-authored class in `frontend/src/index.css` is `.text-brand-gradient`. Today's components hand-roll the equivalent Tailwind utilities inline. The specs above are the contract: when you extract these primitives, extract them to exactly these names and values rather than inventing new ones.
+
 ## Animation Library
 
 Each animation is bound to a One AI semantic — this is *why* it exists, not just decoration:
@@ -162,9 +168,11 @@ Each animation is bound to a One AI semantic — this is *why* it exists, not ju
 | `animate-aura-pulse` | scale 1→1.3 + opacity 0.15→0.35 (3s) | **Personal-AI orb / presence glow** — the breathing organism |
 | `animate-pulse-dot` | opacity 1→0.4 (2s) | Connector / agent status dots |
 | `animate-clari-pulse` | expanding box-shadow ring (2s) | **Human-in-the-Loop** — "AI needs your approval" attention glow |
-| `animate-bounce-soft` | translateY 0→-4px (0.6s) | AI **thinking / typing** indicator |
-| `animate-slide-in-left` | translateX -100%→0 (0.3s) | Nexus module panels, drawers, sidebars |
-| `animate-toast-in` | translateY 20px→0 + opacity (0.4s) | Proactive alerts / notifications |
+| `animate-bounce-soft` | translateY 0→-4px (0.6s) | AI **thinking / typing** indicator — **declared here, NOT YET IMPLEMENTED in `index.css`** |
+| `animate-slide-in-left` | translateX -100%→0 (0.3s) | Nexus module panels, drawers, sidebars — **declared here, NOT YET IMPLEMENTED in `index.css`** |
+| `animate-toast-in` | translateY 20px→0 + opacity (0.4s) | Proactive alerts / notifications — **declared here, NOT YET IMPLEMENTED in `index.css`** |
+
+*The first six rows are live in `frontend/src/index.css:31-38` and consumed across the app. The last three are the design contract for animations no component needs yet — verified 2026-09-06 as 0 occurrences under `frontend/`. Implement the token + keyframe when you write the first consumer; do not invent a different one.*
 
 ```css
 @keyframes gradient-x   { 0%,100% { background-position: left top; } 50% { background-position: right bottom; } }
@@ -172,6 +180,7 @@ Each animation is bound to a One AI semantic — this is *why* it exists, not ju
 @keyframes shimmer      { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
 @keyframes aura-pulse   { 0%,100% { transform: scale(1);   opacity: 0.15; } 50% { transform: scale(1.3); opacity: 0.35; } }
 @keyframes pulse-dot    { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* The next three keyframes are declared in this rule, NOT YET IMPLEMENTED in index.css (2026-09-06). */
 @keyframes bounce-soft  { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 @keyframes slide-in-left{ from { transform: translateX(-100%); } to { transform: translateX(0); } }
 @keyframes toast-in     { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
@@ -222,6 +231,7 @@ export function useDirectionalTransition() {
 - **AI presence:** orb / avatar carries an `animate-aura-pulse` aurora halo whenever the AI is "awake."
 - **Scrollbars:** thin (6px), transparent track, `rgba(0,0,0,0.1)` thumb, `border-radius: 3px`.
 - **Selection:** `selection:bg-brand-teal/20 selection:text-brand-teal`.
+- **Brand insignia:** the generative agent-insignia system is built — `frontend/src/components/insignia/` (`generateInsignia.ts`, `renderInsignia.ts`), plus `AgentInsignia.tsx` and `BrandMark.tsx` (verified 2026-09-06) — and this rule does not yet cover it.
 
 ## Motion Principles
 

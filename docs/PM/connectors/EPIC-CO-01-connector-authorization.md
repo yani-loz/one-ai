@@ -4,8 +4,8 @@
 |---|---|
 | **Epic ID** | CO-01 |
 | **Module** | Connectors (`CO`) |
-| **Status** | 📝 Planned / spec (design agreed; not built) |
-| **Branch / commit** | _tbd_ (`feat/connector-authorization`) |
+| **Status** | ✅ Done (Phase 1) — backend `4b70e91`, UI `f1935d0`, hardening 2026-06-15; Phase 2 OAuth deferred |
+| **Branch / commit** | `main` · `4b70e91` (backend, 2026-06-15) + `f1935d0` (UI + frontend/prod hardening, 2026-06-15). No `feat/connector-authorization` branch exists — the work landed on `main` |
 | **PR** | Phased (see §9) — Phase 1 first |
 | **Depends on** | Connectors module (IMAP ingest, `connector_connection`, SyncRunner, erasure hooks — all built); Identity (`require_company_admin`, `get_current_principal`, platform-admin plane); RLS role split (0009) |
 | **Closes / advances** | The authorization layer over the (built) connector data plane; advances the §7 boundary + closes part of the CA-01 admin-set-credential impersonation gap |
@@ -56,26 +56,26 @@ This epic adds the **authorization model** over that built data plane — a thre
 
 ## 4. Acceptance criteria → tests (traceability matrix)
 
-> Forward spec — "Proven by" lists the **planned** tests each AC will ship with (BE = `backend/tests/…`, FE = `frontend/src/…`). The cross-tenant **and** per-user negatives are non-negotiable (`testing.md`).
+> Phase 1 shipped 2026-06-15 — "Proven by" now names the tests that **exist** (BE = `backend/tests/…`, FE = `frontend/src/…`), verified 2026-09-06. **AC11 (OAuth) is Phase 2 and not built**, so its row stays forward-looking. The cross-tenant **and** per-user negatives are non-negotiable (`testing.md`).
 
-| AC | Criterion | Proven by (planned) |
+| AC | Criterion | Proven by |
 |---|---|---|
-| CO-01-AC1 | **Permission resolution** is correct across all branches: non-entitled→denied; entitled + (org-wide-on or per-user-grant) + not-denied → allowed; explicit deny wins; org-wide-off + no grant → denied. | BE `test_permission_resolution.py` (table-driven, all branches) |
+| CO-01-AC1 | **Permission resolution** is correct across all branches: non-entitled→denied; entitled + (org-wide-on or per-user-grant) + not-denied → allowed; explicit deny wins; org-wide-off + no grant → denied. | BE `connectors/services/test_connector_authz.py::test_resolve_connector_access_table` (table-driven, all branches) |
 | CO-01-AC2 | A **member** can create/list/test/sync/disconnect **their own** connection via `/me/connectors/*`; the route is `get_current_principal`-gated (member ok, 401 on no/expired token). | BE `test_me_connector_routes.py`; FE `MyConnectionsPage.test.tsx` |
-| CO-01-AC3 | **Per-user isolation:** user A cannot read/sync/delete user B's connection (404, no existence leak) — even in the same org. | BE `test_me_connector_routes.py::test_cannot_touch_another_users_connection` |
-| CO-01-AC4 | **Cross-tenant isolation:** a user/admin in org A cannot see/act on any org B connection or policy (404). | BE `test_connector_governance.py` + `test_me_connector_routes.py` (cross-org negatives) |
-| CO-01-AC5 | A **denied** or **org-disabled-and-not-granted** user is refused self-connect (**403**, friendly "your administrator hasn't enabled this") before any credential/OAuth work. | BE `test_me_connector_routes.py::test_denied_user_403`; FE (allowed-types dropdown empty/hidden) |
-| CO-01-AC6 | A **company admin** can set org-wide enable/disable and per-user grant/deny; an admin **cannot enable a type the org isn't entitled to** (422/403). | BE `test_connector_governance.py`; FE `ConnectorGovernancePanel.test.tsx` |
-| CO-01-AC7 | A **platform admin** grants/revokes a company's entitlement; revoking hides the type from the org (policies/connections persist, re-exposed on re-grant — no surprise cascade). | BE `test_connector_entitlement.py`; FE `OrganizationDetailPage.test.tsx` (entitlement toggle) |
-| CO-01-AC8 | **§7 metadata-only:** every admin/platform response is connection **metadata** (status/health/owner-id) — never secret, never content; verified field-by-field. | BE `test_connector_governance.py::test_admin_view_is_metadata_only` |
-| CO-01-AC9 | **Consent** is recorded at self-connect (who/when/scope/provider/method); **withdrawal** disables sync + is retained as proof. | BE `test_connector_consent.py` |
-| CO-01-AC10 | **Per-user erasure:** disconnect / offboarding deletes the user's connection(s) + ingested email/attachments/sync state + consent; org-retained data decision honored (§8). | BE `test_user_connector_erasure.py` (per-user A-erased/B-intact) |
-| CO-01-AC11 | **OAuth (Phase 2):** `oauth-start`→provider→`oauth-callback` exchanges a `state`-bound code for tokens, stores them encrypted, creates a user-owned `xoauth2` connection; replayed/forged state is refused. | BE `test_oauth_self_connect.py`; FE `OAuthConsent.test.tsx` |
-| CO-01-AC12 | **Audit** rows for `entitlement.granted/revoked`, `connector.policy_changed`, `connector.consented/connected/disconnected` — actor-attributed, org-scoped. | BE `test_connector_audit.py` |
+| CO-01-AC3 | **Per-user isolation:** user A cannot read/sync/delete user B's connection (404, no existence leak) — even in the same org. | BE `test_me_connector_routes.py::test_user_b_cannot_access_user_a_connection_returns_404_no_leak` + `::test_user_b_list_excludes_user_a_connection` |
+| CO-01-AC4 | **Cross-tenant isolation:** a user/admin in org A cannot see/act on any org B connection or policy (404). | BE `test_connector_governance_routes.py::test_org_a_governance_excludes_org_b_connections_and_policy` |
+| CO-01-AC5 | A **denied** or **org-disabled-and-not-granted** user is refused self-connect (**403**, friendly "your administrator hasn't enabled this") before any credential/OAuth work. | BE `test_me_connector_routes.py::test_self_connect_org_wide_on_with_deny_returns_403` + `::test_self_connect_org_wide_off_no_grant_returns_403_and_creates_nothing`; FE (allowed-types dropdown empty/hidden) |
+| CO-01-AC6 | A **company admin** can set org-wide enable/disable and per-user grant/deny; an admin **cannot enable a type the org isn't entitled to** (422/403). | BE `test_connector_governance_routes.py` + `connectors/services/test_connector_governance_service.py`; FE `admin/ConnectorGovernancePanel.test.tsx` |
+| CO-01-AC7 | A **platform admin** grants/revokes a company's entitlement; revoking hides the type from the org (policies/connections persist, re-exposed on re-grant — no surprise cascade). | BE `test_connector_entitlement_routes.py` + `test_co01_entitlement_enforcement.py`; FE `platform/ConnectorEntitlementsPanel.test.tsx` (entitlement toggle) |
+| CO-01-AC8 | **§7 metadata-only:** every admin/platform response is connection **metadata** (status/health/owner-id) — never secret, never content; verified field-by-field. | BE `test_connector_governance_routes.py::test_governance_view_exposes_metadata_only_no_secret_or_params` + `test_co01_admin_owner_isolation.py` (the admin plane can never reach a user-owned mailbox) |
+| CO-01-AC9 | **Consent** is recorded at self-connect (who/when/scope/provider/method); **withdrawal** disables sync + is retained as proof. | BE `test_co01_consent_routes.py` + `connectors/services/test_connector_consent_service.py`; withdrawal in `test_co01_erasure_audit.py::test_disconnect_withdraws_consent_and_retains_the_row` |
+| CO-01-AC10 | **Per-user erasure:** disconnect / offboarding deletes the user's connection(s) + ingested email/attachments/sync state + consent; org-retained data decision honored (§8). | BE `test_co01_erasure_audit.py::test_disconnect_deletes_owner_connection_and_cascades_corpus_keeping_other_user` (per-user A-erased/B-intact) |
+| CO-01-AC11 | **OAuth (Phase 2):** `oauth-start`→provider→`oauth-callback` exchanges a `state`-bound code for tokens, stores them encrypted, creates a user-owned `xoauth2` connection; replayed/forged state is refused. | **Planned (Phase 2 — not built):** BE `test_oauth_self_connect.py`; FE `OAuthConsent.test.tsx` |
+| CO-01-AC12 | **Audit** rows for `entitlement.granted/revoked`, `connector.policy_changed`, `connector.consented/connected/disconnected` — actor-attributed, org-scoped. | BE `test_co01_erasure_audit.py::test_full_lifecycle_writes_expected_audit_actions` |
 
 ## 5. Design — data model, API, permission resolution
 
-**Data model (migration `00NN`, after the current head):**
+**Data model (shipped as migration `0018_connector_authorization`):**
 - `connector_entitlement(org_id, connector_type, enabled, granted/revoked_by_platform_admin, …)` — **platform-scoped** (no tenant RLS; read via global role). `UNIQUE(org_id, connector_type)`. Billing seam = `enabled`/grant metadata.
 - `connector_policy(org_id, connector_type, org_wide_enabled, set_by_user_id, …)` — tenant RLS (`org_isolation`). `UNIQUE(org_id, connector_type)`.
 - `connector_policy_override(org_id, user_id, connector_type, override_type∈{grant,deny}, set_by_user_id, …)` — tenant RLS; composite FK `(org_id, user_id)→users(org_id, id)`; `UNIQUE(user_id, connector_type)` (one override per user/type).
@@ -95,18 +95,20 @@ The current `/connectors/*` admin routes **move** to `/admin/connectors/*` (no b
 
 **Permission resolution** (single guard, top-down): `entitled(org, T)` → else deny · then `override(user, T)`: `deny`→deny, `grant`→allow, else `org_wide_enabled(org, T)`.
 
-## 6. Implementation map (requirement → planned code)
+## 6. Implementation map (requirement → code)
+
+> Phase 1 rows are built (`4b70e91` / `f1935d0`, verified present 2026-09-06); the **OAuth (Phase 2)** row is still planned.
 
 | Area | Files (new ↦ / changed →) |
 |---|---|
-| Data model + migration | ↦ `models/connector_entitlement.py`, `connector_policy.py`, `connector_policy_override.py`, `connector_consent.py`; → `models/connector_connection.py` (`owner_user_id`), `enums.py` (`xoauth2`), new Alembic migration + RLS |
+| Data model + migration | ↦ `models/connector_entitlement.py`, `connector_policy.py`, `connector_policy_override.py`, `connector_consent.py`; → `models/connector_connection.py` (`owner_user_id`), `enums.py` (`xoauth2`), Alembic migration `0018_connector_authorization` + RLS |
 | Permission resolution | ↦ `connectors/services/connector_authz.py` (`can_user_self_connect`) |
 | API | ↦ `routes/me_connector_routes.py`, `routes/connector_governance_routes.py`, platform `connector_entitlement_routes.py`; → `routes/connector_routes.py` (move to `/admin`) + repositories/schemas |
-| Consent + erasure | ↦ `services/connector_consent_service.py`, `repositories/user_connector_erasure_repository.py`; → register a **per-user** erasure hook (`common/erasure_hooks.py`) |
+| Consent + erasure | ↦ `services/connector_consent_service.py`, `repositories/connector_erasure_repository.py` (shipped under that name, not `user_connector_erasure_repository.py`); → the `connectors` erasure hook in `common/erasure_hooks.py` |
 | OAuth (Phase 2) | ↦ `connectors/oauth/` (provider registry, token exchange/refresh), `oauth_state` model |
-| Frontend — Tier 1 | → `platform/OrganizationDetailPage.tsx` (entitlement toggles) + `platformClient` |
-| Frontend — Tier 2 | ↦ `admin/ConnectorGovernancePanel.tsx` (org-wide tab + per-user matrix + health) + `adminClient` |
-| Frontend — Tier 3 | ↦ `me/MyConnectionsPage.tsx`, `ConsentModal.tsx`, `OAuthConnect.tsx`; → rename/repurpose `connect/ConnectorsPage`; new `/me/connections` route (any authenticated user, **not** `AdminRoute`) |
+| Frontend — Tier 1 | ↦ `platform/ConnectorEntitlementsPanel.tsx` + `platform/connectorEntitlementClient.ts`; → `platform/OrganizationDetailPage.tsx` renders it (`:224`) |
+| Frontend — Tier 2 | ↦ `admin/ConnectorGovernancePanel.tsx` (org-wide tab + per-user matrix + health) + `admin/connectorGovernanceClient.ts` / `useConnectorGovernance.ts` |
+| Frontend — Tier 3 | ↦ `connect/MyConnectionsPage.tsx`, `connect/ConsentModal.tsx`, `connect/ConnectorDetailPage.tsx` (shipped); `OAuthConnect.tsx` → Phase 2; → `connect/ConnectorsPage` kept as the legacy org-shared console; the shipped route is `/connections` (+ `/connections/:type`) — any authenticated user, **not** `AdminRoute` |
 | Audit | → `identity/services/audit_service.py` (`entitlement.*`, `connector.policy_changed`, `connector.consented/disconnected`) |
 
 ## 7. Manual / QA test plan
@@ -130,7 +132,7 @@ The current `/connectors/*` admin routes **move** to `/admin/connectors/*` (no b
 
 ## 9. Phasing
 
-- **Phase 1 (NOW) — model + governance + self-connect (app-password) + the Connectors panel.** Data model + `can_user_self_connect` + `/me/connectors/*` (app-password) + admin governance (org-wide + per-user) + the **Connectors panel** (§5.1: cards → detail with Status/Actions/History/Settings, IMAP only) + per-user erasure (raw-tier). **Lowest risk; delivers the whole model end-to-end** without OAuth. Entitlement stubbed (platform-admin manual / assume-entitled).
+- **Phase 1 (SHIPPED 2026-06-15 — `4b70e91` backend + `f1935d0` UI/hardening) — model + governance + self-connect (app-password) + the Connectors panel.** Data model + `can_user_self_connect` + `/me/connectors/*` (app-password) + admin governance (org-wide + per-user) + the **Connectors panel** (§5.1: cards → detail with Status/Actions/History/Settings, IMAP only) + per-user erasure (raw-tier). **Lowest risk; delivers the whole model end-to-end** without OAuth. Entitlement stubbed (platform-admin manual / assume-entitled).
 - **Phase 2 (deferred) — OAuth (xoauth2).** Provider registry (Google/Microsoft), `oauth-start`/`oauth-callback`, encrypted token storage + on-demand refresh, OAuth-first in the connect step. Narrows the legacy admin app-password create to org-owned/shared only. **Build notes + urgency captured 2026-07-03 in `docs/FIX_BEFORE_PROD.md` (CO-01 section):** M365 tenants have basic-auth IMAP disabled → app-password fallback doesn't work there at all; Google's IMAP scope is restricted (app verification + CASA assessment — long-lead, start before GA); store refresh tokens + revoke at the provider on disconnect.
 - **Phase 3 — platform entitlement UI + billing seam.** Platform-console entitlement toggles wired to a real plan/subscription source; optional bulk governance actions; more connector types (Fathom/Slack/Local Folders — the archive already shows the multi-connector panel shape).
 
@@ -157,4 +159,4 @@ The self-connect (Tier 3) surface adopts the richer **panel → detail-with-tabs
 This refines §3/§4/§6: the Tier-3 "My Connections" screen **is** this connectors panel; the per-connector **Settings** + **Actions(Connection)** tabs are the "settings and connection option for users" the panel must expose. Reuse the archive's component shape (`connector-card`, `connector-detail-layout` tabs, `imap-settings`/`imap-actions`/`imap-status`/`imap-history`) on the current design language + the *new* per-user/owner-scoped endpoints.
 
 ---
-*Spec only — nothing built or committed. Decisions §10 are locked; Phase 1 (the IMAP connectors panel + governance + per-user self-connect) is ready to start on your go.*
+*Status 2026-09-06: Phase 1 is **built and committed on `main`** — `4b70e91` (backend: migration `0018`, `connector_authz`, the three route tiers, consent + per-user erasure) and `f1935d0` (the connectors panel / governance panel / entitlement panel + frontend-prod hardening), both 2026-06-15. Decisions §10 are locked. Phase 2 (OAuth/xoauth2) and Phase 3 (entitlement UI + billing seam) are not built — see `docs/FIX_BEFORE_PROD.md` (CO-01 section) for the OAuth long-lead items.*

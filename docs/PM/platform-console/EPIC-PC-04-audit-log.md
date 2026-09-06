@@ -4,8 +4,8 @@
 |---|---|
 | **Epic ID** | PC-04 |
 | **Module** | Platform Console (`PC`) |
-| **Status** | ✅ **Done** — audit_log + trigger, auth/org/user emission, read API, and the frontend audit-trail viewer all shipped (the only residual is platform-admin *login* emission + admin `actor_email`, tracked in FIX_BEFORE_PROD) |
-| **Branch** | `feat/platform-lifecycle` (continues the stack) |
+| **Status** | ✅ **Done** — audit_log + trigger, auth/org/user emission, read API, and the frontend audit-trail viewer all shipped. Platform-admin *login* emission has since been closed (`4808ea5`, 2026-06-11 — the 2026-06-10 audit fix pass); the residual is now only (a) `actor_email` denormalization for platform-admin/user actions and (b) logout actor attribution, both tracked in `FIX_BEFORE_PROD.md` |
+| **Branch / commit** | `main` · `944776d` (backend core) + `c2fa88f` (PC-04a `user.*` emission); also on `feat/platform-lifecycle` |
 | **PR** | PR-4 (backend core: table + trigger, auth & org-lifecycle emission, read API) |
 | **Review** | [docs/audits/2026-06-01_platform-audit-pr4-review.md](../../audits/2026-06-01_platform-audit-pr4-review.md) — 5 confirmed (1 high), all fixed; 1 dismissed |
 | **Depends on** | PC-01..PC-03a (the actions it records); the Identity auth domain |
@@ -132,11 +132,19 @@ row *tags* the affected `org_id`):
   detail screen (`AuditTrail.tsx`, reading `GET /platform/orgs/{id}/audit`), re-fetching on a
   `reloadSignal` so a UI suspend/legal-hold appears on reload. Humanized labels, metadata only.
 - ✅ **`user.*` emission (AC3 tail)** — DONE: `user.create` / `role_change` / `deactivate` from
-  `UserService` (tenant session; `audit_log` is intentionally outside RLS so the tenant-session
-  INSERT works). Content-blind: the row carries the target's id + role, never the user's email.
-- **Residual (tracked in FIX_BEFORE_PROD)** — platform-admin *login* emission (who entered the
-  console) + denormalizing `actor_email` for platform-admin/user actions (today admin/user actions
-  record `actor_id` only; the principal carries no email).
+  `UserService` (tenant session; `audit_log` was intentionally outside RLS when PR-4 shipped, so the
+  tenant-session INSERT works). **Correction (migration `0013_least_privilege_grants`):** `audit_log`
+  is now ENABLE + FORCE RLS with the standard `org_isolation` policy, and `oneai_app` holds
+  policy-scoped INSERT + SELECT only (UPDATE/DELETE revoked at the privilege layer). Tenant-session
+  INSERTs still work — their writers stamp `org_id` = the GUC org. Content-blind: the row carries the
+  target's id + role, never the user's email.
+- ✅ **Platform-admin auth emission — DONE** (`4808ea5`, 2026-06-11, the 2026-06-10 audit fix pass):
+  platform `auth.login.success` / `.failure`, `auth.refresh` and `auth.logout` now write audit rows
+  mirroring the company pattern (success same-transaction, failures on the independent session).
+- **Residual (tracked in `FIX_BEFORE_PROD.md`)** — (a) denormalizing `actor_email` for
+  platform-admin/user actions (today they record `actor_id` only; the principal carries no email);
+  (b) **logout actor attribution** — the opaque token is not resolved to a subject, so the logout row
+  carries no `actor_id`.
 - **Dynamic QA (Target 06)** — an adversarial validation pass over the live audit pipeline
   (immutability under load, no-secret invariant, the independent-writer survival) to follow,
   per the established per-PR pattern.

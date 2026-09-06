@@ -1,5 +1,18 @@
 # DB Data-Quality Audit — Full Database
 
+> **Status as of 2026-09-06:** historical record — every measurement below is as-of 2026-06-10 and is
+> left as written. Two status facts in the header have moved on: the fix pass called **"uncommitted"**
+> was committed on 2026-06-11 as **`4808ea5`** (on `main` and `ask-tools-loop`), and the database is no
+> longer at head `0013_least_privilege_grants` — the live dev DB is stamped at
+> **`0022_counterparty_summary_v3`**, measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3), a revision whose file exists only in the
+> uncommitted working tree (the newest migration whose content is in git is `0021_counterparty_summary_v2`).
+> One finding-level correction: **the dedup recipe of record is now v5, not the "v3"/"now v4" named in
+> §7 below** — `backend/app/connectors/imap/parsing/dedup_key.py:2` ("recipe of record — v5"; v5 adds the
+> striprtf-flattened TNEF body component), settled as decision D1 in `docs/experiments/NOTEBOOK.md`
+> (2026-06-13). H-1's duplicate measurement is *not* affected: it is a correctly dated 2026-06-10
+> baseline that this document itself re-measures in §7 (18 rows / 0.21%).
+
 **Date:** 2026-06-10
 **Database:** One AI MVP dev Postgres (single dev org `d1500000-0000-0000-0000-000000000001`), migrations at head `0013_least_privilege_grants`. The codebase fix-pass from earlier today is **uncommitted** — code citations refer to the working tree.
 **Baselines:** `docs/audits/2026-06-09_imap-data-quality.md` + `testing/11_imap-data-quality/STANDARD.md`.

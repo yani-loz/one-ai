@@ -1,5 +1,10 @@
 # Frontend (Platform Console + identity auth client) — Dynamic Adversarial Validation
 
+> **Status as of 2026-09-06 (dated record — the findings below are unchanged):** both of this pass's open items are fixed.
+> **TC-FE-002** (the *company* refresh token persisted in JS-readable `localStorage`) — the token moved to an httpOnly cookie; `frontend/src/identity/authClient.ts:14` now records *"NOTHING auth-related is persisted in JS-readable storage anymore"*, and `grep -rn localStorage frontend/src` returns no production storage of auth material.
+> **F-FE-01** (multi-tab / concurrent refresh collision, the NEW Medium below) — refreshes are now serialized across tabs through the Web Locks API: `authClient.ts:184-186` wraps the refresh in `navigator.locks.request("oneai.auth.refresh", …)`, with a documented fallback where `navigator.locks` is unavailable (`:181`).
+> Both shipped in commit `7e90add` *"feat(security): httpOnly refresh cookie (Control C) + auth/security-tier hardening"* (2026-06-15; on `main` and `ask-tools-loop`), recorded as done 2026-06-14 at `docs/FIX_BEFORE_PROD.md:47`, whose residuals are operational (serve `/auth` + `/platform` same-origin in prod; set `REFRESH_COOKIE_SECURE=true`).
+
 > **Scope:** the PC-01 console UI + the shared identity auth client (`frontend/src/platform/*`,
 > `frontend/src/identity/{authClient,AuthProvider,ProtectedRoute}.tsx`, `platform/PlatformRoute.tsx`)
 > driven through the **live SPA** at `http://localhost:5173` with **Playwright (MCP)**. Companion to the

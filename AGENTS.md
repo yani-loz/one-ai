@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a two-service MVP. `backend/` contains the FastAPI app in `backend/app/`, database code in `backend/app/db/`, scripts in `backend/scripts/`, and Pytest tests in `backend/tests/`. `frontend/` contains the React 19 + Vite app in `frontend/src/`, with feature folders such as `identity/`, `platform/`, `support/`, and reusable UI in `components/`. Root-level `docs/` holds architecture notes, `testing/` holds QA plans/evidence, and `scripts/` contains repository tooling.
+This is a two-service MVP. `backend/` contains the FastAPI app in `backend/app/`, organized one folder per domain (`access/`, `api/`, `ask/`, `common/`, `connectors/`, `core/`, `db/`, `entities/`, `identity/`), database code in `backend/app/db/`, scripts in `backend/scripts/` (ingest, seeds, `provision_roles`, and the `ask_loop/` eval + gate harness), and Pytest tests in `backend/tests/`. `frontend/` contains the React 19 + Vite app in `frontend/src/`, with feature folders `admin/`, `connect/`, `identity/`, `platform/`, `support/`, and reusable UI in `components/`. Root-level `docs/` holds architecture notes, `testing/` holds QA plans/evidence, and `scripts/` contains repository tooling.
 
 ## Build, Test, and Development Commands
 
@@ -35,6 +35,8 @@ Backend code targets Python 3.12 and is formatted/linted by Ruff with 100-charac
 ## Testing Guidelines
 
 Backend tests use Pytest with `pytest-asyncio`; keep coverage at or above the configured 70% threshold. Frontend tests use Vitest, Testing Library, and V8 coverage; name tests `*.test.ts` or `*.test.tsx` near the code they verify. Add tests for auth, tenant isolation, RLS/security gates, and user-facing flows touched by the change.
+
+CI (`.github/workflows/ci.yml`) runs three jobs — the file-size ceiling gate (`scripts/check_file_size.py`), backend lint + `alembic upgrade head` + `provision_roles` + pytest, and frontend lint + tests + build — and the backend job additionally runs three Ask gates, which pin the eval grader (`scripts.ask_loop.conformance`) and the retrieval layer's security seals (`scripts.ask_loop.seal_check`, `scripts.ask_loop.defence_matrix`); as of 2026-09-06 those three steps are an uncommitted working-tree edit (absent from `git show HEAD:.github/workflows/ci.yml`).
 
 ## Commit & Pull Request Guidelines
 

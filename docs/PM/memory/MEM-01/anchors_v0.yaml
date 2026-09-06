@@ -1,0 +1,297 @@
+# MEM-01 — Котвен каталог на скаута, v0 (само имейл)
+# Дизайн-артефакт (2026-07-26): живее тук до build фазата, после се мести в backend config.
+# Произход: дизайн-сесия + Codex cross-vendor преглед (сверен; вж. MEM-01-knowledge-pipeline.md §11.2.1).
+# Правила: котвите са типови формулировки, НУЛА реални имена/PII. Всяка промяна = нова версия на скаута
+# → умишлен re-run + рекалибрация на праговете (праговете са вързани към version).
+version: 1
+scope: email_only   # Fathom/Slack котвите са в parked_expansion, НЕ се зареждат в v0
+
+scoring:
+  unit: "max по чънкове × max по котви (елементно ниво)"
+  per_kind: independent          # никакъв winner-take-all/softmax; мулти-етикет е нормален
+  recall_gate: "m1 = max позитивна близост ≥ T_low (по вид, по банка)"
+  high_route: "силно m1 + подкрепящо m2 (средно на топ-2 позитивни)"
+  negatives_policy: "НЕ се изважда от позитивния скор; ползват се за калибрация/регресия; n1 ≈ m1 → сива зона"
+  weak_anchors: "не могат самостоятелно да вдигнат T_high; помагат на T_low/сивата зона"
+  subject_scoring: "subject се скорира самостоятелно И като subject + първи релевантен чънк"
+  banks_routing: "BG текст → BG+MIX (EN fallback) · EN текст → EN+MIX (BG fallback) · кратък/смесен → трите"
+  thresholds: "по вид × банка; T_low по recall ограничение 98–99%; калибрирани във фаза 1; split по нишка/клиент/време срещу leakage; случаен одит под T_low"
+
+kinds:
+
+  commitment:   # Ангажимент — вкл. отварящи, затварящи, предоговарящи събития
+    banks:
+      bg:
+        - "Ще ви изпратим офертата до петък."
+        - "Поемаме ангажимент да доставим системата до края на месеца."
+        - "Утре ще ти пратя документите."
+        - "До края на седмицата ще получите коригираната фактура."
+        - "Ще подготвим договора и ще ви го изпратим за преглед."
+        - "Обещавам да се върна с отговор до утре."
+        - "Те се ангажираха да платят до 15-то число."
+        - "Клиентът каза, че ще плати до края на седмицата."        # докладвана реч
+        - "Беше договорено материалите да бъдат изпратени в понеделник."  # пасив
+        - "Клиентът ще ни изпрати материалите в понеделник."
+        - "Action item: Иван да изпрати коригираното SOW до края на деня."  # action item
+        - "Поемам. Пращам до края на деня."                          # кратко приемане
+        - "Готово, изпратихме ви договора днес."                     # изпълнение
+        - "Плащането е направено вчера."                             # изпълнение (тяхно)
+        - "За съжаление няма да успеем в срока, ще ни трябва още една седмица."  # предоговаряне
+        - "Няма да стане във вторник — местим доставката за четвъртък."          # заместване
+        - "Отлагаме доставката за след празниците."
+        - text: "Ако няма промени, би трябвало да сме готови за петък."
+          weight: weak                                                # условно/меко
+      en:
+        - "We'll send you the offer by Friday."
+        - "We commit to delivering the system by the end of the month."
+        - "I'll get back to you with an answer tomorrow."
+        - "You'll receive the corrected invoice by the end of the week."
+        - "They agreed to pay by the 15th."
+        - "The client said they'll pay by the end of the week."       # reported
+        - "It was agreed that the materials would be sent on Monday." # passive
+        - "The client will send us the materials on Monday."
+        - "Action item: send the revised SOW by EOD."
+        - "On it — I'll send it by EOD."                              # terse acceptance
+        - "Done — we sent the contract today."                        # fulfil
+        - "The payment was made yesterday."
+        - "Unfortunately we won't make the deadline; we need one more week."
+        - "We're postponing the delivery until after the holidays."
+        - text: "If nothing changes, we should be ready by Friday."
+          weight: weak
+      mix:
+        - "Ще пуснем invoice-а утре сутрин."
+        - "Поемам. Пращам до EOD."
+        - "Готово — deploy-нахме на prod."
+        - "Местим delivery-то за четвъртък."
+    negatives:   # близки-но-НЕ: любезности и пожелания без отговорно действие
+      bg:
+        - "Очакваме с нетърпение срещата."
+        - "Ще се радваме да работим заедно."
+        - "Надяваме се скоро да си сътрудничим."
+      en:
+        - "Looking forward to our meeting."
+        - "We'd love to work together."
+        - "Hoping to collaborate again soon."
+
+  term:   # Условие — всички stance-ове: предложено / договорено / изменено / отказано / оттеглено
+    banks:
+      bg:
+        - "Отстъпката е 10%."
+        - "Предлагаме цена от 4500 лв. на месец."                    # предложено
+        - "Договорихме се за плащане до 30 дни след фактура."         # договорено
+        - "Цената включва поддръжка за първата година."
+        - "Можем да предложим 5% отстъпка при годишно плащане."
+        - "Договорът е за 12 месеца с опция за подновяване."
+        - "Вдигаме отстъпката от 10 на 15 процента."                  # изменено
+        - "Не можем да слезем под 4000 лв."                           # граница/отказ
+        - "Часовата ставка е 120 лв."
+        - "Обучението на екипа не влиза в обхвата."
+        - "Срокът за реакция по договор е 4 работни часа."
+        - "Приемаме предложените условия."
+        - "Отхвърляме предложението за отложено плащане."             # отказано
+        - "Беше договорено правата върху кода да се прехвърлят след пълно плащане."  # пасив/правно
+        - "Клиентът каза, че приема 30-дневното предизвестие."        # докладвано
+        - "Насрещното ни предложение е месечно фактуриране с 60-дневно предизвестие."  # контра
+        - "Оттегляме предишното ценово предложение."                  # оттеглено
+        - "Доставката се счита за приета, ако няма забележки до пет работни дни."  # критерий за приемане
+        - "Ревизирани търговски условия — 50% авансово, 50% при приемане."
+      en:
+        - "The discount is 10%."
+        - "We propose a monthly price of 2,000 euros."
+        - "We agreed on net-30 payment terms."
+        - "The price includes first-year support."
+        - "We can offer 5% off for annual billing."
+        - "The contract runs for 12 months with a renewal option."
+        - "We're raising the discount from 10 to 15 percent."
+        - "We can't go below 4,000."
+        - "Training is not included in the scope."
+        - "The contractual response time is 4 business hours."
+        - "We accept the proposed terms."
+        - "We reject the deferred-payment proposal."
+        - "Either party may terminate on 30 days' written notice."    # правна клауза
+        - "Our counter is monthly billing with a 60-day cancellation notice."
+        - "We withdraw the previous pricing proposal."
+        - "Delivery is deemed accepted if no objections are raised within five business days."
+        - "Revised commercial terms — 50% upfront, 50% on acceptance."
+      mix:
+        - "Net 30, VAT excluded, support included."                   # шорт-хенд
+        - "Ако минем на annual billing, сваляме price-а с 5%."
+        - "Support-ът е включен, onboarding-ът е извън обхвата."
+    negatives:   # говорене ЗА условия без изказано условие
+      bg:
+        - "Нека обсъдим условията на срещата."
+        - "Изпратете ни вашите условия, моля."
+      en:
+        - "Let's discuss the terms on a call."
+        - "Please send over your standard terms."
+
+  problem:   # Проблем — повреда / недоволство / блокер / риск; вкл. признат / workaround / решен / повторен
+    banks:
+      bg:
+        - "Системата пак не работи от сутринта."
+        - "Имаме проблем с експорта на справките."
+        - "Не сме доволни от закъснението на доставката."
+        - "Клиентът се оплака от качеството."
+        - "Това ни блокира работата — не можем да продължим без достъпа."
+        - "За трети път се появява същата грешка."                    # повторение
+        - "Има риск да не влезем в срока заради забавянето от доставчика."  # риск
+        - "Фактурата е с грешна сума."
+        - "При вход получаваме грешка 500 и екранът остава празен."   # symptom-only
+        - "Клиентът каза, че резултатите са неизползваеми и обмисля да спре проекта."  # докладвано, тежко
+        - "Проблемът е признат — временно минаваме през заобиколно решение."  # workaround
+        - "Беше оправено, но след последната промяна пак се появи."   # reopened
+        - "Не успяваме да го възпроизведем, но клиентът още е засегнат."
+        - "Проблемът с влизането е отстранен."                        # решаване
+        - "След ъпдейта грешката вече не се появява."
+        - "Ескалирам този проблем към ръководителя."                  # (ревизия по Codex)
+        - "Недоволни сме от комуникацията по проекта."
+        - "СПЕШНО: Проблем с продукционната среда"                    # subject-line
+      en:
+        - "The system has been down since this morning."
+        - "We're having an issue with the report export."
+        - "We're not happy with the delivery delay."
+        - "The client complained about the quality."
+        - "This is blocking us — we can't proceed without access."
+        - "The same error appeared for the third time."
+        - "There's a risk we'll miss the deadline because of the supplier delay."
+        - "The invoice amount is wrong."
+        - "On login we get a 500 error and a blank screen."
+        - "The client says the results are unusable and is considering pausing the project."
+        - "Acknowledged — we're on a workaround for now."
+        - "It was fixed but reappeared after the last deploy."
+        - "We can't reproduce it, but the client is still affected."
+        - "The login issue has been resolved."
+        - "I'm escalating this issue to the manager."                 # (Codex revision)
+        - "URGENT: Production outage"                                 # subject-line
+      mix:
+        - "Access още няма — blocked сме."
+        - "След deploy-а export-ът не връща всички редове."
+    negatives:   # хипотетични проблеми без инцидент
+      bg:
+        - "Ако възникне проблем, ще ви уведомим веднага."
+        - "Дано всичко мине гладко."
+      en:
+        - "If any problem comes up, we'll let you know."
+        - "Hopefully everything goes smoothly."
+
+  question_request:   # Въпрос/Заявка — вкл. approval, "трябва ни", докладвани, оттеглени, scope
+    banks:
+      bg:
+        - "Можете ли да ни изпратите актуалната ценова листа?"
+        - "Кога можем да очакваме отговор по офертата?"
+        - "Бихте ли потвърдили срещата за четвъртък?"
+        - "Още чакаме отговор по въпроса за лиценза."                 # чакане
+        - "Напомням за запитването от миналата седмица."              # напомняне
+        - "Може ли да добавите и експорт към Excel?"                  # scope заявка
+        - "Докато така и така работите по модула, може ли да оправите и филтъра?"
+        - "Какъв е статусът на проекта?"
+        - "Молим за оферта за поддръжка."
+        - "Все още нямаме обратна връзка от ваша страна."
+        - "Трябва ни достъп до тестовата среда."                      # "we need"
+        - "Необходимо е да ни бъде изпратено писмено потвърждение."   # пасив/безличен
+        - "Клиентът пита дали можем да изместим пуска за понеделник." # докладвано
+        - "Може ли одобрение за достъп до продукционната среда?"      # approval
+        - "Можем ли да свалим CSV-то и да приоритизираме API-то?"     # репр приоритизация
+        - "Оттегляме заявката — няма нужда да го пращате."            # оттеглена
+        - text: "Изпращам отговор на въпроса ви за интеграцията."
+          weight: weak                                                # thread-dependent затваряне
+      en:
+        - "Could you send us the current price list?"
+        - "When can we expect an answer on the offer?"
+        - "Could you confirm Thursday's meeting?"
+        - "We're still waiting for an answer about the license."
+        - "Just following up on last week's inquiry."
+        - "Could you also add an Excel export?"
+        - "While you're at it, could you fix the filter as well?"
+        - "What's the status of the project?"
+        - "We'd like to request a quote for support."
+        - "We need access to the test environment."
+        - "The client is asking if we can move the go-live to Monday."
+        - "Approval needed: production access"                        # subject-line
+        - "Can we drop the CSV and prioritize the API instead?"
+        - "We're withdrawing the request — no need to send it."
+        - text: "Here's the answer to your integration question."
+          weight: weak
+        - text: "Confirmed — Thursday at 14:00 works for us."
+          weight: weak                                                # контекстно потвърждение
+      mix:
+        - "Ще е супер, ако може да добавим и SSO."
+        - "Може ли да ни пратиш последната версия на deck-а?"
+    negatives:   # поздрави, реторика, любезности
+      bg:
+        - "Как сте? Надявам се всичко да е наред."
+        - "Благодарим предварително за съдействието."
+      en:
+        - "Hope you're doing well."
+        - "Thanks in advance for your help."
+
+  operating_rule:   # Оперативно правило — норми/навици/политики; НЕ еднократни събития
+    banks:
+      bg:
+        - "Фактури над 5000 лв. винаги минават през одобрение от финансовия."
+        - "Преди изпращане офертата се преглежда от двама души."
+        - "Никога не пращаме договор без преглед от юрист."
+        - "Стандартно отговаряме на запитвания до 24 часа."
+        - "Всеки нов проект започва с kickoff среща."
+        - "Плащанията се пускат само в петък."
+        - "При приключване на проект винаги правим ретроспекция."
+        - "Достъп до продукционната среда се дава само след одобрение."
+        - "Отчетите се изпращат в първия работен ден на месеца."
+        - "Не започваме работа преди подписан договор."
+        - "Без поръчка не започваме работа."                          # "No PO, no work"
+        - "При спешни казуси първо се звъни, после се пише."
+        - "По принцип пускаме промени само във вторник и четвъртък."  # навик/default
+        - "Ако фактурата е над лимита, финансовият трябва да я одобри."  # тригер→действие
+        - "Решено е занапред достъпът до продукцията да се одобрява от техническия директор."  # създаване на политика
+        - "Само ръководителите на проекти могат да одобряват промени в обхвата."  # ролево право
+        - "За enterprise клиенти security прегледът е задължителен."  # tier-специфично
+        - "Оттук нататък всички оферти включват срок на валидност."
+        - text: "Обикновено отваряме тикет, преди да започне платена работа."
+          weight: weak                                                # навик, мек
+      en:
+        - "Invoices over 5,000 always go through finance approval."
+        - "Every proposal is reviewed by two people before it goes out."
+        - "We never send a contract without legal review."
+        - "We respond to client inquiries within 24 hours as standard."
+        - "Every new project starts with a kickoff meeting."
+        - "Payments are processed only on Fridays."
+        - "We always run a retrospective when a project closes."
+        - "Production access is granted only after approval."
+        - "We don't start work before the contract is signed."
+        - "No PO, no work."
+        - "By default, client data is retained for 30 days unless the contract says otherwise."
+        - "Only project leads may approve scope changes."
+        - "New policy: MFA required for all client accounts."
+        - "For enterprise clients the security review is mandatory."
+        - "From now on, all offers include a validity period."
+        - text: "We usually open a ticket before billable work starts."
+          weight: weak
+      mix:
+        - "По принцип deploy-ваме само във вторник и четвъртък."
+        - "Първо минава QA sign-off, после пускаме в prod."
+    negatives:   # еднократни събития/изключения — НЕ са правила
+      bg:
+        - "Този път направихме изключение и пуснахме без преглед."
+        - "Вчера изпратихме отчета след проверката."
+      en:
+        - "We made an exception this time and shipped without review."
+        - "Yesterday we sent the report after the review."
+
+# ─────────────────────────────────────────────────────────────
+# ПАРКИРАНО ЗА РАЗШИРЯВАНЕТО (Fathom/Slack — извън имейл v0):
+# не се зарежда; съхранено, за да не се загуби прегледът на Codex.
+parked_expansion:
+  fathom_spoken:   # говорим/STT регистър; + правило: raw и leko нормализиран текст се скорират двойно;
+                   # 1–3 реплики заедно при анафора ("Да, това го поемаме."); STT варианти — от РЕАЛНИ
+                   # корпусни грешки, не измислени
+    - "Да, ъъ, окей — поемаме го и ще го пуснем до сряда."
+    - "Май export-ът, ъъ, не връща всички редове."
+    - "Само да питам, ъъ, кой има access до prod?"
+    - "И така, ъъ, първо минава QA sign-off, после пускаме в prod."
+  slack_terse:     # кратки фрагменти — Codex: по-добре детерминистични правила, не котви
+    - "status?"
+    - "ETA?"
+    - "blocked"
+    - "on it"
+    - "done"
+    - "Прати latest deck-а, pls."

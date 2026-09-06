@@ -4,8 +4,8 @@
 |---|---|
 | **Epic ID** | PC-03a |
 | **Module** | Platform Console (`PC`) |
-| **Status** | ✅ Done (pending commit of the frontend half) |
-| **Branch** | `feat/platform-lifecycle` (stacked on `feat/platform-session`) |
+| **Status** | ✅ Done — both halves committed and merged |
+| **Branch / commit** | `main` · `ee16df8` (backend: status enum, legal hold, suspend-blocks-login) + `529b7a9` (frontend: org detail screen) — both 2026-06-01, also on `feat/platform-lifecycle` |
 | **PR** | PR-3a (the first half of the PR-3 roadmap item; governance posture table → PC-03b) |
 | **Depends on** | PC-01 (the console), PC-02 (the platform session), the Identity auth domain |
 | **Review** | [docs/audits/2026-06-01_platform-lifecycle-pr3a-review.md](../../audits/2026-06-01_platform-lifecycle-pr3a-review.md) — 7 findings, all fixed |

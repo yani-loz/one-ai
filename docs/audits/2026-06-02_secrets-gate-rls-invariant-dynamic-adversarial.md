@@ -1,5 +1,10 @@
 # Dynamic-adversarial validation — JWT fail-closed secrets gate + RLS standing-invariant test
 
+> **Status as of 2026-09-06 (dated record — the findings below are unchanged):**
+> **§7 follow-up 2 is done (TC-SG-015 closed).** `_SENTINEL_TABLE` no longer exists anywhere under `backend/` (0 grep hits); `backend/tests/identity/models/test_rls_invariants.py:98-106` now keys the skip on the migration-independent `alembic_version` table (`_is_migrated`), so a forgotten `org_isolation` policy on `users` FAILs instead of SKIPping.
+> **The §1 scope sentence, TC-SG-011 (§3 Suite B) and the §5 boundary (Suite C / TC-SG-020) are superseded.** *"DB-level RLS remains inert by design (the app connects as superuser/owner `oneai`) … cross-org reads remain open at runtime until migration `0007`"* describes the pre-enforcement world; the flip shipped as migration **`0009_enforce_rls.py`** (the `oneai_app` / `oneai_global` role split + `FORCE ROW LEVEL SECURITY`, with `0019` adding the SELECT-only `oneai_reader`). The same invariant test now asserts FORCE at `:170-171`, and on the live dev DB 22 tables carry ENABLE + FORCE + an `org_isolation` policy, measured 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3).
+> §7 follow-up 1 was already closed in-document; follow-up 3 (`.strip()` on `app_env`) is not tracked here.
+
 | | |
 |---|---|
 | **Date** | 2026-06-02 |

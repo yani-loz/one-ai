@@ -1,5 +1,10 @@
 # GDPR erasure + compliance export (PC-06) — Dynamic Adversarial Validation
 
+> **Status as of 2026-09-06 (dated record — the findings below are unchanged):** the documentation gap is closed, the scaffold-loss note is no longer true, and the security finding is **still live**.
+> **§3's doc-lag and §4 recs 1–2 are closed.** The sudo password re-auth is now in the sources of record: `docs/PM/platform-console/EPIC-PC-06-erasure.md:32` and its AC row `:67`, the PR-6 review (`docs/audits/2026-06-01_platform-erasure-pr6-review.md:37`), and `docs/FIX_BEFORE_PROD.md:46`, which now carries the refined blast-radius wording (*"company erasure now also requires a sudo-style password re-auth (commit `13da7fe`), so a forged token alone returns 403 there (TC-ER-032) — erase is the only forged-token write that's second-factored; every other write + all reads are not"*).
+> **The scaffold loss did not survive.** The Scope block, §5 "Scaffold loss" and §6 "Scaffolds removed" say the `testing/07`/`08` per-case files were deleted; commit `b5bee33` *"revert(testing): restore the dynamic-adversarial QA passes I wrongly removed in 3966800"* (2026-06-02) restored them, and `git ls-files testing/08_erasure` returns 31 tracked files today (`testing/07_break-glass`, 22).
+> **Still LIVE:** the read/destroy asymmetry this pass identified (§1 "The real posture", §4 rec 3). `backend/app/identity/services/erasure_service.py:110-130` shows the sudo re-auth guarding `erase_organization` **alone**; no other platform write or read is second-factored, and the `Rotate JWT_SECRET` item at `docs/FIX_BEFORE_PROD.md:46` is still unchecked. §5's "PC-06b frontend is a separate Playwright pass" also remains open — no such pass exists in `docs/audits/`.
+
 > **Scope:** the PC-06 erasure backend (`feat/platform-erasure`) — `POST /platform/orgs/{id}/erase`
 > (slug-confirmed, legal-hold-gated, atomic) + `GET …/compliance-export`. Dynamic complement to
 > `2026-06-01_platform-erasure-pr6-review.md` and `EPIC-PC-06-erasure.md`.

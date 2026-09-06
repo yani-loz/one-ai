@@ -1,5 +1,17 @@
 # IMAP data-quality audit — post-ingest entity-graph quality
 
+> **Status as of 2026-09-06:** historical record — the dated findings below stand as written and are not
+> revised here, but every number in them is a **pre-fix baseline** measured on a corpus that no longer
+> exists. In particular **"5,395 of 13,635 rows (39.6%) are redundant cross-folder copies" is the
+> pre-fix duplicate rate**, not a current one: it predates the content-identity dedup key reaching **v5**
+> (`backend/app/connectors/imap/parsing/dedup_key.py:2`, "recipe of record — v5"; settled as decision D1
+> in `docs/experiments/NOTEBOOK.md`, 2026-06-13) and the Trash/Junk/Spam/Drafts folder ingest blocklist
+> (CA-CONN-08 in `docs/FIX_BEFORE_PROD.md`). The corpus was wiped and re-ingested on 2026-07-08; the
+> corpus of record is now **5,893 emails · 8,454 attachments · 839 persons · 364 companies**, with
+> message duplication at **0.17%** (10 excess rows) — measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3). The entity-graph figures below (1,227 persons,
+> 495 companies, 17,386 attachments) belong to the retired corpus and must not be quoted as current.
+
 **Date:** 2026-06-09 · **Scope:** IMAP connector → person/company entity graph · **Type:** data-quality
 (a second axis after the `2026-06-09_imap-connector-dynamic-adversarial` plumbing pass) · **Mode:**
 read-only measurement over two corpora · **Standard:** [`testing/11_imap-data-quality/STANDARD.md`]

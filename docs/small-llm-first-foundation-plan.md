@@ -1,5 +1,20 @@
 # The small-LLM-first foundation plan — DB + architecture before the Ask layer
 
+> **Build status re-check (2026-09-06)** — the sign-off status line below is left as written because
+> no document in the repo records a sign-off; what *has* moved is the build. **Built since drafting:**
+> P0.1 PF-01 shipped on 2026-07-04 (`db1795d` — migration `0019_permission_fidelity.py` +
+> `backend/app/access/`), which makes §3's parenthetical *"spec'd 2026-06-09, not built"* stale and
+> agrees with the ✅ marker already in §10; performance-lane items 1–2 (§7) are shipped *and*
+> committed, so their "(pending commit)" notes are stale — item 1's `email_prior_extraction` ships in
+> `0019_permission_fidelity.py` (`db1795d`) and item 2's `resolution_cache.py` + its tests in
+> `50f4838` (2026-07-04), both contained in `main`; and the
+> §2 "tool / semantic" layer was built as the Ask layer (`backend/app/ask/`, 6 tools on the PF-01
+> reader plane — `docs/PM/ask/ASK-01-ask-layer-architecture.md`), which exists only as uncommitted
+> working-tree code (`docs/audits/2026-09-06_built-vs-docs-map.md` §4, group A) and has no HTTP or MCP
+> surface. **Still not built:** P0.2 identity-merge (`person_email` is strictly 1:1, 839/839), the
+> language column (100% NULL, 0 of 5,893), and P0.3 `content_item`+`chunk` — pgvector is installed and
+> **zero columns anywhere are vector-typed** — all measured 2026-09-06 (same audit, §3).
+>
 > **Status: PROPOSED — awaiting sign-off.** Drafted 2026-07-04 from five reconciled sources:
 > (1) this repo's own evidence (the v2 small-model benchmark, the 2026-07-03/04 IMAP data-quality
 > audits, the measured ingest profile), (2) a Codex/GPT cross-vendor consultation that inspected

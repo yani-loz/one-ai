@@ -1,6 +1,21 @@
 # Connect — Email (IMAP) Ingestion & Entity Resolution — Design
 
-> **Status:** agreed in design discussion (2026-06-06); not yet built. The IMAP *fetch* mechanism is
+> **Status (2026-09-06): BUILT — this design shipped.** The `parse → DB → entities` path landed in
+> `ece3405` (framework + parse→DB→entity graph) and `2137b57` (end-to-end ingest service + disk-ingest
+> driver), both 2026-06-07; the incremental sync engine followed in `7c18dba` (2026-06-11) and the
+> data-quality pass in `bee0a90` (2026-06-15). The code is `backend/app/connectors/imap/`
+> (`parsing/`, `services/email_ingest_service.py`, `sync/`, `repositories/`, `models/`), with
+> `start_sync` / `get_sync_status` exposed at `POST|GET /connectors/{connection_id}/sync`
+> (`backend/app/connectors/routes/connector_routes.py`).
+> **Caveat — the production door has never been opened.** The live dev corpus (5,893 emails /
+> 8,454 attachments / 839 people / 364 companies) was loaded by the dev disk script
+> `backend/scripts/ingest_imap_dump.py`; `connector_sync_run` holds **0 rows**, so §3
+> ("Production execution") is code-complete but unexercised — measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3). Two §4/§6 gaps are still open on that corpus:
+> `language` is 100% NULL (0 of 5,893) and `person_email` is strictly 1:1 (839/839) — the resolver
+> has never merged two addresses onto one person.
+>
+> **Original status (2026-06-06):** agreed in design discussion; not yet built. The IMAP *fetch* mechanism is
 > validated as a standalone disk spike (`spikes/imap_fetch.py`, ran the full ~16 GB / 13,625-message
 > mailbox, 0 errors). This doc is the design for graduating it into the app: **parse → DB → entities**.
 > **Scope:** the Connect layer's email path — fetch, parse/decompose, store, resolve people/orgs.

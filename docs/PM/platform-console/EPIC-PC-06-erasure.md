@@ -5,7 +5,7 @@
 | **Epic ID** | PC-06 |
 | **Module** | Platform Console (`PC`) |
 | **Status** | ✅ **Done** — org-level erasure + compliance export (PC-06a) + the "Erase / Export" UI (PC-06b) |
-| **Branch** | `feat/platform-erasure` (off `main`, which now has PC-01…PC-05) |
+| **Branch / commit** | `main` · `8e9c531` (PC-06a backend) + `7b750f3` (review fixes) + `81a8655` (PC-06b UI), all 2026-06-01; also on `feat/platform-erasure` |
 | **PR** | PR-6 (backend: erasure + certificate + compliance export) |
 | **Depends on** | PC-03a (`legal_hold`, `offboarded`), PC-04 (`audit_log` — the retained trail), PC-05 (`support_grant` PII) |
 | **Closes (FIX_BEFORE_PROD)** | "Implement GDPR data export + delete" (org-level) |
@@ -75,6 +75,7 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
 |---|---|
 | Service | `services/erasure_service.py` (legal-hold-first, atomic, honest certificate, export) |
 | Data access | `repositories/{user,refresh_token,support_grant}_repository.py` (the erasure deletes/scrub) |
+| Content-layer hooks (added after PR-6) | `backend/app/common/erasure_hooks.py` — `REQUIRED_ERASURE_HOOKS`, registered in `create_app`; `erasure_service.py` runs every hook inside the erase transaction and fails closed on a missing one. Shipped as `("connectors", "entities")` in `4808ea5` (2026-06-11); `"access"` added by `db1795d` (2026-07-04, PF-01) |
 | API | `routes/erasure_routes.py`, `schemas/erasure_schemas.py`, `dependencies.py`, `router.py` |
 | Errors | `exceptions.py` (`LegalHoldError`→409, `ErasureConfirmationError`→400) + `error_handlers.py` |
 | Audit | `services/audit_service.py` (`org.erased`) |
@@ -106,7 +107,16 @@ frontend "Erase / Export" control (a thin follow-up on the org detail screen).
   compliance record" (downloads the bundle as JSON) + "Erase company" behind a type-the-slug
   + reason confirmation modal (the destructive-action guard), with a legal-hold (409) message
   and an already-erased state. The erase reloads the detail (offboarded) + refreshes the trail.
-- **Per-user erasure**, content-layer erasure, `actor_email`/`ip_address` pseudonymization,
-  signed/streamed export → tracked in `FIX_BEFORE_PROD`.
-- **Dynamic QA (Target 08):** an adversarial live pass over erasure (legal-hold bypass attempts,
-  partial-failure atomicity, PII-left-behind sweep) to follow.
+- ✅ **Content-layer erasure — DONE** (`4808ea5`, 2026-06-11 — the 2026-06-10 audit fix pass): the
+  Connect + entity-graph tables now erase through the hook registry in
+  `backend/app/common/erasure_hooks.py` (`REQUIRED_ERASURE_HOOKS`), and `ErasureService` **fails
+  closed** (`ErasureNotConfiguredError` → 500, nothing deleted) if a required hook is unregistered.
+  Shipped as `("connectors", "entities")`; `"access"` was added by `db1795d` (2026-07-04, PF-01).
+- **Still open:** per-user erasure, `actor_email`/`ip_address` pseudonymization, signed/streamed
+  export → tracked in `FIX_BEFORE_PROD`.
+- ✅ **Dynamic QA (Target 08) — DONE:** the adversarial live pass over erasure ran and is recorded in
+  [`docs/audits/2026-06-01_erasure-dynamic-adversarial.md`](../../audits/2026-06-01_erasure-dynamic-adversarial.md)
+  (legal-hold bypass attempts, partial-failure atomicity, PII-left-behind sweep), with the 16 case
+  files under `testing/08_erasure/`. Per the 2026-09-06 inventory
+  (`docs/audits/2026-09-06_built-vs-docs-map.md` §8.2, D55) that audit's core security finding is
+  still open — read the audit before treating erasure as closed.

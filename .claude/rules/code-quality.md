@@ -5,21 +5,19 @@ Working on ANY code in this repo. Applies to BE (Python) AND FE (TypeScript). Au
 
 ---
 
-These rules anchor to the principles (full source: [`docs/code-style/`](../../docs/code-style/)).
+These rules are self-contained. There is no companion `docs/code-style/` tree — it has never existed on any branch (verified 2026-09-06: `ls` exits 2, `git log --all -- docs/code-style` is empty), so nothing here defers to a longer document.
 
 ---
 
 ## A1 — Naming as retrieval interface
 
 - **YOU MUST use descriptive names.** No `f()`, `g()`, `do_thing()`, `helper()`, `temp()`, or single-letter names except loop indices (`i`, `j`, `k`) and standard short-form (`e` for exception, `_` for unused).
-- Functions/methods: verb + noun describing the action (`calculate_payout`, `extract_kss_quantities`, `validate_tender_documents`).
-- Classes: noun describing what it represents (`TenderProject`, `SectionGenerator`, not `Manager` / `Handler` / `Processor`).
-- Variables: domain-meaningful (`tender_deadline`, not `t` or `date1`).
-- CSS classes: domain-prefixed (`tp-section-header`, `gen-mode-literal`), not `.b1` / `.x` / `.container2`.
+- Functions/methods: verb + noun describing the action (`compute_dedup_key`, `validate_generated_sql`, `project_email_for_non_owner`).
+- Classes: noun describing what it represents (`ParsedEmail`, `ToolRegistry`, not `Manager` / `Handler` / `Processor`).
+- Variables: domain-meaningful (`visibility_scope`, not `v` or `flag1`).
+- CSS classes: domain-prefixed (`text-brand-gradient` — the one hand-authored class in `frontend/src/index.css`; everything else is Tailwind utilities), not `.b1` / `.x` / `.container2`.
 
 **Test:** can a human grep your function name and find it from a feature description? If no, rename.
-
-→ Detail + bad/good examples: [`docs/code-style/A1_Naming_as_Retrieval.md`](../../docs/code-style/A1_Naming_as_Retrieval.md)
 
 ---
 
@@ -31,10 +29,8 @@ A 666-line file is a tax Claude pays on every turn that touches any of it. **Mod
 - **Soft target — under 300 lines.** Files at or below this stay sharp for AI editors.
 - **WARN at 300 lines.** Pre-commit hook surfaces a warning; treat it as "split soon" not "argue later."
 - One responsibility per file. If you describe the file's purpose using "and" (`auth and user management`), split it.
-- Splitting target: each file describes ONE domain concept (`tender_validator.py`, not `validators_and_helpers.py`).
+- Splitting target: each file describes ONE domain concept (`sql_guard.py`, not `validators_and_helpers.py`).
 - The code should be split in self conteined modules when possinble independent so when we work with claude code on a module it to be more concentraited.
-
-→ Detail: [`docs/code-style/A2_File_Size_and_Modularity.md`](../../docs/code-style/A2_File_Size_and_Modularity.md)
 
 ---
 
@@ -42,12 +38,10 @@ A 666-line file is a tax Claude pays on every turn that touches any of it. **Mod
 
 A flat `src/` with 200 files forces Claude to Glob across everything. A domain-shaped tree lets Claude guess the location from the path **before any search runs**. Saves 5-10 Glob calls per session.
 
-- **Group by domain, NOT by type.** Use `backend/services/tender/`, `backend/services/generation/` — not `backend/services/` with 50 mixed files, not `backend/all_services_for_tenders/`.
+- **Group by domain, NOT by type.** Use `backend/app/connectors/imap/`, `backend/app/access/`, `backend/app/ask/` — not `backend/app/services/` with 50 mixed files, not `backend/app/all_email_and_access_helpers/`.
 - Per-domain folders contain the layer split (routes/services/repositories/models or whatever the layer convention is in that scope).
 - New module = new domain folder, not a new file in the flat list.
 - **Path is a clue.** If reading the path doesn't tell you what's inside, the path is wrong.
-
-→ Detail: [`docs/code-style/A3_Directory_Structure.md`](../../docs/code-style/A3_Directory_Structure.md)
 
 ---
 
@@ -61,8 +55,6 @@ Docs and types are **runtime input the model uses every turn**, not future-dev c
 - **Types on every function signature.** Python: type hints (no `Any` without a justifying comment). TypeScript: strict mode, no `unknown`/`any` without a comment.
 - **The 80% rule:** if the file-level docstring + types + function docstring don't explain what the file does to a stranger, it's underdocumented. Add prose.
 
-→ Detail: [`docs/code-style/A4_Docs_as_Input.md`](../../docs/code-style/A4_Docs_as_Input.md)
-
 ---
 
 ## A5 — SOLID / Separation of concerns
@@ -71,11 +63,10 @@ Docs and types are **runtime input the model uses every turn**, not future-dev c
 
 - **Single Responsibility:** one reason for a class/function to exist. A class doing `calculation + persistence + notification` is three classes.
 - **Layer architecture (enforced):** routes → services → repositories → models. Never skip layers. Routes parse + return (≤20 lines). Services hold business logic. Repositories do data access only. No business decisions inside repositories.
+  - *Known divergence (2026-09-06):* `backend/app/ask/` has no `repositories/` package — its services and tools compose SQL directly (`app/ask/tools/email_search.py`, `app/ask/tools/sql_execution.py`), unlike `access`, `connectors`, `connectors/imap`, `entities` and `identity`, which all have one. **Whether this is a sanctioned exception or a debt to repay is an open founder decision — this rule does not rule on it.** Do not cite `app/ask/` as precedent until it is settled.
 - **Loose coupling:** depend on interfaces (abstractions), not concrete classes. Use dependency injection (FastAPI `Depends`, TypeScript constructor injection) instead of imports.
-- **Custom exceptions only** — never `raise Exception(...)`. Use descriptive names: `TenantNotFoundError`, `KssParseError`, `DuplicateProjectError`.
-- **No dead code, no commented-out code, no `TODO` without a Jira ticket reference** (`# TODO(GBSPP-42): ...`).
-
-→ Detail: [`docs/code-style/A5_SOLID_SoC.md`](../../docs/code-style/A5_SOLID_SoC.md)
+- **Custom exceptions only** — never `raise Exception(...)`. Use descriptive names: `TenantContextMissingError`, `ConnectorConfigurationError`, `DuplicateConnectionError`.
+- **No dead code, no commented-out code, no `TODO` without a tracked ticket reference** (`# TODO(ONEAI-42): ...`).
 
 ---
 

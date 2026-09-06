@@ -6,7 +6,7 @@ parallel to `company-admin/` and `platform-console/`.
 
 | Epic | Title | Status |
 |---|---|---|
-| [CO-01](EPIC-CO-01-connector-authorization.md) | Connector Authorization: Entitlement → Governance → Self-Connect | 📝 Planned / spec |
+| [CO-01](EPIC-CO-01-connector-authorization.md) | Connector Authorization: Entitlement → Governance → Self-Connect | ✅ Done (Phase 1) — backend `4b70e91`, UI `f1935d0`, hardening 2026-06-15; Phase 2 OAuth deferred |
 
 ## The connector data plane today (built, separately)
 

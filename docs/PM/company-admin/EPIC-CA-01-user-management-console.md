@@ -4,8 +4,8 @@
 |---|---|
 | **Epic ID** | CA-01 |
 | **Module** | Company Admin (`CA`) |
-| **Status** | ✅ Done (pending commit) |
-| **Branch / commit** | `feat/company-admin-console` |
+| **Status** | ✅ Done |
+| **Branch / commit** | `main` · `fd944d0` (2026-06-02 — Slice A shipped: `frontend/src/admin/`, this epic + the module README, `useDialogA11y` moved to `frontend/src/components/`) + `db91bdc` (2026-06-07 — create-user success + credentials follow-up). No `feat/company-admin-console` branch exists; the work landed on `main` |
 | **PR** | Slice A (frontend + docs; **zero backend change** — `/users/*` already existed) |
 | **Depends on** | Identity module (`GET/POST /users`, `PATCH/DELETE /users/{id}`, `require_company_admin`); break-glass company side (`/support-access`) |
 | **Closes / advances** | First slice of the company-admin plane (the customer-side governance console) |

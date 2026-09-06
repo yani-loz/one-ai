@@ -1,5 +1,7 @@
 # Break-glass support access (PC-05) — Dynamic Adversarial Validation
 
+> **Status as of 2026-09-06 (dated record — the findings below are unchanged):** the scaffold-loss note in the Scope block (*"the per-case `testing/07_break-glass/TC-BG-*.md` scaffolds were removed by the repo owner (commit `3966800`) … the durable evidence now lives in the workflow output + this consolidated audit"*, repeated at §4 "Scaffold removed") **no longer holds.** Commit `b5bee33` *"revert(testing): restore the dynamic-adversarial QA passes I wrongly removed in 3966800"* (2026-06-02) restored the whole suite **in the same commit that added this audit document**, and it is tracked today: `git ls-files testing/07_break-glass` → 22 files (20 `TC-BG-*.md` cases + `README.md` + `harness/_common.py`). The per-case evidence is therefore in the repo, not only in the workflow output.
+
 > **Scope:** the PC-05 break-glass grant lifecycle (`feat/platform-break-glass`, migration `0006`) — platform
 > request/list/revoke + company inbox/approve/deny/revoke. Dynamic complement to
 > `2026-06-01_platform-break-glass-pr5-review.md` (6 findings fixed, 0 functional defects) and

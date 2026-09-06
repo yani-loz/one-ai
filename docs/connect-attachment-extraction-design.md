@@ -1,5 +1,18 @@
 # Connect — Attachment Content Extraction — Design
 
+> **Re-checked 2026-09-06: still PARTIALLY SHIPPED — the table below is accurate and no new type
+> slice has shipped since 2026-06-13.** `git log -- backend/app/connectors/extraction` adds only two
+> commits after that date, both hardening rather than new formats: `7e90add` (2026-06-15, adds
+> `redact.py` — egress redaction) and `608584f` (2026-07-04, `text_sanitize.py` + `tnef.py` fixes from
+> the data-quality audit). The ⏳ rows are unchanged: there is no pptx, OCR or legacy-Office module in
+> `backend/app/connectors/extraction/`, and `attachment_extractor.py` still leaves
+> "pptx/octet-stream/legacy Office incl. legacy `.xls`" at `unsupported_format` (module docstring;
+> the `.xls`-stays-unsupported seam note at `:105`; `extract_text` at `:156`).
+> **Corpus figures below are superseded:** the census counted ~10,096 `email_attachment`
+> rows; after the folder-blocklist re-ingest the live DB holds **8,454** rows, of which 59.2% are
+> content-hash duplicates of another row (3,450 distinct hashes) — measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3).
+>
 > **Status: PARTIALLY SHIPPED (as of 2026-06-13). This is the design of record; the per-type
 > proposals below (§2) are the spec each slice was built against.** Implementation status:
 >

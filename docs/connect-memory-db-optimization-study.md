@@ -1,5 +1,19 @@
 # Memory DB Optimization Study — "smart DB, small model"
 
+> **Status re-check (2026-09-06):** the §1 ground-truth measurements still hold exactly — email dedup
+> 0.17% redundant by `message_id`, attachment duplication 59.2% (3,450 distinct `content_hash` of
+> 8,454), `language` 100% NULL (0 of 5,893), `person_email` strictly 1:1 (839/839) — measured
+> 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3). **Nothing from §9 Phase 1+ has been
+> built:** pgvector 0.8.2 is installed and **zero columns anywhere are vector-typed**; there is no
+> chunk store and no embedding lane. Of the Phase-0 spine, identity-merge and the language column are
+> still open (the two numbers above); the scalar/typed tool layer was built instead as the Ask layer
+> (`backend/app/ask/`, `docs/PM/ask/ASK-01-ask-layer-architecture.md`) and is uncommitted working-tree
+> code (`…built-vs-docs-map.md` §4, group A). **Read alongside two later documents that cover the same
+> ground:** `docs/PM/ask/ASK-02-small-model-to-100-safe.md` (2026-07-06, why the small reader plateaus)
+> and `docs/PM/memory/MEM-01/` (2026-07-26, the later memory design, self-described as a design draft
+> pending EXP-003). Neither names itself this memo's replacement; whether MEM-01 supersedes §4/§9 of
+> this memo is not recorded anywhere and is a founder call.
+>
 > **Status:** design discussion / decision memo. **No schema or code was changed.** Produced 2026-07-04.
 > **Method:** a 5-design adversarial panel (Claude, 26 agents) + a cross-vendor pass (GPT-5.5 / Codex) +
 > direct verification against the live dev DB. Every agent claim was treated as unproven and checked

@@ -1,5 +1,10 @@
 # Platform Console (`/platform/*`) — Dynamic Adversarial Stress & Validation
 
+> **Status as of 2026-09-06 (dated record — the findings below are unchanged):** two of this pass's findings have since been closed in code.
+> **F-01 — the RLS half is closed.** The root cause recorded at §3 (*"With RLS inert (the app connects as Postgres superuser `oneai`, `database.py:32`)"*) no longer holds: `backend/app/core/database.py:59-77` now runs a four-role split — `oneai_app` (write plane, NOSUPERUSER, NO BYPASSRLS, the role RLS enforces against), `oneai_reader` (SELECT-only person-bound read plane, also NO BYPASSRLS) and `oneai_global` (BYPASSRLS, cross-org/pre-org flows only) — and RLS is ENFORCED since migration `0009_enforce_rls.py`, with 22 tables carrying ENABLE + FORCE + an `org_isolation` policy on the live dev DB, measured 2026-09-06 (`docs/audits/2026-09-06_built-vs-docs-map.md` §3). F-01's **other half — the forged dev-secret token — is still open** (`docs/FIX_BEFORE_PROD.md:46`, unchecked).
+> **N-04 is closed.** Both login schemas now use the bounded `LoginPassword` type (`backend/app/identity/schemas/user_schemas.py:51-53` — `min_length=1`, `max_length=128`, plus a ≤72 UTF-8 byte bcrypt cap) instead of `Field(min_length=1, max_length=256)`: `auth_schemas.py:28` and `platform_schemas.py:36`.
+> **§7 proposed `FIX_BEFORE_PROD.md` updates:** rec 1 applied (`docs/FIX_BEFORE_PROD.md:48` now names the N-01 / TC-PC-073 bcrypt CPU-amplification vector and the pre-bcrypt throttle) · rec 2 applied (`:49`, the pool + worker sizing item citing N-02 / TC-PC-071) · rec 3's substance shipped in **code** (the `LoginPassword` byte cap above), though the password-policy item at `:54` was never amended to mention it · rec 4 **not applied**, and the AUD-06 family-revocation deferral it targets is still open at `:55`.
+
 > **Scope:** the Platform Console backend (module `PC`, epics PC-01/PC-02) — the separate
 > platform auth domain (`aud='platform'`): `GET /platform/me`, `POST /platform/refresh`,
 > `POST /platform/logout`, `POST /platform/orgs`, `GET /platform/orgs`, `POST /platform/login`.

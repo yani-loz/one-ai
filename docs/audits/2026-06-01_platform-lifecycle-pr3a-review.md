@@ -1,5 +1,7 @@
 # Org Lifecycle (PR-3a) — Adversarial Review & Resolutions
 
+> **Status as of 2026-09-06 (dated record — the findings and resolutions below are unchanged and still verify in code):** both items under "Notes carried forward" are **still open follow-ups**. (1) The closing *"a frontend review is recommended as a separate pass"* for the PC-03a org-detail screen (`/platform/orgs/:id`) has never been run — `docs/audits/` holds exactly one frontend Playwright pass, `2026-06-01_frontend-platform-console-dynamic.md`, whose scope is the PC-01 console list plus the identity auth client, not the detail screen. (2) The test-split follow-up is also open: `backend/tests/identity/routes/test_platform_routes.py` is **484 lines** today — still under the 500-line hard ceiling, still one file.
+
 > **Scope:** PR-3a "org lifecycle" backend on branch `feat/platform-lifecycle` — the
 > `OrganizationStatus` enum + CHECK, `legal_hold` (migration `0004`), the new
 > `PlatformOrgService` + `GET /platform/orgs/{id}` / `PATCH …/status` / `PATCH …/legal-hold`,

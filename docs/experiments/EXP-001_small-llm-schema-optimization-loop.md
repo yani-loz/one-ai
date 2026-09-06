@@ -2,13 +2,27 @@
 id: EXP-001
 title: The schema-optimization loop — evolve the derived layer until a small LLM maxes out
 date_started: 2026-07-04
-date_concluded:
-status: paused           # DESIGNED, NOT STARTED — awaiting Yani's review/sign-off of this design
+date_concluded: 2026-07-07
+status: concluded        # campaign built + run 2026-07-04→07-07; closed with a final scoreboard, 85% NOT reached; experiments stopped per founder instruction, awaiting word to continue
 tags: [retrieval, models, schema, loop, eval]
 related: []              # consumes docs/small-llm-first-foundation-plan.md P0.4 + study §6(k)
 ---
 
 # EXP-001 — The schema-optimization loop
+
+> **Status as of 2026-09-06 (documentation pass — the experiment itself is closed).** This design
+> was executed: the loop was built in the `Experiments/Loops/EXP-001-schema-loop` lab world and run
+> as a multi-day campaign, **2026-07-04 → 2026-07-07**, judged by parallel judge agents with SQL
+> evidence and audited by an independent verifier. §1–§4 below are kept exactly as the written
+> design history (including the memo directly beneath this banner, which described the state on the
+> night of 2026-07-04). The **results of record** are
+> `Experiments/Loops/EXP-001-schema-loop/archive/CAMPAIGN-1.md` — the campaign ledger, outside this
+> repo, which wins on any conflict — narrated in-repo in
+> [`EXP-002_ask-tools-loop-diary.md`](EXP-002_ask-tools-loop-diary.md) §7 (final scoreboard: §7.10)
+> and re-adjudicated in
+> [`../PM/ask/ASK-02-overnight-analysis-2026-07-07.md`](../PM/ask/ASK-02-overnight-analysis-2026-07-07.md) §1.
+> The ledger's own closing line records **85% NOT reached**, and that experiments were stopped per
+> founder instruction on 2026-07-07 awaiting word to continue. See the banners on §5–§7.
 
 > **Design memo only (2026-07-04, night shift).** Nothing is built, no DB copy exists, no loop
 > runs. Method sources: the forwardfuture loop library (bounded agent loops: goal → one mutation
@@ -514,13 +528,35 @@ loop: the fitness signal becomes the judge's opinion, and mutations evolve to PL
 
 ## 5. Results
 
+> **Status as of 2026-09-06.** The campaign ran (2026-07-04 → 2026-07-07); its results were
+> journalled in the lab ledger, not back into this file. **Results of record:**
+> `Experiments/Loops/EXP-001-schema-loop/archive/CAMPAIGN-1.md` (outside this repo — the ledger
+> wins on conflict), whose closing entries carry the final campaign scoreboard and the line
+> **"85% NOT reached"**. In-repo: [`EXP-002_ask-tools-loop-diary.md`](EXP-002_ask-tools-loop-diary.md)
+> §7 records the campaign day-by-day, with §7.10 the final scoreboard and the transfer queue into
+> the Ask build; [`../PM/ask/ASK-02-overnight-analysis-2026-07-07.md`](../PM/ask/ASK-02-overnight-analysis-2026-07-07.md)
+> §1 re-adjudicates the overnight wave's headline number against the live lab DB.
+
+*(The placeholder below is the 2026-07-04 design-memo state — superseded by the banner above.)*
+
 *(not run — design only)*
 
 ## 6. Analysis
 
+> **Status as of 2026-09-06.** Not written in-file. The analysis of record is
+> [`EXP-002_ask-tools-loop-diary.md`](EXP-002_ask-tools-loop-diary.md) §7 (esp. §7.10 "what
+> transfers to THIS loop") plus
+> [`../PM/ask/ASK-02-overnight-analysis-2026-07-07.md`](../PM/ask/ASK-02-overnight-analysis-2026-07-07.md).
+
 *(not run)*
 
 ## 7. Decision
+
+> **Status as of 2026-09-06.** The campaign was closed on 2026-07-07 with all verdicts complete and
+> experiments stopped per founder instruction (CAMPAIGN-1.md), so the decisions that were actually
+> taken during the run live in that ledger and in
+> [`EXP-002_ask-tools-loop-diary.md`](EXP-002_ask-tools-loop-diary.md) §7. The sign-off items listed
+> below were never recorded as answered in this file and remain founder calls.
 
 *(pending — the design itself needs Yani's sign-off on: the ≥85% target, the budget cap, the
 primary local model, and the Flash-Lite egress option a/b/c)*

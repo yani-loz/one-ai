@@ -1,6 +1,12 @@
 # Ask layer — universal intent classes (router taxonomy)
 
-**Status:** DRAFT for founder review (2026-07-04) · **Owner:** ask-tools loop
+**Status:** IMPLEMENTED in `backend/app/ask/services/router.py:30-100` (`INTENT_CLASSES`) — all six classes
+below shipped, their names verbatim, each with a condensed definition, a tool kit and a procedure block.
+The routed arm was **measured with
+a kit-shrink confound** (`router.py:26-29`: the rescinded counterparty-summary tools lingered in the kits,
+silently shrinking 4 of the 6 and pointing procedures at phantom tools) and is **PARKED** — see
+`ASK-01-ask-layer-architecture.md` §5. Originally circulated as DRAFT for founder review (2026-07-04);
+status verified 2026-09-06. · **Owner:** ask-tools loop
 **Derivation protocol:** benchmark questions abstracted to intent *shapes* (entities/dates/companies stripped) → clustered → each class passed the universality test → coverage checked against the 170-type question taxonomy in both directions. Benchmark questions are evidence of demand, never definitions — no class may name or paraphrase a specific gold question (verifier-audited).
 
 **The universality test (every class must pass all three):**

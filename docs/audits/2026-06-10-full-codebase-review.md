@@ -1,5 +1,18 @@
 # One AI MVP — Full-Codebase Audit Report
 
+> **Status as of 2026-09-06:** historical record — the findings and the §5 addendum below are as-of
+> 2026-06-10 and are left exactly as written. Three status facts have since moved on.
+> (1) The §5 backlog line **"refresh-token localStorage"** is **closed**: the company refresh token was
+> moved to an httpOnly cookie in code on 2026-06-14 (per the `docs/FIX_BEFORE_PROD.md` httpOnly-cookie
+> row) and committed on 2026-06-15 as **`7e90add`** — which rewrites `frontend/src/identity/authClient.ts`
+> and adds `backend/app/identity/routes/cookies.py`.
+> (2) The §5 fix pass, described there as an "uncommitted working tree", was committed on 2026-06-11 as
+> **`4808ea5`** (present on `main` and `ask-tools-loop`).
+> (3) §5's "migration chain at `0013` head" is an as-of-2026-06-10 snapshot: the live dev database is
+> stamped at **`0022_counterparty_summary_v3`** — measured 2026-09-06
+> (`docs/audits/2026-09-06_built-vs-docs-map.md` §3) — and that revision's file exists only in the
+> uncommitted working tree; the newest migration whose content is in git is `0021_counterparty_summary_v2`.
+
 **Date:** 2026-06-10
 **Scope:** ~31k lines reviewed — backend app (~12k), frontend (~12k), tests (~8.4k), plus DB migrations and ops scripts. FastAPI (async SQLAlchemy 2.0) + React 19/Vite/Tailwind v4 + Postgres 16/pgvector, dockerized; multi-tenant.
 **Method:** 16 finder agents (domain-partitioned) → per-claim adversarial verification against source. Findings below are the survivors: every entry is verdict **CONFIRMED** (REFUTED claims removed). Counts: **0 critical, 8 high, 40 medium, 47 low.**

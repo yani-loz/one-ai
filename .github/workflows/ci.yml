@@ -53,6 +53,20 @@ jobs:
       # app (which now connects as those least-privilege roles) can reach the DB under pytest.
       - run: uv run python -m scripts.provision_roles
       - run: uv run pytest
+      # The grader's own regression pins. They run in-process with no database, and they
+      # guard the eval harness — the instrument every accept/reject decision is measured on,
+      # which pytest does not otherwise exercise.
+      - run: uv run python -m scripts.ask_loop.conformance
+      # Per-finding proof that every CLOSED row in the security ledger is still sealed: each
+      # pin is EXECUTED, and the build fails naming any finding whose seal no longer holds.
+      - run: uv run python -m scripts.ask_loop.seal_check
+      # Which mechanism actually stops which attack — the CAUSAL half of the seal. seal_check
+      # proves the payload never reached the caller; this proves the mechanism the ledger
+      # credits is what stopped it, by disabling that one mechanism and requiring its case to
+      # get through. Fails on an escape, an over-rejection, an unproven claim, or an
+      # enforcement point in sql_execution that has no column here. Must stay AFTER pytest:
+      # both use the same database.
+      - run: uv run python -m scripts.ask_loop.defence_matrix
 
   frontend:
     name: Frontend — lint + tests + build

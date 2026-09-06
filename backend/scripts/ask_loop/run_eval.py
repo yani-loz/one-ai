@@ -35,6 +35,7 @@ from app.ask.adapters.together_chat import TogetherChatClient
 from app.ask.services.agent_runner import AskAgentRunner, AskResult
 from app.ask.tools.registry import ToolRegistry
 from app.ask.tools.shared_core import build_shared_core_registry
+from app.core.config import get_settings
 from app.core.database import (
     engine,
     global_engine,
@@ -55,22 +56,44 @@ def _artifacts_root(override: str | None) -> Path:
 
 
 def _config_hash(
-    registry: ToolRegistry, runner: AskAgentRunner, model: str, model_params: dict[str, Any]
+    registry: ToolRegistry,
+    runner: AskAgentRunner,
+    model: str,
+    model_params: dict[str, Any],
+    *,
+    person: str | None,
+    org: str,
 ) -> str:
-    """Hash everything that changes answers: model, tools, prompt, params, turn cap — AND the
-    tool/runner SOURCE code, because executor semantics (SQL, response envelopes) change
-    answers without changing the serialized tool specs (measured: MUT2 was silently served
-    MUT1's cache)."""
+    """Hash everything that changes answers, so a cache hit can only ever be a true repeat.
+
+    In the basis: the model and its params, the serialized tools, the system prompt, the turn
+    cap, the READ IDENTITY (org + person — a person-bound run and an unbound probe see
+    different data), the CORPUS AND ENDPOINT the answers came from (database host/port/name
+    and the reader base URL — the same question against a different database is a different
+    experiment, and nothing else in the basis would notice), and the tool/runner SOURCE code,
+    because executor semantics change answers without changing any serialized tool spec.
+
+    Every one of those has already caused a silent stale-cache incident in this loop or was
+    demonstrated able to: MUT2 was served MUT1's answers, and a permission probe was served the
+    unbound run's answers. When in doubt, add to the basis — a missed cache hit costs minutes,
+    a false one invalidates a decision.
+    """
     import app.ask.services.agent_runner as _runner_mod
     import app.ask.services.router as _router_mod
     import app.ask.services.sql_pipeline as _pipe_mod
-    import app.ask.tools.shared_core as _tools_mod
-    import app.ask.tools.sql_guard as _guard_mod
-    import app.ask.tools.sql_tool as _sql_mod
+    import app.ask.tools as _tools_pkg
 
     code = b""
-    for module in (_tools_mod, _runner_mod, _router_mod, _guard_mod, _sql_mod, _pipe_mod):
-        code += Path(module.__file__).read_bytes()
+    # The WHOLE tools package, sorted by name: the shared-core executors live in per-domain
+    # modules (person_tool, email_search, …), the SQL hatch in sql_tool/sql_guard, and
+    # registry.py's dispatch semantics (savepoint containment, error wrapping) change answers
+    # without changing any serialized tool spec. Globbing means a new module is never missed.
+    tools_dir = Path(str(_tools_pkg.__file__)).parent
+    for path in sorted(tools_dir.glob("*.py")):
+        code += path.read_bytes()
+    for module in (_runner_mod, _router_mod, _pipe_mod):
+        code += Path(str(module.__file__)).read_bytes()
+    settings = get_settings()
     basis = json.dumps(
         {
             "model": model,
@@ -78,6 +101,12 @@ def _config_hash(
             "system_prompt": runner._system_prompt,  # noqa: SLF001 — deliberate pin
             "model_params": model_params,
             "max_turns": runner._max_turns,  # noqa: SLF001
+            "person": person,
+            "org": org,
+            # WHERE the answers came from. Two runs against different corpora (or a different
+            # reader endpoint) are different experiments even when every other input matches.
+            "corpus": f"{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}",
+            "reader_endpoint": settings.ask_reader_base_url,
             "code_sha": hashlib.sha256(code).hexdigest(),
         },
         sort_keys=True,
@@ -118,7 +147,10 @@ async def _answer_one(
     arm='routed': classify the question first, then run with the class-scoped registry
     and the class procedure appended to the system prompt (generalist on any fallback).
     """
-    cache_file = cache_dir / f"{question['qid']}.json"
+    # The question TEXT rides in the cache name: an in-place edit to a question under an
+    # unchanged qid must miss the cache instead of serving the old answer (N8).
+    question_sha = hashlib.sha256(question["question"].encode("utf-8")).hexdigest()[:8]
+    cache_file = cache_dir / f"{question['qid']}-{question_sha}.json"
     if use_cache and await asyncio.to_thread(cache_file.exists):
         cached_text = await asyncio.to_thread(cache_file.read_text, encoding="utf-8")
         record = json.loads(cached_text)
@@ -126,12 +158,17 @@ async def _answer_one(
         return record
 
     routed_class: str | None = None
+    # The routing call's tokens belong to THIS question — spending them off-book made the
+    # routed arms look cheaper than they are, in the very comparison they exist to inform.
+    routing_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
     async with semaphore:
         if arm == "xiyan-routed" and client is not None:
             from app.ask.services.router import classify_question
             from app.ask.services.sql_pipeline import SQL_PIPELINE_CLASSES, answer_via_sql
 
-            routed_class = await classify_question(client, question["question"])
+            routed_class = await classify_question(
+                client, question["question"], usage_sink=routing_usage
+            )
             if routed_class in SQL_PIPELINE_CLASSES:
                 async with reader_session(org_id, person_id) as session:
                     piped = await answer_via_sql(client, session, question["question"])
@@ -145,6 +182,11 @@ async def _answer_one(
                         **piped,
                         "cached": False,
                     }
+                    # The routing call happened on THIS branch too — its tokens belong to the
+                    # question, not to nobody (the same off-book accounting fixed on the agent
+                    # path, one early return away).
+                    record["prompt_tokens"] += routing_usage["prompt_tokens"]
+                    record["completion_tokens"] += routing_usage["completion_tokens"]
                     await asyncio.to_thread(
                         cache_file.write_text,
                         json.dumps(record, ensure_ascii=False, indent=1),
@@ -159,7 +201,9 @@ async def _answer_one(
                 registry_for_class,
             )
 
-            routed_class = await classify_question(client, question["question"])
+            routed_class = await classify_question(
+                client, question["question"], usage_sink=routing_usage
+            )
             runner = AskAgentRunner(
                 client,
                 registry_for_class(runner._registry, routed_class),  # noqa: SLF001
@@ -182,11 +226,17 @@ async def _answer_one(
         "turns": result.turns,
         "hit_turn_cap": result.hit_turn_cap,
         "tool_calls": [asdict(c) for c in result.tool_calls],
-        "prompt_tokens": result.prompt_tokens,
-        "completion_tokens": result.completion_tokens,
+        "prompt_tokens": result.prompt_tokens + routing_usage["prompt_tokens"],
+        "completion_tokens": result.completion_tokens + routing_usage["completion_tokens"],
         "latency_seconds": result.latency_seconds,
         "cached": False,
     }
+    if not str(record["answer"]).strip():
+        # An empty answer is a run that produced nothing, not a model that answered wrongly.
+        # Caching it made the emptiness permanent for that config, and grading it as a model
+        # FAIL charged the model for an infrastructure outcome.
+        record["error"] = "empty answer — the model returned no text"
+        return record
     await asyncio.to_thread(
         cache_file.write_text, json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8"
     )
@@ -204,20 +254,49 @@ async def _answer_all(
     arm: str = "generalist",
     client: Any = None,
 ) -> list[dict[str, Any]]:
-    """Answer every selected question concurrently (bounded), disposing engines after."""
+    """Answer every selected question concurrently (bounded), disposing engines after.
+
+    return_exceptions=True (N10): one failing question degrades to a single error-marked,
+    UNCACHED record instead of killing the run — and, as important, it makes gather wait for
+    every sibling, so the engine disposal in `finally` can no longer run under still-live
+    children (the old first-exception propagation disposed engines mid-flight).
+    """
     semaphore = asyncio.Semaphore(parallel)
     try:
-        return list(
-            await asyncio.gather(
-                *(
-                    _answer_one(
-                        runner, org, person_id, q, cache_dir, use_cache, semaphore,
-                        arm=arm, client=client,
-                    )
-                    for q in questions
+        settled = await asyncio.gather(
+            *(
+                _answer_one(
+                    runner, org, person_id, q, cache_dir, use_cache, semaphore,
+                    arm=arm, client=client,
                 )
-            )
+                for q in questions
+            ),
+            return_exceptions=True,
         )
+        records: list[dict[str, Any]] = []
+        for q, outcome in zip(questions, settled, strict=True):
+            if isinstance(outcome, BaseException):
+                records.append(
+                    {
+                        "qid": q["qid"],
+                        "source_id": q.get("source_id"),
+                        "intent_class": q.get("intent_class"),
+                        "routed_class": None,
+                        "question": q["question"],
+                        "answer": "",
+                        "error": f"{type(outcome).__name__}: {outcome}",
+                        "turns": 0,
+                        "hit_turn_cap": False,
+                        "tool_calls": [],
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "latency_seconds": 0.0,
+                        "cached": False,
+                    }
+                )
+            else:
+                records.append(outcome)
+        return records
     finally:
         for eng in (engine, tenant_engine, global_engine, reader_engine):
             await eng.dispose()
@@ -275,7 +354,8 @@ def main(argv: list[str] | None = None) -> int:
     # otherwise a changed default silently serves stale cached answers.
     effective_params = runner._model_params  # noqa: SLF001 — reproducibility pin
     config_hash = _config_hash(
-        registry, runner, client.model, {**effective_params, "__arm": args.arm}
+        registry, runner, client.model, {**effective_params, "__arm": args.arm},
+        person=args.person, org=args.org,
     )
 
     root = _artifacts_root(args.artifacts)
@@ -301,10 +381,14 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     fresh = [r for r in records if not r["cached"]]
+    errored = [r for r in records if r.get("error")]
     meta = {
         "label": args.label,
         "config_hash": config_hash,
         "model": client.model,
+        "arm": args.arm,
+        "parallel": args.parallel,  # token fields are exact per-question via the usage sink
+        "errored_questions": [r["qid"] for r in errored],
         "model_params": effective_params,
         "max_turns": runner._max_turns,  # noqa: SLF001 — reproducibility pin
         "tools": registry.names(),

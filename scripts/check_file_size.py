@@ -16,6 +16,12 @@ CEILING = 500
 SOFT_TARGET = 300
 SCAN_ROOTS = [
     Path("backend/app"),
+    # backend/scripts holds the eval harness and the security-seal machinery (grade.py,
+    # conformance.py, seal_check.py, defence_matrix.py). It was outside the scan until the
+    # round-5 audit, so an entire directory of Python — including the code that decides whether
+    # a security finding is still closed — was exempt from rule A2 while the gate reported
+    # "all source files under the ceiling".
+    Path("backend/scripts"),
     Path("backend/tests"),
     Path("frontend/src"),
     Path("scripts"),

@@ -66,13 +66,17 @@ class TogetherChatClient:
         temperature: float = 0.0,
         max_tokens: int = 1024,
         extra_params: dict[str, Any] | None = None,
+        usage_sink: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Run one chat-completion call; return the assistant message dict.
 
         Contract: returns the raw `choices[0].message` object (keys: role, content,
         optionally tool_calls) and updates `total_usage`. `extra_params` passes model
         parameters (top_p, top_k, repetition_penalty, ...) — mutable in the loop; the
-        model name itself is NOT overridable here.
+        model name itself is NOT overridable here. `usage_sink` (optional) additionally
+        receives this CALL's token usage — the per-question attribution channel: the shared
+        `total_usage` counter cannot attribute tokens under concurrency (N11), so callers
+        that need per-scope numbers pass their own sink and never difference the global.
 
         Raises:
             ReaderModelError: transport failure, retryable status exhausted, or a
@@ -102,7 +106,7 @@ class TogetherChatClient:
                     last_error = f"transport: {type(exc).__name__}"
                 else:
                     if response.status_code == 200:
-                        return self._extract_message(response.json())
+                        return self._extract_message(response.json(), usage_sink)
                     last_error = f"HTTP {response.status_code}"
                     if response.status_code not in _RETRYABLE_STATUS:
                         raise ReaderModelError(
@@ -114,11 +118,20 @@ class TogetherChatClient:
             f"Reader model call failed after {_MAX_ATTEMPTS} attempts (last: {last_error})."
         )
 
-    def _extract_message(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Pull choices[0].message out of a success body and accumulate usage."""
+    def _extract_message(
+        self, body: dict[str, Any], usage_sink: dict[str, int] | None = None
+    ) -> dict[str, Any]:
+        """Pull choices[0].message out of a success body; accumulate usage (global + sink)."""
         usage = body.get("usage") or {}
-        self.total_usage["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-        self.total_usage["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        self.total_usage["prompt_tokens"] += prompt_tokens
+        self.total_usage["completion_tokens"] += completion_tokens
+        if usage_sink is not None:
+            usage_sink["prompt_tokens"] = usage_sink.get("prompt_tokens", 0) + prompt_tokens
+            usage_sink["completion_tokens"] = (
+                usage_sink.get("completion_tokens", 0) + completion_tokens
+            )
         choices = body.get("choices")
         if not choices or "message" not in choices[0]:
             raise ReaderModelError("Reader model returned a body without choices[0].message.")

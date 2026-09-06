@@ -59,6 +59,24 @@ class ToolRegistry:
         """Registered tool names (stable order for ledger pins)."""
         return sorted(self._specs)
 
+    def subset(self, allowed: set[str]) -> ToolRegistry:
+        """A new registry holding only `allowed` tools, in this registry's order.
+
+        The scoping seam for the router's intent kits: callers state WHICH tools they want and
+        never touch how the registry stores them.
+
+        Raises:
+            UnknownToolError: `allowed` names a tool this registry does not carry — a kit that
+                silently shrinks is how a routed arm once ran on half its tools with no signal.
+        """
+        missing = sorted(allowed - set(self._specs))
+        if missing:
+            raise UnknownToolError(
+                f"Tool subset names unregistered tools {missing} — reconcile the caller's "
+                "tool list with the live registry."
+            )
+        return ToolRegistry([spec for name, spec in self._specs.items() if name in allowed])
+
     def llm_tools(self) -> list[dict[str, Any]]:
         """Serialize every tool into the OpenAI-compatible `tools` array shape."""
         return [
@@ -76,6 +94,14 @@ class ToolRegistry:
     async def dispatch(self, session: AsyncSession, name: str, args: dict[str, Any]) -> Any:
         """Execute tool `name` with `args` on the caller's reader session.
 
+        Every executor runs inside a SAVEPOINT (begin_nested): a server-side SQL error would
+        otherwise abort the session's whole transaction (SQLSTATE 25P02) and every LATER tool
+        call in the run would fail with InFailedSQLTransactionError — the model is told the
+        error is repairable, so the session must actually still work (cross-vendor N2;
+        observed cascading across 14 real eval transcripts). Rolling back the savepoint
+        re-exposes the outer transaction untouched; the org/person GUCs are bound with
+        is_local on the outer transaction, so scope can neither widen nor drop (verified).
+
         Raises:
             UnknownToolError: the model invented a tool name.
             ToolExecutionError: the executor failed (wraps the original error type name —
@@ -84,10 +110,14 @@ class ToolRegistry:
         spec = self._specs.get(name)
         if spec is None:
             raise UnknownToolError(
-                f"Unknown tool {name!r}; available: {', '.join(self.names())}."
+                # The invented NAME is never echoed: it is fully caller-controlled and the
+                # message lands in the observation, so echoing it would let a uuid hidden in
+                # the name become citable "tool evidence".
+                f"Unknown tool. Available tools: {', '.join(self.names())}."
             )
         try:
-            return await spec.executor(session, args)
+            async with session.begin_nested():
+                return await spec.executor(session, args)
         except (UnknownToolError, ToolExecutionError):
             raise
         except Exception as exc:

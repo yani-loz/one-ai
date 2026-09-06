@@ -20,12 +20,12 @@ import re
 from typing import Any
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ask.exceptions import ToolExecutionError
 from app.ask.tools.registry import ToolRegistry, ToolSpec
-from app.ask.tools.sql_guard import validate_generated_sql
+from app.ask.tools.sql_execution import execute_guarded_sql
+from app.ask.tools.tool_helpers import redact_uuids
 
 XIYAN_MODEL = "hf.co/mradermacher/XiYanSQL-QwenCoder-7B-2504-GGUF:Q4_K_M"
 _OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -45,11 +45,11 @@ _M_SCHEMA = """【DB_ID】 company_mail
 (is_reply:BOOLEAN),
 (has_attachments:BOOLEAN)
 ]
-# Table: email_recipient  (to/cc lines; one row per recipient per email)
+# Table: email_recipient  (one row per DISCLOSED recipient per email)
 [
 (id:UUID, Primary Key),
 (email_id:UUID, references email_message.id),
-(kind:VARCHAR, 'to' or 'cc'),
+(kind:VARCHAR, 'to' or 'cc' — blind copies are never readable on this plane),
 (name:VARCHAR, recipient display name),
 (address:VARCHAR, recipient email address)
 ]
@@ -60,15 +60,15 @@ _M_SCHEMA = """【DB_ID】 company_mail
 (filename:VARCHAR),
 (content_type:VARCHAR),
 (size_bytes:INTEGER),
+(is_inline:BOOLEAN, true = embedded signature image/logo, not a real document
+ — filter with is_inline = false when counting documents),
 (extracted_text:TEXT, extracted document text when available)
 ]
 # Table: person  (people seen in communications)
 [
 (id:UUID, Primary Key),
 (display_name:VARCHAR),
-(is_internal:BOOLEAN, member of the organization),
-(first_seen_at:TIMESTAMPTZ),
-(last_seen_at:TIMESTAMPTZ)
+(is_internal:BOOLEAN, member of the organization)
 ]
 # Table: person_email  (addresses bound to a person)
 [
@@ -83,18 +83,22 @@ _M_SCHEMA = """【DB_ID】 company_mail
 (last_contact:TIMESTAMPTZ),
 (first_message_id:UUID, earliest message — citable),
 (last_message_id:UUID, latest message — citable),
-(inbound_count:BIGINT),
-(outbound_count:BIGINT),
-(total_mentions:BIGINT),
-(distinct_addresses:BIGINT)
+(inbound_count:BIGINT, distinct inbound messages this domain appears on),
+(outbound_count:BIGINT, distinct outbound messages this domain appears on),
+(total_mentions:BIGINT, distinct messages this domain appears on — NOT a contact-row count),
+(distinct_addresses:BIGINT, distinct email addresses seen at this domain)
 ]"""
 
+# The Evidence NULLs note is advisory only; sql_guard mechanically rewrites every bare
+# DESC to DESC NULLS LAST before execution (M-49, defense in depth) — the guard, not this
+# hint, is the actual defense.
 _PROMPT_TEMPLATE = (
     "You are now a PostgreSQL data analyst, and you are given a database schema as "
     "follows:\n\n{schema}\n\n【Question】\n{question}\n\n【Evidence】\n"
     "Text matching must be case-insensitive (use ILIKE). Content may be written in more "
     "than one language — match the literal terms given in the question. Include id "
-    "columns in the result when returning specific rows.\n\n"
+    "columns in the result when returning specific rows. Columns may contain NULLs; when "
+    "ordering DESC, NULLs sort first unless NULLS LAST is specified.\n\n"
     "Please read and understand the database schema carefully, and generate an executable "
     "SQL based on the user's question and evidence. The generated SQL is protected by "
     "```sql and ```.\n"
@@ -124,21 +128,13 @@ async def _generate_sql(request: str) -> str:
 
 
 async def _query_database(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:
-    """NL request -> generated SQL -> PF-FBP-8 guard -> reader-plane execution -> rows."""
+    """NL request -> generated SQL -> PF-FBP-8 guard -> scope-verified execution -> rows."""
     request = str(args.get("request") or "").strip()
     if not request:
         raise ToolExecutionError("request is required.")
     generated = await _generate_sql(request)
-    safe_sql = validate_generated_sql(generated)
-    try:
-        result = await session.execute(text(safe_sql))
-        rows = [dict(r) for r in result.mappings().fetchmany(_MAX_ROWS)]
-    except Exception as exc:
-        raise ToolExecutionError(
-            f"Generated SQL failed to execute ({type(exc).__name__}) — rephrase the "
-            "request more concretely."
-        ) from exc
-    return {"sql": safe_sql, "row_count": len(rows), "rows": rows}
+    safe_sql, rows = await execute_guarded_sql(session, generated, max_rows=_MAX_ROWS)
+    return {"sql": redact_uuids(safe_sql), "row_count": len(rows), "rows": rows}
 
 
 def register_sql_tool(registry: ToolRegistry) -> ToolRegistry:
@@ -151,8 +147,11 @@ def register_sql_tool(registry: ToolRegistry) -> ToolRegistry:
                 "translates your natural-language request into one SQL statement over the "
                 "email archive and returns the rows. Best for counting, ranking, grouping, "
                 "listing, and date-window questions ('how many…', 'top N…', 'list all… "
-                "with counts', 'earliest/latest…'). State the request precisely, including "
-                "any literal search terms in the language they appear in the data."
+                "with counts', 'earliest/latest…'). For ANY question whose answer is a "
+                "number, a ranking, or an exhaustive list, call this FIRST and base your "
+                "answer on its rows — keyword search results are samples and undercount. "
+                "State the request precisely, including any literal search terms in the "
+                "language they appear in the data."
             ),
             parameters={
                 "type": "object",

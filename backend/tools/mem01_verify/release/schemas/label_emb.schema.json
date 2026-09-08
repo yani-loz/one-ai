@@ -1,0 +1,23 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_emb.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "EMB carries no human label: per required chunk the vector must be present with pinned versions and a reproducibility check, under a zero-generative-call execution contract.",
+ "properties": {
+  "expected_versions": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "type": "object"
+  },
+  "required_chunk_id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  }
+ },
+ "required": [],
+ "title": "EMB label - embeddings (none)",
+ "type": "object"
+}

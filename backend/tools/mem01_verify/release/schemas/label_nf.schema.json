@@ -1,0 +1,42 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_nf.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Document-or-noise with the duplicate group the canonical content belongs to.",
+ "properties": {
+  "carrier_edges": {
+   "description": "Carrier email ids joined to the canonical content.",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "disposition": {
+   "description": "OCR-required and unsupported-format files are `document`, never noise.",
+   "enum": [
+    "document",
+    "noise"
+   ],
+   "type": "string"
+  },
+  "duplicate_group_id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "noise_type": {
+   "description": "Required when disposition is `noise`.",
+   "type": [
+    "string",
+    "null"
+   ]
+  }
+ },
+ "required": [
+  "disposition",
+  "duplicate_group_id"
+ ],
+ "title": "NF label - attachment noise",
+ "type": "object"
+}

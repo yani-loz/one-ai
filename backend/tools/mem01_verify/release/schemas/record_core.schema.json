@@ -1,0 +1,232 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/record_core.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "The shared core every record of every SET carries (gold-standard 2.1). Offsets everywhere are UTF-8 BYTE offsets into the exact system-visible snapshot. The roster verification of the runner reads ONLY `gold_id`; every other field is opaque to the Stage A instruments.",
+ "properties": {
+  "gold_id": {
+   "description": "Record identity, unique within the SET and listed in the manifest roster.",
+   "minLength": 1,
+   "type": "string"
+  },
+  "input": {
+   "additionalProperties": true,
+   "properties": {
+    "artifact_id": {
+     "type": "string"
+    },
+    "snapshot_sha256": {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    "source_ref": {
+     "additionalProperties": true,
+     "properties": {
+      "org_id": {
+       "type": "string"
+      },
+      "source_id": {
+       "type": "string"
+      },
+      "source_table": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "source_table",
+      "source_id"
+     ],
+     "type": "object"
+    },
+    "text": {
+     "type": "string"
+    },
+    "versions": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "type": "object"
+    }
+   },
+   "required": [
+    "snapshot_sha256",
+    "source_ref"
+   ],
+   "type": "object"
+  },
+  "label": {
+   "description": "The per-set typed label schema (2.2).",
+   "type": "object"
+  },
+  "leakage_groups": {
+   "additionalProperties": true,
+   "properties": {
+    "attachment_content_hashes": {
+     "description": "Carrier content hashes.",
+     "items": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "cluster_id": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "group_id": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "thread_id": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "note": {
+   "type": "string"
+  },
+  "provenance": {
+   "additionalProperties": true,
+   "properties": {
+    "labeled_by": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "labeler_config_hash": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "origin": {
+     "pattern": "^(initial|bug-[0-9]{4}-[0-9]{2}-[0-9]{2}|posthoc-qrel)$",
+     "type": "string"
+    },
+    "protocol_version": {
+     "type": "string"
+    },
+    "review_status": {
+     "description": "Visible correction state (a boolean `audited` is insufficient).",
+     "enum": [
+      "unreviewed",
+      "reviewed_agree",
+      "corrected",
+      "adjudicated",
+      "excluded"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "review_status",
+    "protocol_version",
+    "origin"
+   ],
+   "type": "object"
+  },
+  "set_id": {
+   "enum": [
+    "QS",
+    "CH",
+    "NF",
+    "LANG",
+    "IDEM",
+    "VIS",
+    "ERASE",
+    "RET",
+    "COV",
+    "FID",
+    "THR",
+    "TIME",
+    "IDENT",
+    "RED",
+    "ATTR",
+    "SNAP",
+    "EMB"
+   ],
+   "type": "string"
+  },
+  "set_version": {
+   "minLength": 1,
+   "type": "string"
+  },
+  "split": {
+   "description": "Data-assignment split; NOT the criteria entry's `split`.",
+   "enum": [
+    "optimization",
+    "test",
+    "validation"
+   ],
+   "type": "string"
+  },
+  "strata": {
+   "additionalProperties": true,
+   "properties": {
+    "adversarial_tags": {
+     "description": "Adversarial slice tags.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "attachment_count": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "attachment_types": {
+     "description": "Declared MIME types.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "format_tags": {
+     "description": "Format tags of the input.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "language": {
+     "description": "Strata language cell.",
+     "enum": [
+      "bg",
+      "en",
+      "mixed",
+      "und"
+     ],
+     "type": "string"
+    },
+    "length_bucket": {
+     "type": "string"
+    },
+    "length_scalars": {
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  }
+ },
+ "required": [
+  "gold_id",
+  "set_id",
+  "set_version",
+  "split",
+  "input",
+  "label",
+  "provenance"
+ ],
+ "title": "MEM-01 gold record core",
+ "type": "object"
+}

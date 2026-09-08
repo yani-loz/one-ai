@@ -1,0 +1,28 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_snap.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "SNAP carries no human label: the canonical text hash per artifact across two clean replays plus the normalization/mapping fixtures decide it.",
+ "properties": {
+  "expected_sha256": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "mapping_case": {
+   "type": [
+    "string",
+    "null"
+   ]
+  }
+ },
+ "required": [],
+ "title": "SNAP label - snapshot stability (none)",
+ "type": "object"
+}

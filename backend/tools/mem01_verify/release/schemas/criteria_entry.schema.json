@@ -1,0 +1,204 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/criteria_entry.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "One entry per criterion of the criteria annex, as it appears in the protected result (contract 3.4).",
+ "properties": {
+  "acceptance_state": {
+   "description": "`validated` only on entries scored in a --validation run.",
+   "enum": [
+    "provisional",
+    "validated"
+   ],
+   "type": "string"
+  },
+  "denominator": {
+   "minimum": 0,
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "denominator_def": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "diagnostic_only": {
+   "type": "boolean"
+  },
+  "directional": {
+   "type": "boolean"
+  },
+  "errors": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "evaluated": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "evidence_basis": {
+   "description": "Evidence letters.",
+   "enum": [
+    "F",
+    "C",
+    "F+C",
+    "H-optimization",
+    "H-test",
+    "H-validation"
+   ],
+   "type": "string"
+  },
+  "expected": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "gate": {
+   "enum": [
+    "QS",
+    "CH",
+    "NF",
+    "LANG",
+    "IDEM",
+    "VIS",
+    "ERASE",
+    "RET",
+    "COV",
+    "FID",
+    "THR",
+    "TIME",
+    "IDENT",
+    "RED",
+    "ATTR",
+    "SNAP",
+    "EMB"
+   ],
+   "type": "string"
+  },
+  "id": {
+   "pattern": "^[a-z0-9_]+\\.[a-z0-9_.]+$",
+   "type": "string"
+  },
+  "kind": {
+   "description": "Ratio needs a denominator; count has none.",
+   "enum": [
+    "ratio",
+    "count"
+   ],
+   "type": "string"
+  },
+  "minimum": {
+   "minimum": 1,
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "numerator": {
+   "minimum": 0,
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "operator": {
+   "description": "Comparison against the threshold.",
+   "enum": [
+    "==",
+    "<=",
+    ">="
+   ],
+   "type": "string"
+  },
+  "reason": {
+   "type": "string"
+  },
+  "set": {
+   "enum": [
+    "QS",
+    "CH",
+    "NF",
+    "LANG",
+    "IDEM",
+    "VIS",
+    "ERASE",
+    "RET",
+    "COV",
+    "FID",
+    "THR",
+    "TIME",
+    "IDENT",
+    "RED",
+    "ATTR",
+    "SNAP",
+    "EMB"
+   ],
+   "type": "string"
+  },
+  "skipped": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "split": {
+   "description": "The EVIDENCE source of the criterion - a different field from a record's `split`.",
+   "enum": [
+    "optimization",
+    "test",
+    "validation",
+    "fixtures",
+    "corpus"
+   ],
+   "type": "string"
+  },
+  "status": {
+   "description": "Criterion status; a mandatory zero denominator is ERROR, never PASS.",
+   "enum": [
+    "PASS",
+    "FAIL",
+    "ERROR",
+    "incomplete",
+    "pending",
+    "skipped",
+    "N/A"
+   ],
+   "type": "string"
+  },
+  "threshold": {
+   "type": "number"
+  },
+  "versions": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "type": "object"
+  }
+ },
+ "required": [
+  "id",
+  "gate",
+  "set",
+  "split",
+  "evidence_basis",
+  "acceptance_state",
+  "kind",
+  "numerator",
+  "denominator",
+  "denominator_def",
+  "operator",
+  "threshold",
+  "minimum",
+  "status",
+  "reason",
+  "expected",
+  "evaluated",
+  "skipped",
+  "errors",
+  "diagnostic_only",
+  "directional",
+  "versions"
+ ],
+ "title": "MEM01_RESULT_V1 criteria entry",
+ "type": "object"
+}

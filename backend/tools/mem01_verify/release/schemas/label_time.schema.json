@@ -1,0 +1,43 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_time.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Declared source value, parsed instant (or the unknown-zone state) and the provenance of the instant.",
+ "properties": {
+  "declared_value": {
+   "type": "string"
+  },
+  "expected": {
+   "description": "ISO-8601 UTC instant, or null with state `unknown_zone`.",
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "provenance": {
+   "description": "Which clock the instant comes from.",
+   "enum": [
+    "sent",
+    "received",
+    "ingested"
+   ],
+   "type": "string"
+  },
+  "state": {
+   "description": "Parse end-state.",
+   "enum": [
+    "parsed",
+    "unknown_zone",
+    "unparseable"
+   ],
+   "type": "string"
+  }
+ },
+ "required": [
+  "declared_value",
+  "expected",
+  "provenance"
+ ],
+ "title": "TIME label - temporal parsing",
+ "type": "object"
+}

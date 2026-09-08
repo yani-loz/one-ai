@@ -1,0 +1,20 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_erase.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Per-source erasure scenarios with expected end-states; no human label.",
+ "properties": {
+  "expected_end_state": {
+   "type": "string"
+  },
+  "scenario": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "scenario",
+  "expected_end_state"
+ ],
+ "title": "ERASE label - erasure (scenario)",
+ "type": "object"
+}

@@ -1,0 +1,22 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_idem.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Scenario fixtures with expected per-table end-states; no human label.",
+ "properties": {
+  "expected_deltas": {
+   "additionalProperties": {
+    "type": "integer"
+   },
+   "type": "object"
+  },
+  "scenario": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "scenario"
+ ],
+ "title": "IDEM label - idempotent ingest (scenario)",
+ "type": "object"
+}

@@ -1,0 +1,103 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_qs.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Typed spans of the four content classes plus the observed structure of the message.",
+ "properties": {
+  "observed_structure": {
+   "additionalProperties": false,
+   "properties": {
+    "body_format": {
+     "description": "Stored body format.",
+     "enum": [
+      "plain",
+      "html"
+     ],
+     "type": "string"
+    },
+    "client_attribution": {
+     "description": "NEVER inferred from a text template; `verified` needs a header act.",
+     "enum": [
+      "verified",
+      "unknown"
+     ],
+     "type": "string"
+    },
+    "has_signature_block": {
+     "type": "boolean"
+    },
+    "quote_delimiters": {
+     "description": "Delimiters seen verbatim.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "shape": {
+     "description": "Observed reply shape.",
+     "enum": [
+      "reply",
+      "forward",
+      "inline",
+      "top_post"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "shape",
+    "client_attribution"
+   ],
+   "type": "object"
+  },
+  "spans": {
+   "description": "Every labeled span, in UTF-8 byte offsets into the snapshot artifact.",
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "byte_end": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "byte_start": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "class": {
+      "description": "The content class this span carries.",
+      "enum": [
+       "new_content",
+       "redundant_quote",
+       "signature",
+       "forwarded_content"
+      ],
+      "type": "string"
+     },
+     "surface": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "class",
+     "byte_start",
+     "byte_end"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "surfaces": {
+   "description": "Named retrieval/serving surfaces the mass is measured over.",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "spans",
+  "observed_structure"
+ ],
+ "title": "QS label - quote stripping",
+ "type": "object"
+}

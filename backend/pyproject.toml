@@ -26,6 +26,7 @@ dependencies = [
     "compressed-rtf>=1.0.7",
     "striprtf>=0.0.32",
     "openpyxl>=3.1.5",
+    "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]

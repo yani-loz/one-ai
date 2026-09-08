@@ -1,0 +1,60 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_attr.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Per forwarded segment: who forwarded, who is claimed as the original author, the source-span provenance and the resolution state (never NULL).",
+ "properties": {
+  "claimed_original_author": {
+   "description": "Null only where the frozen state policy allows.",
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "forwarding_sender": {
+   "type": "string"
+  },
+  "source_spans": {
+   "description": "Where the attribution is read from.",
+   "items": {
+    "additionalProperties": false,
+    "description": "A half-open span in UTF-8 BYTE offsets into the frozen snapshot artifact.",
+    "properties": {
+     "byte_end": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "byte_start": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "byte_start",
+     "byte_end"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "state": {
+   "description": "Never NULL (gold-standard 2.2 v2.4).",
+   "enum": [
+    "recoverable",
+    "ambiguous",
+    "unresolvable"
+   ],
+   "type": "string"
+  }
+ },
+ "required": [
+  "forwarding_sender",
+  "claimed_original_author",
+  "state"
+ ],
+ "title": "ATTR label - forward attribution",
+ "type": "object"
+}

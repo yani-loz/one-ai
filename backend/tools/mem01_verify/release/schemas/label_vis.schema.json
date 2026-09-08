@@ -1,0 +1,28 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_vis.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Per-probe expectation on the person-bound reader plane; no human label.",
+ "properties": {
+  "expected": {
+   "description": "What the person-bound reader plane must return.",
+   "enum": [
+    "allowed",
+    "denied"
+   ],
+   "type": "string"
+  },
+  "policy": {
+   "type": "string"
+  },
+  "probe": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "probe",
+  "expected"
+ ],
+ "title": "VIS label - visibility probe (scenario)",
+ "type": "object"
+}

@@ -1,0 +1,30 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_cov.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "The frozen physical-input roster plus every input's disposition. The disposition is scored; the reason is a deterministic policy-derived code recorded beside it.",
+ "properties": {
+  "disposition": {
+   "description": "The scored disposition.",
+   "enum": [
+    "delivered",
+    "explicitly_excluded",
+    "not_ready"
+   ],
+   "type": "string"
+  },
+  "policy_ref": {
+   "type": "string"
+  },
+  "reason": {
+   "description": "Canonical policy code; the MIME-class clause is named first.",
+   "type": "string"
+  }
+ },
+ "required": [
+  "disposition",
+  "reason"
+ ],
+ "title": "COV label - coverage disposition",
+ "type": "object"
+}

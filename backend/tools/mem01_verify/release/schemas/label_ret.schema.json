@@ -1,0 +1,94 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_ret.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Query, direction and the relevant SOURCE SPANS with acceptable alternatives. Chunk ids are resolved artifacts, never the answer key.",
+ "properties": {
+  "acceptable_alternatives": {
+   "description": "Alternative evidence sets.",
+   "items": {
+    "description": "One acceptable alternative.",
+    "items": {
+     "additionalProperties": false,
+     "description": "A half-open span in UTF-8 BYTE offsets into the frozen snapshot artifact.",
+     "properties": {
+      "byte_end": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "byte_start": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "note": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "byte_start",
+      "byte_end"
+     ],
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "type": "array"
+  },
+  "direction": {
+   "description": "Cross-language direction.",
+   "enum": [
+    "BG->EN",
+    "EN->BG",
+    "same"
+   ],
+   "type": "string"
+  },
+  "language": {
+   "description": "Query language.",
+   "enum": [
+    "bg",
+    "en",
+    "mixed",
+    "und"
+   ],
+   "type": "string"
+  },
+  "query": {
+   "type": "string"
+  },
+  "relevant_spans": {
+   "description": "Relevant source spans in the snapshot.",
+   "items": {
+    "additionalProperties": false,
+    "description": "A half-open span in UTF-8 BYTE offsets into the frozen snapshot artifact.",
+    "properties": {
+     "byte_end": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "byte_start": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "byte_start",
+     "byte_end"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "query",
+  "language",
+  "direction",
+  "relevant_spans"
+ ],
+ "title": "RET label - retrieval qrels",
+ "type": "object"
+}

@@ -1,0 +1,36 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_lang.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "The frozen operational language label, assessed on quote/signature-stripped prose.",
+ "properties": {
+  "language": {
+   "description": "`mixed` = each language >= 20% of language-bearing word tokens, >= 5 tokens.",
+   "enum": [
+    "bg",
+    "en",
+    "mixed",
+    "und"
+   ],
+   "type": "string"
+  },
+  "share_by_language": {
+   "additionalProperties": {
+    "type": "number"
+   },
+   "type": "object"
+  },
+  "transliterated": {
+   "type": "boolean"
+  },
+  "word_tokens": {
+   "minimum": 0,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "language"
+ ],
+ "title": "LANG label - content language",
+ "type": "object"
+}

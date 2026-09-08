@@ -1,0 +1,1656 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/protected_result.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "The COMPLETE machine block written to the report directory (contract 3.3). It may carry per-case detail and per-gate reasons and therefore never leaves the report root; what is printed is the stdout projection.",
+ "properties": {
+  "aborted": {
+   "type": "boolean"
+  },
+  "aborted_at_step": {
+   "maximum": 13,
+   "minimum": 1,
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "baseline_label": {
+   "type": "string"
+  },
+  "cache_hits": {
+   "const": 0
+  },
+  "cache_policy": {
+   "const": "forbidden"
+  },
+  "cleanup": {
+   "additionalProperties": false,
+   "properties": {
+    "kept": {
+     "type": "boolean"
+    },
+    "probe_dropped": {
+     "type": "boolean"
+    },
+    "probe_name": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "probe_dropped",
+    "probe_name",
+    "kept"
+   ],
+   "type": "object"
+  },
+  "code_hash": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "config_hash": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "corpus": {
+   "additionalProperties": false,
+   "properties": {
+    "attachments": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "database": {
+     "type": "string"
+    },
+    "emails": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "host": {
+     "type": "string"
+    },
+    "org_id": {
+     "type": "string"
+    },
+    "port": {
+     "type": "integer"
+    },
+    "snapshot_transaction_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "org_id",
+    "host",
+    "port",
+    "database",
+    "emails",
+    "attachments",
+    "snapshot_transaction_id"
+   ],
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "corpus_digest": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "criteria": {
+   "description": "One full entry per criterion evaluated.",
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "acceptance_state": {
+      "description": "`validated` only on entries scored in a --validation run.",
+      "enum": [
+       "provisional",
+       "validated"
+      ],
+      "type": "string"
+     },
+     "denominator": {
+      "minimum": 0,
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "denominator_def": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "diagnostic_only": {
+      "type": "boolean"
+     },
+     "directional": {
+      "type": "boolean"
+     },
+     "errors": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "evaluated": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "evidence_basis": {
+      "description": "Evidence letters.",
+      "enum": [
+       "F",
+       "C",
+       "F+C",
+       "H-optimization",
+       "H-test",
+       "H-validation"
+      ],
+      "type": "string"
+     },
+     "expected": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "gate": {
+      "enum": [
+       "QS",
+       "CH",
+       "NF",
+       "LANG",
+       "IDEM",
+       "VIS",
+       "ERASE",
+       "RET",
+       "COV",
+       "FID",
+       "THR",
+       "TIME",
+       "IDENT",
+       "RED",
+       "ATTR",
+       "SNAP",
+       "EMB"
+      ],
+      "type": "string"
+     },
+     "id": {
+      "pattern": "^[a-z0-9_]+\\.[a-z0-9_.]+$",
+      "type": "string"
+     },
+     "kind": {
+      "description": "Ratio needs a denominator; count has none.",
+      "enum": [
+       "ratio",
+       "count"
+      ],
+      "type": "string"
+     },
+     "minimum": {
+      "minimum": 1,
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "numerator": {
+      "minimum": 0,
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "operator": {
+      "description": "Comparison against the threshold.",
+      "enum": [
+       "==",
+       "<=",
+       ">="
+      ],
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "set": {
+      "enum": [
+       "QS",
+       "CH",
+       "NF",
+       "LANG",
+       "IDEM",
+       "VIS",
+       "ERASE",
+       "RET",
+       "COV",
+       "FID",
+       "THR",
+       "TIME",
+       "IDENT",
+       "RED",
+       "ATTR",
+       "SNAP",
+       "EMB"
+      ],
+      "type": "string"
+     },
+     "skipped": {
+      "minimum": 0,
+      "type": "integer"
+     },
+     "split": {
+      "description": "The EVIDENCE source of the criterion - a different field from a record's `split`.",
+      "enum": [
+       "optimization",
+       "test",
+       "validation",
+       "fixtures",
+       "corpus"
+      ],
+      "type": "string"
+     },
+     "status": {
+      "description": "Criterion status; a mandatory zero denominator is ERROR, never PASS.",
+      "enum": [
+       "PASS",
+       "FAIL",
+       "ERROR",
+       "incomplete",
+       "pending",
+       "skipped",
+       "N/A"
+      ],
+      "type": "string"
+     },
+     "threshold": {
+      "type": "number"
+     },
+     "versions": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object"
+     }
+    },
+    "required": [
+     "id",
+     "gate",
+     "set",
+     "split",
+     "evidence_basis",
+     "acceptance_state",
+     "kind",
+     "numerator",
+     "denominator",
+     "denominator_def",
+     "operator",
+     "threshold",
+     "minimum",
+     "status",
+     "reason",
+     "expected",
+     "evaluated",
+     "skipped",
+     "errors",
+     "diagnostic_only",
+     "directional",
+     "versions"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "criteria_sha256": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "diagnostics": {
+   "description": "Per gate, aggregates only; never affects a status.",
+   "type": "object"
+  },
+  "directional_gates": {
+   "description": "The criteria file's declared list (possibly empty).",
+   "items": {
+    "enum": [
+     "QS",
+     "CH",
+     "NF",
+     "LANG",
+     "IDEM",
+     "VIS",
+     "ERASE",
+     "RET",
+     "COV",
+     "FID",
+     "THR",
+     "TIME",
+     "IDENT",
+     "RED",
+     "ATTR",
+     "SNAP",
+     "EMB"
+    ],
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "duration_ms": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "exclusions": {
+   "description": "Explicitly excluded inputs (COV).",
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "policy_ref": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "reason",
+     "policy_ref"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "fixtures_digest": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "gates": {
+   "additionalProperties": false,
+   "properties": {
+    "ATTR": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "CH": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "COV": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "EMB": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "ERASE": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "FID": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "IDEM": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "IDENT": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "LANG": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "NF": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "QS": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "RED": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "RET": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "SNAP": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "THR": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "TIME": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    },
+    "VIS": {
+     "additionalProperties": false,
+     "properties": {
+      "criteria": {
+       "description": "The criteria entry ids this gate owns.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "reason": {
+       "description": "Required unless PASS; omitted for hidden-evidence gates on stdout.",
+       "type": "string"
+      },
+      "status": {
+       "description": "Gate status (3.5).",
+       "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "incomplete",
+        "skipped"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "status",
+      "criteria"
+     ],
+     "type": "object"
+    }
+   },
+   "type": "object"
+  },
+  "hidden_budget": {
+   "pattern": "^[0-9]+/[0-9]+$",
+   "type": "string"
+  },
+  "hidden_budget_by_split": {
+   "additionalProperties": false,
+   "properties": {
+    "LANG": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "NF": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "QS": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "RET": {
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "QS",
+    "NF",
+    "LANG",
+    "RET"
+   ],
+   "type": "object"
+  },
+  "hidden_budget_limit": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "hidden_invocations_under_lock": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "migrations_digest": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "opened_outside_closure": {
+   "description": "Repo-relative paths / env names observed outside the closure.",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "partial": {
+   "type": "boolean"
+  },
+  "phase": {
+   "const": "step1"
+  },
+  "provisional_gates": {
+   "description": "Derived: gates whose H evidence is still pending; frozen order FID, THR, IDENT, ATTR.",
+   "items": {
+    "enum": [
+     "QS",
+     "CH",
+     "NF",
+     "LANG",
+     "IDEM",
+     "VIS",
+     "ERASE",
+     "RET",
+     "COV",
+     "FID",
+     "THR",
+     "TIME",
+     "IDENT",
+     "RED",
+     "ATTR",
+     "SNAP",
+     "EMB"
+    ],
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "reason": {
+   "description": "Required when status is ERROR, absent otherwise.",
+   "type": "string"
+  },
+  "release_lock_sha256": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "release_name": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "release_state": {
+   "anyOf": [
+    {
+     "description": "Release state.",
+     "enum": [
+      "draft",
+      "frozen"
+     ],
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "repeats_completed": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "repeats_required": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "run_id": {
+   "pattern": "^[0-9]{8}t[0-9]{6}z_[0-9a-f]{8}$",
+   "type": "string"
+  },
+  "run_kind": {
+   "description": "What kind of run printed this.",
+   "enum": [
+    "tuning",
+    "checkpoint",
+    "validation"
+   ],
+   "type": "string"
+  },
+  "runner_sha256": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "schema": {
+   "const": "MEM01_RESULT_V1"
+  },
+  "sets": {
+   "additionalProperties": false,
+   "properties": {
+    "ATTR": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "CH": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "COV": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "EMB": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "ERASE": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "FID": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "IDEM": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "IDENT": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "LANG": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "NF": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "QS": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "RED": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "RET": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "SNAP": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "THR": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "TIME": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    },
+    "VIS": {
+     "additionalProperties": false,
+     "properties": {
+      "errors": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "evaluated": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expected": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "skipped": {
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "expected",
+      "evaluated",
+      "skipped",
+      "errors"
+     ],
+     "type": "object"
+    }
+   },
+   "type": "object"
+  },
+  "split_evaluated": {
+   "description": "The split the gates were scored on.",
+   "enum": [
+    "optimization",
+    "test",
+    "validation"
+   ],
+   "type": "string"
+  },
+  "started_at": {
+   "type": "string"
+  },
+  "status": {
+   "description": "Block-level status (3.5).",
+   "enum": [
+    "PASS",
+    "FAIL",
+    "ERROR"
+   ],
+   "type": "string"
+  },
+  "text_digest": {
+   "anyOf": [
+    {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "validation": {
+   "const": "complete"
+  },
+  "versions": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "description": "python, sqlalchemy, asyncpg, postgres, pgvector, charset_normalizer, html2text, striprtf, pdfplumber, pypdf, python_docx, openpyxl, tnefparse.",
+   "type": "object"
+  }
+ },
+ "required": [
+  "schema",
+  "phase",
+  "status",
+  "aborted",
+  "run_kind",
+  "run_id",
+  "started_at",
+  "duration_ms"
+ ],
+ "title": "MEM01_RESULT_V1 protected result",
+ "type": "object"
+}

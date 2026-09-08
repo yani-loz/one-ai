@@ -1,0 +1,61 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_fid.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Required content units taken from the ORIGINAL file, never from current extracted text.",
+ "properties": {
+  "encoding": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "forbidden_units": {
+   "description": "Units that must NOT appear.",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  },
+  "required_units": {
+   "description": "Units that must appear in the stored extracted text, in order.",
+   "items": {
+    "additionalProperties": true,
+    "properties": {
+     "kind": {
+      "description": "The unit class under the frozen v1 representation rules.",
+      "enum": [
+       "paragraph",
+       "list_item",
+       "link",
+       "page_marker",
+       "sheet_marker",
+       "table_tuple"
+      ],
+      "type": "string"
+     },
+     "ordered_after": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "value"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "required_units"
+ ],
+ "title": "FID label - extraction fidelity",
+ "type": "object"
+}

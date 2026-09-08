@@ -1,0 +1,1265 @@
+# MEM-01 Phase 0 — criteria.step1.v1 (DRAFT, Stage A)
+#
+# Role: the formula sheet of the 17-gate exam, transcribed from the frozen criteria sheets in
+#       docs/PM/memory/MEM-01/MEM-01-experiments-and-goals.md (Phase 0, "Критерии (17)") and the
+#       per-split floors of docs/PM/memory/MEM-01/MEM-01-gold-standard.md §4. Every number here
+#       is either quoted from those documents or marked `founder_draft: true` (an orchestrator
+#       proposal the founder confirms at the stage-B freeze).
+# Used by: tools.mem01_verify.criteria.load_criteria (validation), every gate evaluator, the
+#       release manifest (hashed as criteria_sha256), config_hash.
+# Depends on: nothing — data only.
+# Key invariants:
+#   - Acceptance is GATES ONLY: every criterion is a conjunction member; no weights anywhere.
+#   - An error never shrinks a denominator; `minimum` is the smallest denominator on which the
+#     criterion may be decided — below it the status is ERROR, never PASS.
+#   - provisional_gates order is FROZEN: FID, THR, IDENT, ATTR (the verdict line prints it verbatim).
+#   - kind: ratio needs a denominator and minimum >= 1 (zero denominator = ERROR, never a vacuous
+#     pass); kind: count is an absolute count invariant with no denominator.
+#   - This file is DRAFT until `release_state: frozen`; a frozen copy never changes (superseding
+#     release only).
+
+criteria_version: "step1.v1"
+release_state: draft
+authored: "2026-09-06"
+authored_by: "One AI Dev session (orchestrator) from the frozen MEM-01 docs"
+
+founder_defaults:
+  - id: split_policy
+    decision: "H-split three ways for QS/NF/LANG/RET; FID/THR/IDENT/ATTR are validation-only holdouts (provisional in the loop)"
+    founder_default: true
+  - id: ret_claim
+    decision: "bidirectional: >=150 queries per split, >=50 BG->EN, >=50 EN->BG, >=50 same-language"
+    founder_default: true
+  - id: legacy_formats
+    decision: "pptx/odt/ods get deterministic extractors in v0; .doc/.xls conversion or explicit exclusion decided at stage B by file identity (content hash) and frozen in the scope policy"
+    founder_default: true
+  - id: mixed_language
+    decision: "mixed = each of the two languages >= 20% of language-bearing word tokens with >= 5 tokens each; insufficient evidence = und"
+    founder_default: true
+  - id: attr_fixtures_first
+    decision: "ATTR fixtures-first + a single labeled holdout >= 30 forwards"
+    founder_default: true
+
+provisional_gates: [FID, THR, IDENT, ATTR]
+directional_gates: []
+
+# Environment variables a run may read. Reading any other variable is an integrity error on
+# hidden runs (checkpoint / validation). The NAMES in this list enter config_hash (the /goal text:
+# a declared list, not a trace of what was read); values are never hashed.
+env_allowlist:
+  - POSTGRES_HOST
+  - POSTGRES_PORT
+  - POSTGRES_DB
+  - POSTGRES_USER
+  - POSTGRES_PASSWORD
+  - APP_DB_USER
+  - GLOBAL_DB_USER
+  - READER_DB_USER
+  - ONEAI_APP_PASSWORD
+  - ONEAI_GLOBAL_PASSWORD
+  - ONEAI_READER_PASSWORD
+  - APP_ENV
+  - MEM01_GOLD_ROOT
+  - MEM01_HIDDEN_ROOT
+  - PYTHONUTF8
+  - PYTHONIOENCODING
+  # §16.16(b): the names libpq/asyncpg read on every connect.
+  - PGGSSLIB
+  - PGKRBSRVNAME
+  - PGSERVICE
+  - PGSSLCERT
+  - PGSSLKEY
+  - PGSSLMAXPROTOCOLVERSION
+  - PGSSLMINPROTOCOLVERSION
+  - PGSSLMODE
+  - PGSSLNEGOTIATION
+  - PGTARGETSESSIONATTRS
+  - SSLKEYLOGFILE
+  # §16.16(b): the platform names a child process and the interpreter need.
+  - PATH
+  - SYSTEMROOT
+  - SYSTEMDRIVE
+  - COMSPEC
+  - WINDIR
+  - TEMP
+  - TMP
+  - USERPROFILE
+  - HOMEDRIVE
+  - HOMEPATH
+  - HOME
+  - APPDATA
+  - LOCALAPPDATA
+  - PROGRAMDATA
+  - VIRTUAL_ENV
+  - UV_CACHE_DIR
+  - UV_PROJECT_ENVIRONMENT
+  - LANG
+  - LC_ALL
+  # §16.16(b): every name a PINNED distribution reads at import time during the run (measured on
+  # the baseline). These are inputs of the pinned dependency set, so they are DECLARED here
+  # rather than exempted from the observer; the sealed baseline `opened_outside_closure == []`
+  # is the mechanical guard that this block stays complete for the pinned set.
+  - NPY_PROMOTION_STATE
+  - NUMPY_MADVISE_HUGEPAGE
+  - OPENBLAS_MAIN_FREE
+  - OPENPYXL_LXML
+  - PATHEXT
+  - PILLOW_ALIGNMENT
+  - PILLOW_BLOCKS_MAX
+  - PILLOW_BLOCK_SIZE
+  - PROCESSOR_ARCHITECTURE
+  - PROCESSOR_ARCHITEW6432
+  - PYDANTIC_DISABLE_PLUGINS
+  - SPHINX_BUILD
+  - TLDEXTRACT_CACHE
+  - TLDEXTRACT_CACHE_TIMEOUT
+  - XDG_CACHE_HOME
+
+# Repo files outside the editable scope and outside the runner folder that a run may open.
+config_files:
+  - { path: backend/.env, hashed: false, role: "secret-bearing settings file (opened by pydantic-settings; not hashed; its effect enters through the env allowlist and corpus_digest)" }
+  - { path: backend/alembic.ini, hashed: true, role: "alembic configuration" }
+  - { path: backend/pyproject.toml, hashed: true, role: "dependencies (also in code_hash)" }
+  - { path: backend/uv.lock, hashed: true, role: "dependency lock (also in code_hash)" }
+  - { path: backend/.python-version, hashed: true, role: "interpreter pin (also in code_hash)" }
+
+# Ruling (a) + COV, contract 4.6: dispositions come ONLY from this frozen policy and from
+# independently established input properties (the message part's declared MIME class and the
+# inline flag), never from the extractor's own status. An extraction status can neither create an
+# exclusion nor establish delivery on its own.
+scope_policy:
+  version: v0
+  founder_draft: true
+  excluded_by_property:
+    content_type_prefixes: ["image/", "audio/", "video/"]
+    content_type_exact:
+      - application/pkcs7-signature
+      - application/pgp-signature
+      - application/x-pkcs7-signature
+      - text/calendar
+      - application/ics
+      - font/ttf
+      - font/otf
+      - application/vnd.ms-fontobject
+    inline_image: true
+    reason: "noise policy v0: non-document MIME classes by declared content type"
+  delivered_requires:
+    email: { parse_status: parsed, body_present: true }
+    attachment: { extraction_status: extracted, text_present: true, extractor_name_present: true, extractor_version_present: true, partial_marker_absent: true }
+  not_ready: "every required input that is neither excluded by property nor delivered, including skipped_nondocument on a MIME class outside excluded_by_property, unsupported_format, scanned_pending_ocr, extracted_partial_scanned, truncated, corrupt, encrypted, empty, pending, skipped_oversize"
+  legacy_by_file_identity: []   # stage B: content hashes of .doc/.xls with disposition converted|excluded
+
+# Criterion 1 (v2.3): every surface a Unicode scalar can reach a reader through. Stage A names
+# the three stored-text surfaces; stage C/D add lexical derivatives, retrieval-unit fields,
+# thread-expansion fields and carrier metadata by name.
+qs_surfaces:
+  - email_body
+  - email_subject
+  - attachment_text
+
+# Criterion 14 (RED), contract 10.3: every real production handoff a secret can travel. A surface
+# without an implementation prints `incomplete`, never PASS.
+red_surfaces:
+  - { name: email_body, stage_available: A }
+  - { name: attachment_text, stage_available: A }
+  - { name: attachment_structured_payload, stage_available: A }
+  - { name: extraction_detail, stage_available: A }
+  - { name: embedding_header, stage_available: D }
+  - { name: logging, stage_available: A }
+
+# Chunk cap (ruling (f)) — the tokenizer pin is a stage-B decision; absent pin = CH ERROR.
+chunk_policy:
+  cap_tokens_email: 500
+  cap_tokens_document: 800
+  target_tokens_email: [300, 500]
+  target_tokens_document: [500, 800]
+  tokenizer_id: null
+  tokenizer_revision: null
+  tokenizer_artifact_sha256: null
+  package_lock_sha256: null
+
+# Leakage groups (contract 7): boilerplate is excluded only by frozen designation; the carrier
+# count is a review trigger, never a classification. Near-duplicate clustering beyond exact
+# normalized-body identity is deferred to stage B.
+leakage_policy:
+  version: LEAK_GROUPS_V1
+  ubiquity_review_trigger: 25
+  designated_boilerplate_hashes: []   # stage B: sha256 content hashes the founder designates
+  inline_image_excluded: true
+  template_rule: "exact EVID_NORM_V1 normalized-body identity"
+  near_duplicate_clustering: deferred_stage_b
+
+# Shared edge policies (referenced by name from criteria).
+edge_policy_sets:
+  standard: &edge_standard
+    - "missing prediction for an expected input = counted against the numerator, never dropped"
+    - "duplicate or unexpected id in the evaluated set = ERROR (exit 2)"
+    - "abstention where a value is required = counted as a miss"
+    - "parse error on an expected input = ERROR unless the fixture expects that exact failure status"
+    - "zero denominator on a mandatory ratio criterion = ERROR, never PASS (no vacuous pass exists); count invariants have no denominator; denominator-free diagnostics print N/A"
+  fixture_failure: &edge_fixture_failure
+    - "a fixture that EXPECTS a malformed input passes only if the component produces exactly the specified refusal status (parse_failed, unsupported_format, unknown_zone); an unhandled exception, crash, timeout or silent partial result is ERROR"
+
+gates:
+
+  QS:
+    title: "Quote stripping — zero loss of new content, echo/signature mass <= 5%"
+    criteria:
+      - id: qs.no_content_loss
+        set: QS
+        evidence_basis: H-test
+        split_source: test
+        type: Z
+        kind: ratio
+        formula: "emails with at least one lost required new-content Unicode scalar (checked by OCCURRENCE: the same source span mapped through offsets, never an identical substring elsewhere) divided by emails with new content in the scored split; PASS iff 0"
+        numerator_def: "emails in the scored split with >= 1 labeled new-content scalar absent at its mapped position on every qs_surface"
+        denominator_def: "emails with labeled new content in the scored split"
+        operator: "=="
+        threshold: 0
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/80 -> PASS; 1/80 -> FAIL (a single lost scalar is a loss)"
+        partner: [qs.echo_incidence, qs.echo_mass, qs.signature_mass, attr.provisional.fixtures]
+        stage_available: C
+      - id: qs.echo_incidence
+        set: QS
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "emails with a quote that retained any labeled redundant-quote scalar on any surface divided by all emails with a quote in the scored split; PASS iff <= 0.05"
+        numerator_def: "quote-bearing emails retaining >= 1 labeled redundant scalar"
+        denominator_def: "quote-bearing emails in the scored split"
+        operator: "<="
+        threshold: 0.05
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "2/50 = 0.04 -> PASS; 3/50 = 0.06 -> FAIL"
+        partner: [qs.no_content_loss]
+        stage_available: C
+      - id: qs.echo_mass
+        set: QS
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "retained labeled redundant-quote Unicode scalars (union over qs_surfaces) divided by all labeled redundant scalars in the scored split; PASS iff <= 0.05"
+        numerator_def: "labeled redundant scalars still reaching any surface"
+        denominator_def: "all labeled redundant scalars in the scored split"
+        operator: "<="
+        threshold: 0.05
+        minimum: 5000
+        minimum_founder_draft: true
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "600/20000 = 0.03 -> PASS; 8000/20000 -> FAIL"
+        partner: [qs.no_content_loss]
+        stage_available: C
+      - id: qs.signature_mass
+        set: QS
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "retained labeled signature scalars (union over qs_surfaces) divided by all labeled signature scalars; PASS iff <= 0.05"
+        numerator_def: "labeled signature scalars still reaching any surface"
+        denominator_def: "all labeled signature scalars in the scored split"
+        operator: "<="
+        threshold: 0.05
+        minimum: 1000
+        minimum_founder_draft: true
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "150/6000 = 0.025 -> PASS"
+        partner: [qs.no_content_loss]
+        stage_available: C
+
+  CH:
+    title: "Chunking under a pinned token cap and tokenizer; no missing spans; no unapproved overlap"
+    criteria:
+      - id: ch.no_missing_spans
+        set: CH
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "required source spans absent from every emitted chunk divided by required spans; PASS iff 0"
+        numerator_def: "required spans (post-QS new content, subject, every delivered attachment span) not covered by any chunk"
+        denominator_def: "required spans over the whole corpus roster"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/9,000 -> PASS; 1 missing paragraph -> FAIL even with 400 valid chunks"
+        partner: [ch.no_unapproved_overlap, ch.no_packing_violations]
+        stage_available: D
+      - id: ch.no_invalid_chunks
+        set: CH
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "chunks over the cap (in pinned tokenizer tokens over the whole embedding input incl. metadata header) or with missing required metadata divided by emitted chunks; PASS iff 0"
+        numerator_def: "emitted chunks over cap or malformed"
+        denominator_def: "emitted chunks"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/12,000 -> PASS"
+        partner: [ch.no_missing_spans]
+        stage_available: D
+      - id: ch.no_illegal_boundaries
+        set: CH
+        evidence_basis: F+C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "boundaries that silently overlap, drop a tail, invent a section boundary or repeat a header unlabeled divided by checked boundaries; PASS iff 0"
+        numerator_def: "illegal boundaries"
+        denominator_def: "checked boundaries (corpus + >= 30 boundary fixtures)"
+        operator: "=="
+        threshold: 0
+        minimum: 30
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/3,000 -> PASS"
+        partner: [ch.no_missing_spans]
+        stage_available: C
+      - id: ch.no_packing_violations
+        set: CH
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "adjacent chunks of one true section that were mergeable under the cap, or short inputs split into more than one chunk, divided by packing decisions; PASS iff 0"
+        numerator_def: "anti-fragmentation violations"
+        denominator_def: "packing decisions"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "30 mergeable adjacent pairs -> FAIL"
+        partner: [ch.no_missing_spans]
+        stage_available: D
+      - id: ch.no_unapproved_overlap
+        set: CH
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "the same source span present in more than one chunk beyond the frozen overlap budget divided by emitted chunks; PASS iff 0"
+        numerator_def: "chunks carrying an unapproved repeat"
+        denominator_def: "emitted chunks"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/12,000 -> PASS"
+        partner: [ch.no_missing_spans]
+        stage_available: D
+
+  NF:
+    title: "Noise filter — zero real documents suppressed, >= 90% noise stopped"
+    criteria:
+      - id: nf.zero_document_rejection
+        set: NF
+        evidence_basis: H-test
+        split_source: test
+        type: Z
+        kind: ratio
+        formula: "true documents labeled or suppressed as noise divided by all true documents in the scored split (OCR-required and unsupported formats are DOCUMENTS); PASS iff 0"
+        numerator_def: "true documents classified or suppressed as noise"
+        denominator_def: "true documents in the scored split, including those without extracted text"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/100 -> PASS; one JPEG invoice as noise -> FAIL"
+        partner: [nf.noise_stopped, cov.required_logical_delivered]
+        stage_available: C
+      - id: nf.noise_stopped
+        set: NF
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "noise items stopped divided by all noise items in the scored split; PASS iff >= 0.90"
+        numerator_def: "labeled noise stopped by the filter"
+        denominator_def: "labeled noise in the scored split"
+        operator: ">="
+        threshold: 0.90
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "92/100 -> PASS; 89/100 -> FAIL"
+        partner: [nf.zero_document_rejection]
+        stage_available: C
+      - id: nf.dedup_groups_correct
+        set: NF
+        evidence_basis: C
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "wrong canonical/carrier groups divided by audited groups (dedup within tenant only, exact content identity, no merging of merely similar files); PASS iff 0"
+        numerator_def: "audited groups with a wrong canonical or a wrong carrier edge"
+        denominator_def: "audited canonical/carrier groups (all corpus groups + >= 20 dedup fixtures)"
+        operator: "=="
+        threshold: 0
+        minimum: 20
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/704 -> PASS"
+        partner: [vis.no_forbidden_rows]
+        stage_available: C
+
+  LANG:
+    title: "Language bg/en/mixed/und >= 98% overall and per class; no invalid states"
+    criteria:
+      - id: lang.accuracy_overall
+        set: LANG
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "correct labels divided by all assessable items in the scored split (assessed on quote/signature-stripped prose per founder default mixed_language); PASS iff >= 0.98"
+        numerator_def: "assessable items with the correct class"
+        denominator_def: "assessable items in the scored split"
+        operator: ">="
+        threshold: 0.98
+        minimum: 200
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "197/200 -> PASS overall"
+        partner: [lang.accuracy_per_class, lang.no_invalid_states]
+        stage_available: C
+      - id: lang.accuracy_per_class
+        set: LANG
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "for EACH class bg, en, mixed: correct divided by assessable items of that class; PASS iff every class >= 0.98"
+        numerator_def: "correct items of the class"
+        denominator_def: "assessable items of the class (per class)"
+        operator: ">="
+        threshold: 0.98
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "48/50 for en = 0.96 -> FAIL although overall passes"
+        partner: [lang.accuracy_overall]
+        stage_available: C
+      - id: lang.no_invalid_states
+        set: LANG
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "corpus items with an invalid language state (NULL, a value outside bg/en/mixed/und, or und on an assessable item) divided by all corpus items; PASS iff 0"
+        numerator_def: "items with an invalid or unexpected language state"
+        denominator_def: "all emails and text-bearing attachments in the corpus"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "5,893/5,893 NULL -> FAIL (Stage A baseline)"
+        partner: [lang.accuracy_overall]
+        stage_available: A
+
+  IDEM:
+    title: "Idempotence — replay changes nothing; backfill = exactly one new version"
+    criteria:
+      - id: idem.replay_no_change
+        set: IDEM
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "replay scenarios (same versions, same configuration) that changed durable state divided by replay scenarios; PASS iff 0 (the initial creation is the positive control and must create)"
+        numerator_def: "scenarios with an unexpected change to content/grant/carrier/chunk/result rows"
+        denominator_def: "replay scenarios"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "10 created; replay +0; retry +0 -> PASS"
+        partner: [idem.exactly_once_committed]
+        stage_available: A
+      - id: idem.exactly_once_committed
+        set: IDEM
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "required (canonical input, component version, configuration) keys with zero or more than one committed logical result divided by required keys; PASS iff 0"
+        numerator_def: "keys with missing or duplicated committed results"
+        denominator_def: "required keys"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "concurrent duplicate ingest yields exactly one row -> PASS"
+        partner: [idem.replay_no_change]
+        stage_available: A
+      - id: idem.backfill_one_new_version
+        set: IDEM
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "explicit version backfills that produced other than exactly one new published result per affected canonical input divided by backfills; PASS iff 0"
+        numerator_def: "backfills with zero or > 1 new versions, or an old result presented as processed by the new version"
+        denominator_def: "backfill scenarios"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "backfill 10 inputs -> 10 new versions -> PASS"
+        partner: [idem.replay_no_change]
+        stage_available: C
+
+  VIS:
+    title: "Visibility on every read plane — positive AND negative controls, 2 orgs, 3 personas, BCC"
+    criteria:
+      - id: vis.no_forbidden_rows
+        set: VIS
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "forbidden rows or fields returned divided by forbidden probes (every route x state cell, queried as the REAL reader role); PASS iff 0"
+        numerator_def: "negative probes that returned a forbidden row or field (incl. BCC membership in any shared row, revoked grants, other org, no person on restricted rows)"
+        denominator_def: "negative probes"
+        operator: "=="
+        threshold: 0
+        minimum: 12
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/24 -> PASS"
+        partner: [vis.no_missing_allowed]
+        stage_available: A
+      - id: vis.no_missing_allowed
+        set: VIS
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "required allowed results missing divided by positive probes; PASS iff 0 (deny-all is FAIL)"
+        numerator_def: "positive probes that did not return the allowed row"
+        denominator_def: "positive probes"
+        operator: "=="
+        threshold: 0
+        minimum: 12
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/24 -> PASS; a persona who sees nothing anywhere -> FAIL"
+        partner: [vis.no_forbidden_rows]
+        stage_available: A
+      - id: vis.no_wrong_inherited_relations
+        set: VIS
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "child rows (recipients, attachments, carrier metadata, thread expansion, vectors) visible without a visible parent or admitting a hidden party divided by checked relations; PASS iff 0"
+        numerator_def: "checked relations with a wrong inheritance"
+        denominator_def: "checked relations"
+        operator: "=="
+        threshold: 0
+        minimum: 6
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/12 -> PASS"
+        partner: [vis.no_missing_allowed]
+        stage_available: A
+      - id: vis.route_state_coverage
+        set: VIS
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "route x state cells of the frozen matrix that were NOT evaluated with at least one positive and one negative probe divided by all cells of the matrix; PASS iff 0 (a route whose plane does not exist yet - thread expansion until stage C, vector search until stage D - leaves its cells unevaluated, so this criterion is incomplete until every route exists)"
+        numerator_def: "matrix cells without an evaluated positive AND negative probe"
+        denominator_def: "route x state cells of the frozen VIS matrix (5 routes x 8 states)"
+        operator: "=="
+        threshold: 0
+        minimum: 40
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/40 -> PASS at stage D; 16/40 unevaluated at stage A -> incomplete"
+        partner: [vis.no_forbidden_rows, vis.no_missing_allowed]
+        stage_available: D
+    route_state_matrix:
+      routes: [direct_read, lexical_search, attachment_metadata, thread_expansion, vector_search]
+      states: [restricted_with_grant, restricted_without_grant, org_visible, grant_revoked, no_person, bcc_only, pooled_session_reuse, shared_attachment_cross_org]
+      stage_available: { direct_read: A, lexical_search: A, attachment_metadata: A, thread_expansion: C, vector_search: D }
+
+  ERASE:
+    title: "Per-source deletion closes everything derived; shared items survive via other carriers"
+    criteria:
+      - id: erase.no_forbidden_survivor
+        set: ERASE
+        evidence_basis: F+C
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "scenarios with any surviving forbidden derivative after the completion barrier (source rows, carrier edges, grants, provenance, chunks/vectors, jobs, caches, downstream) divided by scenarios; PASS iff 0"
+        numerator_def: "scenarios with a forbidden survivor"
+        denominator_def: "per-source deletion scenarios"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/10 -> PASS"
+        partner: [erase.no_wrong_deletion]
+        stage_available: E
+      - id: erase.no_dangling_references
+        set: ERASE
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "dangling references over every registered derived relation (incl. the FK-less acl_grant.object_id and fact_provenance.source_object_id) divided by scanned references; PASS iff 0"
+        numerator_def: "references whose target no longer exists"
+        denominator_def: "scanned references"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/5,893 -> PASS"
+        partner: [erase.no_forbidden_survivor]
+        stage_available: E
+      - id: erase.no_resurrection
+        set: ERASE
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "scenarios in which a late job republished deleted data divided by late-job scenarios; PASS iff 0"
+        numerator_def: "resurrections"
+        denominator_def: "late-job scenarios"
+        operator: "=="
+        threshold: 0
+        minimum: 3
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/3 -> PASS"
+        partner: [erase.no_forbidden_survivor]
+        stage_available: E
+      - id: erase.no_wrong_deletion
+        set: ERASE
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "control sources or shared objects (with a remaining legitimate carrier) that disappeared divided by controls; PASS iff 0"
+        numerator_def: "wrongly deleted controls"
+        denominator_def: "control sources and shared objects"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "two carriers, one deleted -> document survives via the other -> PASS"
+        partner: [erase.no_forbidden_survivor]
+        stage_available: E
+
+  RET:
+    title: "Cross-language retrieval >= 80% overall, >= 70% per direction"
+    criteria:
+      - id: ret.hit_at_10_overall
+        set: RET
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "queries with >= 1 fully relevant result among the first 10 DISTINCT retrieval units divided by all queries in the scored split (duplicates occupy positions; no result = miss; frozen persona); PASS iff >= 0.80"
+        numerator_def: "queries with a hit in the top 10 distinct units"
+        denominator_def: "queries in the scored split"
+        operator: ">="
+        threshold: 0.80
+        minimum: 150
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "125/150 -> PASS"
+        partner: [ret.hit_bg_to_en, ret.hit_en_to_bg, emb.vectors_valid, ch.no_missing_spans, vis.no_forbidden_rows]
+        stage_available: D
+      - id: ret.hit_bg_to_en
+        set: RET
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "BG->EN queries with a hit in the top 10 distinct units divided by BG->EN queries; PASS iff >= 0.70"
+        numerator_def: "BG->EN hits"
+        denominator_def: "BG->EN queries in the scored split"
+        operator: ">="
+        threshold: 0.70
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "36/50 -> PASS"
+        partner: [ret.hit_at_10_overall]
+        stage_available: D
+      - id: ret.hit_en_to_bg
+        set: RET
+        evidence_basis: H-test
+        split_source: test
+        type: R
+        kind: ratio
+        formula: "EN->BG queries with a hit in the top 10 distinct units divided by EN->BG queries; PASS iff >= 0.70"
+        numerator_def: "EN->BG hits"
+        denominator_def: "EN->BG queries in the scored split"
+        operator: ">="
+        threshold: 0.70
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "39/50 -> PASS"
+        partner: [ret.hit_at_10_overall]
+        stage_available: D
+
+  COV:
+    title: "Every physical input accounted for: delivered / explicitly excluded / not ready"
+    criteria:
+      - id: cov.physical_inputs_accounted
+        set: COV
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "physical inputs of the frozen roster without a disposition (delivered | explicitly excluded(reason) | not ready) divided by the frozen physical roster; PASS iff 0"
+        numerator_def: "unaccounted physical inputs"
+        denominator_def: "frozen physical roster (every email and every attachment)"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/14,347 -> PASS"
+        partner: [cov.required_logical_delivered]
+        stage_available: A
+      - id: cov.required_logical_delivered
+        set: COV
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "required logical items (every input not excluded by the frozen scope policy via independently established properties, contract 4.6) without a complete declared handoff (delivered_requires) divided by required logical items; PASS iff 0 (an extraction status can neither create an exclusion nor establish delivery; unexpected parser failures and truncated required content are NOT ready)"
+        numerator_def: "required logical items not delivered"
+        denominator_def: "required logical items"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "the 88 unsupported documents are fully ACCOUNTED and still FAIL required delivery"
+        partner: [cov.physical_inputs_accounted, nf.zero_document_rejection]
+        stage_available: A
+      - id: cov.fixtures
+        set: COV
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "coverage scenarios (folder policy, duplicates, exclusions, errors, partial extraction) with a wrong disposition divided by scenarios; PASS iff 0"
+        numerator_def: "scenarios with a wrong disposition"
+        denominator_def: "coverage scenarios"
+        operator: "=="
+        threshold: 0
+        minimum: 20
+        zero_denominator: error
+        edge_policies: *edge_fixture_failure
+        worked_example: "0/20 -> PASS"
+        partner: [cov.physical_inputs_accounted]
+        stage_available: A
+
+  FID:
+    title: "Extraction fidelity — tables, links, order (FID has no corpus invariant: provisional is F only)"
+    criteria:
+      - id: fid.provisional
+        set: FID
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "fidelity fixtures with a missing, invented, materially altered or reordered required unit (paragraphs/list items, link label-destination pairs, page/column order, table tuples (sheet,row,column,value,header)) verified through the real extractor handoff divided by fidelity fixtures; PASS iff 0"
+        numerator_def: "fixtures with a fidelity defect (column swap, lost negation, value under a foreign header, lost unit)"
+        denominator_def: "fidelity fixtures: >= 3 full-unit-taxonomy cases for EVERY format that can carry tables/links/multi-column layout (pdf, docx, xlsx, html, rtf, tnef-embedded) plus >= 10 per supported format and >= 30 encoding cases; scored on the stored extracted_text after every transformation"
+        operator: "=="
+        threshold: 0
+        minimum: 70
+        minimum_founder_draft: true
+        zero_denominator: error
+        edge_policies: *edge_fixture_failure
+        worked_example: "999/1000 values preserved but one price under the wrong client column -> FAIL"
+        partner: [red.no_over_redaction, cov.required_logical_delivered]
+        stage_available: A
+      - id: fid.validation
+        set: FID
+        evidence_basis: H-validation
+        split_source: validation
+        type: Z
+        kind: ratio
+        formula: "holdout cases with a missing, invented, materially altered or reordered required unit divided by holdout fidelity cases; PASS iff 0 — founder run only"
+        numerator_def: "holdout cases with a fidelity defect"
+        denominator_def: "labeled source-backed holdout cases (>= 60 attachments, >= 20 layout/table)"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/100 -> PASS"
+        partner: [fid.provisional]
+        stage_available: F
+
+  THR:
+    title: "Threading precision and recall"
+    criteria:
+      - id: thr.provisional.must_join_recall
+        set: THR
+        evidence_basis: F
+        split_source: fixtures
+        type: R
+        kind: ratio
+        formula: "must-join fixture pairs recovered in one production thread divided by must-join pairs; PASS iff >= 0.98"
+        numerator_def: "must-join pairs joined"
+        denominator_def: "must-join fixture pairs (In-Reply-To/References chains, shuffled ingest, Re:/Fwd: prefixes)"
+        operator: ">="
+        threshold: 0.98
+        minimum: 15
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "15/15 -> PASS"
+        partner: [thr.provisional.no_forbidden_merge]
+        stage_available: C
+      - id: thr.provisional.no_forbidden_merge
+        set: THR
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "must-not-join fixture pairs found in one production thread divided by must-not-join pairs (collisions, reused Message-ID, same subject, cross-tenant, missing external parent); PASS iff 0"
+        numerator_def: "forbidden merges"
+        denominator_def: "must-not-join fixture pairs"
+        operator: "=="
+        threshold: 0
+        minimum: 15
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/15 -> PASS; two unrelated 'Фактура' discussions merged -> FAIL"
+        partner: [thr.provisional.must_join_recall]
+        stage_available: C
+      - id: thr.provisional.tenant_provenance
+        set: THR
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "thread memberships crossing a tenant boundary or lacking provenance (which header joined the member) divided by thread memberships; PASS iff 0 (thread membership never grants access)"
+        numerator_def: "memberships crossing tenants or without provenance"
+        denominator_def: "thread memberships over the corpus"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/5,893 -> PASS"
+        partner: [vis.no_forbidden_rows]
+        stage_available: C
+      - id: thr.validation.link_recall
+        set: THR
+        evidence_basis: H-validation
+        split_source: validation
+        type: R
+        kind: ratio
+        formula: "required resolvable links recovered divided by required links in the holdout; PASS iff >= 0.98 — founder run only"
+        numerator_def: "required links recovered"
+        denominator_def: "required resolvable links in the holdout"
+        operator: ">="
+        threshold: 0.98
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "98/100 -> PASS"
+        partner: [thr.validation.forbidden_pairs]
+        stage_available: F
+      - id: thr.validation.forbidden_pairs
+        set: THR
+        evidence_basis: H-validation
+        split_source: validation
+        type: Z
+        kind: ratio
+        formula: "forbidden holdout pairs in one production thread divided by forbidden pairs; PASS iff 0 — founder run only"
+        numerator_def: "forbidden pairs merged"
+        denominator_def: "forbidden pairs in the holdout"
+        operator: "=="
+        threshold: 0
+        minimum: 50
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/50 -> PASS"
+        partner: [thr.validation.link_recall]
+        stage_available: F
+
+  TIME:
+    title: "Timestamp zones honest, never faked as UTC"
+    criteria:
+      - id: time.fixtures
+        set: TIME
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "Date-header fixtures whose (declared source value, parsed instant or unknown_zone state, provenance) tuple is wrong divided by fixtures; PASS iff 0 (a missing zone yields a frozen unknown/assumed state, never a known offset)"
+        numerator_def: "fixtures with a wrong tuple"
+        denominator_def: "TIME fixtures (offsets, missing zone, malformed, DST, fallback)"
+        operator: "=="
+        threshold: 0
+        minimum: 30
+        zero_denominator: error
+        edge_policies: *edge_fixture_failure
+        worked_example: "'12:00 +0300' -> 09:00Z with provenance passes; '12:00' (no zone) -> 12:00Z fails"
+        partner: [time.header_comparison]
+        stage_available: A
+      - id: time.header_comparison
+        set: TIME
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "stored timestamp/provenance tuples inconsistent with the retained source Date header (wrong instant, ingestion time in place of authored time, undisclosed assumption) divided by compared rows; PASS iff 0"
+        numerator_def: "rows with an inconsistent tuple"
+        denominator_def: "compared corpus rows (>= 100)"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/100 -> PASS"
+        partner: [time.fixtures]
+        stage_available: A
+
+  IDENT:
+    title: "Identity resolution by confirmed aliases only"
+    criteria:
+      - id: ident.provisional.no_false_merge
+        set: IDENT
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "must-remain-distinct pairs resolved to one identity divided by must-remain-distinct pairs (no merge by name, no blanket dot/plus collapse, no contact-alias change that silently merges access principals); PASS iff 0"
+        numerator_def: "wrongly merged pairs"
+        denominator_def: "must-remain-distinct fixture pairs"
+        operator: "=="
+        threshold: 0
+        minimum: 40
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "two unrelated 'Иван Петров' stay separate -> PASS"
+        partner: [ident.provisional.alias_resolution]
+        stage_available: A
+      - id: ident.provisional.alias_resolution
+        set: IDENT
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "confirmed alias pairs (with provenance) NOT resolved to one identity divided by confirmed alias pairs; PASS iff 0"
+        numerator_def: "unmerged confirmed alias pairs"
+        denominator_def: "confirmed alias fixture pairs"
+        operator: "=="
+        threshold: 0
+        minimum: 20
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "work + personal address with a confirmed alias -> one person -> PASS"
+        partner: [ident.provisional.no_false_merge]
+        stage_available: A
+      - id: ident.provisional.exact_address_stability
+        set: IDENT
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "exact-address controls that did not map to a stable tenant-scoped identity across two resolutions divided by controls; PASS iff 0"
+        numerator_def: "unstable controls"
+        denominator_def: "exact-address stability controls"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/10 -> PASS"
+        partner: [ident.provisional.alias_resolution]
+        stage_available: A
+      - id: ident.provisional.c_normalization_key
+        set: IDENT
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "participations without a versioned normalization key or without the retained raw as-seen address divided by all participations; PASS iff 0"
+        numerator_def: "participations lacking a normalization key or raw address"
+        denominator_def: "all participations (recipient rows + senders) in the corpus"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/12,835 -> PASS"
+        partner: [ident.provisional.no_false_merge]
+        stage_available: A
+      - id: ident.provisional.c_no_unconfirmed_merge
+        set: IDENT
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: count
+        formula: "COUNT invariant: the number of identity merges without a confirmed alias with provenance; PASS iff the count == 0 (no denominator; the total number of merges is reported as a diagnostic)"
+        numerator_def: "merges without a confirmed alias (absolute count over the corpus)"
+        denominator_def: null
+        operator: "=="
+        threshold: 0
+        minimum: null
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0 unconfirmed merges -> PASS (total merges 0 reported as diagnostic); 1 -> FAIL"
+        partner: [ident.provisional.alias_resolution]
+        stage_available: A
+      - id: ident.validation
+        set: IDENT
+        evidence_basis: H-validation
+        split_source: validation
+        type: Z
+        kind: ratio
+        formula: "wrong participant bindings plus unresolved required exact-address/verified-alias mappings divided by labeled participations; PASS iff 0 — founder run only"
+        numerator_def: "wrong or missing bindings"
+        denominator_def: "labeled participant observations in the holdout"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/100 -> PASS"
+        partner: [ident.provisional.no_false_merge]
+        stage_available: F
+
+  RED:
+    title: "Secret redaction including past the old scan cap"
+    criteria:
+      - id: red.no_under_redaction
+        set: RED
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "required secret canary spans not fully redacted (incl. canaries beyond the 2,000,000-character scan cap, straddling it, and across processing surfaces) divided by required canary spans; PASS iff 0"
+        numerator_def: "canaries surviving in whole or in part"
+        denominator_def: "positive canaries (>= 10 per secret class)"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "120/120 masked -> PASS on this criterion"
+        partner: [red.no_over_redaction, fid.provisional]
+        stage_available: A
+      - id: red.no_over_redaction
+        set: RED
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "protected non-secret control spans altered by redaction divided by control spans; PASS iff 0 (removing a whole document fails the preservation partner)"
+        numerator_def: "altered control spans"
+        denominator_def: "hard negative control spans"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "one ordinary invoice number masked -> FAIL"
+        partner: [red.no_under_redaction]
+        stage_available: A
+
+  ATTR:
+    title: "Forwarded-content attribution with recoverable / ambiguous / unresolvable states"
+    criteria:
+      - id: attr.provisional.fixtures
+        set: ATTR
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "fixtures with a mandatory expectation whose state or original author is wrong divided by such fixtures (>= 10 must-be-recoverable with the expected author, >= 10 must-be-ambiguous, >= 5 must-be-unresolvable); PASS iff 0"
+        numerator_def: "fixtures with a wrong state or author"
+        denominator_def: "ATTR fixtures with a mandatory expectation"
+        operator: "=="
+        threshold: 0
+        minimum: 25
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/30 -> PASS; unresolvable on a must-be-recoverable segment -> FAIL"
+        partner: [attr.provisional.c2_unresolvable_ceiling]
+        stage_available: C
+      - id: attr.provisional.c1_state_present
+        set: ATTR
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "forwarded segments without an attribution state (never NULL) divided by all forwarded segments; PASS iff 0"
+        numerator_def: "forwarded segments with no state"
+        denominator_def: "forwarded segments in the corpus"
+        operator: "=="
+        threshold: 0
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/1,200 -> PASS"
+        partner: [attr.provisional.c2_unresolvable_ceiling]
+        stage_available: C
+      - id: attr.provisional.c2_unresolvable_ceiling
+        set: ATTR
+        evidence_basis: C
+        split_source: corpus
+        type: R
+        kind: ratio
+        formula: "forwarded segments in state unresolvable divided by all forwarded segments; PASS iff <= the frozen ceiling (constant unresolvable everywhere passes C1 and fails here)"
+        numerator_def: "unresolvable segments"
+        denominator_def: "forwarded segments in the corpus"
+        operator: "<="
+        threshold: 0.30
+        threshold_founder_draft: true
+        minimum: 100
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "200/1,200 = 0.17 -> PASS"
+        partner: [attr.provisional.fixtures]
+        stage_available: C
+      - id: attr.validation
+        set: ATTR
+        evidence_basis: H-validation
+        split_source: validation
+        type: Z
+        kind: ratio
+        formula: "wrong or missing required attribution tuples divided by labeled forwarded segments; PASS iff 0 — founder run only"
+        numerator_def: "wrong or missing tuples"
+        denominator_def: "labeled forwards in the holdout (>= 10 recoverable, >= 10 ambiguous, >= 5 unresolvable)"
+        operator: "=="
+        threshold: 0
+        minimum: 30
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/30 -> PASS"
+        partner: [attr.provisional.fixtures]
+        stage_available: F
+
+  SNAP:
+    title: "Snapshot hashing and reproducible replays"
+    criteria:
+      - id: snap.replay_hash_equality
+        set: SNAP
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "canonical text/metadata artifacts whose hash differs between two clean replays divided by replayed artifacts; PASS iff 0"
+        numerator_def: "artifacts with differing hashes across replays"
+        denominator_def: "replayed snapshot artifacts (bodies, subjects, attachment texts)"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/14,636 -> PASS"
+        partner: [fid.provisional, snap.source_span_mappings]
+        stage_available: A
+      - id: snap.source_span_mappings
+        set: SNAP
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "normalization/mapping fixtures whose reverse mapping returns a wrong original interval (or claims a bijection after whitespace collapse) divided by checked mappings; PASS iff 0"
+        numerator_def: "wrong mappings"
+        denominator_def: "SNAP normalization/mapping fixtures"
+        operator: "=="
+        threshold: 0
+        minimum: 30
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/30 -> PASS"
+        partner: [snap.replay_hash_equality]
+        stage_available: A
+
+  EMB:
+    title: "Every required chunk has a verified, pinned embedding"
+    criteria:
+      - id: emb.vectors_valid
+        set: EMB
+        evidence_basis: C
+        split_source: corpus
+        type: Z
+        kind: ratio
+        formula: "required chunks with a missing, invalid, wrong-version, wrong-input or non-reproducible vector (recomputed in the declared deterministic environment) divided by required chunks; PASS iff 0"
+        numerator_def: "required chunks with a defective vector"
+        denominator_def: "required chunks"
+        operator: "=="
+        threshold: 0
+        minimum: 1000
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "40 of 10,000 chunks without a current vector -> FAIL"
+        partner: [ret.hit_at_10_overall, vis.no_forbidden_rows, idem.replay_no_change]
+        stage_available: D
+      - id: emb.zero_generative_calls
+        set: EMB
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "generative LLM calls observed during clerk execution divided by monitored executions; PASS iff 0"
+        numerator_def: "executions with a generative call"
+        denominator_def: "monitored clerk executions"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/10 -> PASS"
+        partner: [emb.zero_unapproved_egress]
+        stage_available: D
+      - id: emb.zero_unapproved_egress
+        set: EMB
+        evidence_basis: F
+        split_source: fixtures
+        type: Z
+        kind: ratio
+        formula: "unapproved network egress events during clerk execution divided by monitored executions; PASS iff 0"
+        numerator_def: "executions with unapproved egress"
+        denominator_def: "monitored clerk executions"
+        operator: "=="
+        threshold: 0
+        minimum: 10
+        zero_denominator: error
+        edge_policies: *edge_standard
+        worked_example: "0/10 -> PASS"
+        partner: [emb.zero_generative_calls]
+        stage_available: D

@@ -1,0 +1,81 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_ident.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Participant observations, verified alias pairs with provenance, and must-remain-distinct pairs.",
+ "properties": {
+  "alias_pairs": {
+   "description": "Confirmed alias pairs.",
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "left": {
+      "type": "string"
+     },
+     "provenance": {
+      "description": "An authoritative act; a similarity is NEVER provenance.",
+      "enum": [
+       "explicit_declaration",
+       "admin_confirmation",
+       "verified_auth_binding"
+      ],
+      "type": "string"
+     },
+     "right": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "left",
+     "right",
+     "provenance"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "distinct_pairs": {
+   "description": "Pairs that must never merge.",
+   "items": {
+    "description": "A must-remain-distinct pair.",
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "type": "array"
+  },
+  "observations": {
+   "description": "Address observations of the case.",
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "address": {
+      "type": "string"
+     },
+     "role": {
+      "description": "Sender or recipient kind.",
+      "enum": [
+       "from",
+       "to",
+       "cc",
+       "bcc"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "address",
+     "role"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "observations"
+ ],
+ "title": "IDENT label - identity resolution",
+ "type": "object"
+}

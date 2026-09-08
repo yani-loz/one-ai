@@ -1,0 +1,43 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_thr.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Required resolvable links and forbidden pairs.",
+ "properties": {
+  "fixture_kind": {
+   "description": "collision | missing_parent | reordered_ingest",
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "must_join": {
+   "description": "Pairs that must resolve into one thread.",
+   "items": {
+    "description": "A must-join pair of message ids.",
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "type": "array"
+  },
+  "must_not_join": {
+   "description": "Pairs that must stay apart.",
+   "items": {
+    "description": "A must-not-join pair.",
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "must_join",
+  "must_not_join"
+ ],
+ "title": "THR label - threading",
+ "type": "object"
+}

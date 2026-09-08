@@ -1,0 +1,14 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_ch.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "CH carries no label: its invariants are checked mechanically over the corpus and the boundary fixtures with the tokenizer pinned in the criteria annex.",
+ "properties": {
+  "none": {
+   "type": "null"
+  }
+ },
+ "required": [],
+ "title": "CH label - chunking (none)",
+ "type": "object"
+}

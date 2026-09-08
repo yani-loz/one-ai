@@ -1,0 +1,55 @@
+{
+ "$id": "https://one-ai.local/mem01/step1/schemas/label_red.schema.json",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "description": "Secret-shaped canaries by class (positives, including beyond the scan cap and across surfaces) and protected non-secret control spans (negatives).",
+ "properties": {
+  "canary_class": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "canary_span": {
+   "items": {
+    "minimum": 0,
+    "type": "integer"
+   },
+   "maxItems": 2,
+   "minItems": 2,
+   "type": [
+    "array",
+    "null"
+   ]
+  },
+  "placement": {
+   "description": "Where the canary sits relative to the 2,000,000-scalar redaction scan cap.",
+   "enum": [
+    "inline",
+    "beyond_cap",
+    "straddling_cap"
+   ],
+   "type": "string"
+  },
+  "polarity": {
+   "description": "Canary or protected control.",
+   "enum": [
+    "positive",
+    "negative"
+   ],
+   "type": "string"
+  },
+  "surfaces": {
+   "description": "Every surface the value was passed through.",
+   "items": {
+    "type": "string"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "polarity"
+ ],
+ "title": "RED label - redaction canaries",
+ "type": "object"
+}

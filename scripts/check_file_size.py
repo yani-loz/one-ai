@@ -22,6 +22,10 @@ SCAN_ROOTS = [
     # a security finding is still closed — was exempt from rule A2 while the gate reported
     # "all source files under the ceiling".
     Path("backend/scripts"),
+    # backend/tools holds the MEM-01 Phase 0 verification instruments (tools/mem01_verify). It is
+    # frozen and hashed at the stage-B release freeze, so a ceiling breach there would otherwise be
+    # invisible to the gate that every other Python tree is held to (contract STAGE-A §1.1 item 11).
+    Path("backend/tools"),
     Path("backend/tests"),
     Path("frontend/src"),
     Path("scripts"),

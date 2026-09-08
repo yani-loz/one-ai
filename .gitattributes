@@ -1,1 +1,7 @@
 *.py text eol=lf
+# MEM-01 Stage A: the sealed oracle and the verification instrument are hashed byte-for-byte
+# (STAGE-A-SEAL.sha256, runner_sha256), so every file in these trees is LF on every platform.
+backend/tools/** text eol=lf
+backend/tests/tools/** text eol=lf
+# The Stage A seal, amendment log and contract are read byte-for-byte too (sha256sum -c).
+docs/PM/memory/phase0/** text eol=lf
